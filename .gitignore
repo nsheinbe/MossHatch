@@ -1,0 +1,9 @@
+node_modules
+dist
+.vercel
+*.tsbuildinfo
+test-results
+playwright-report
+__pycache__
+.env*
+!.env.example

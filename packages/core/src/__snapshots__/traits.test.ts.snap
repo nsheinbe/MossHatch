@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deriveTraits > matches the golden fixture 1`] = `
+{
+  "accentHue": 204.9,
+  "domain": "moonfern.com",
+  "earLength": 0.914,
+  "family": "fox",
+  "hue": 5.4,
+  "label": "moonfern",
+  "light": 0.511,
+  "pitch": 1.279,
+  "rarity": "uncommon",
+  "sat": 0.65,
+  "size": 0.991,
+  "speciesName": "Ember Fox",
+  "spots": 4,
+  "tailLength": 1.138,
+  "tld": "com",
+}
+`;
+
+exports[`deriveTraits > matches the golden fixture 2`] = `
+{
+  "accentHue": 141.8,
+  "domain": "hatchkind.studio",
+  "earLength": 1.035,
+  "family": "fox",
+  "hue": 319.6,
+  "label": "hatchkind",
+  "light": 0.542,
+  "pitch": 0.912,
+  "rarity": "uncommon",
+  "sat": 0.529,
+  "size": 1.238,
+  "speciesName": "Ember Fox",
+  "spots": 1,
+  "tailLength": 1.073,
+  "tld": "studio",
+}
+`;
