@@ -59,7 +59,7 @@ export function Find() {
   const hiding = hatchPhase === "hatching";
 
   return (
-    <div className={`find${results.length ? " has-results" : ""}`} style={hiding ? { visibility: "hidden" } : undefined}>
+    <main className={`find${results.length ? " has-results" : ""}`} style={hiding ? { visibility: "hidden" } : undefined}>
       <div className="hero">
         <h1>Every name hatches.</h1>
         <p>Type a name and every free extension rises as an egg.</p>
@@ -78,7 +78,7 @@ export function Find() {
 
       {dealOpen && (
         <div className="panel deal" role="region" aria-label="The deal">
-          <header><h2>The deal</h2></header>
+          <div className="head"><h2>The deal</h2></div>
           <div className="body">
             <p>One flat price per year. It is what the registry charges plus one small fee, and it renews at the same price.</p>
             <p>WHOIS privacy is free. No add-ons. Nothing is pre-checked.</p>
@@ -101,6 +101,6 @@ export function Find() {
       </form>
 
       {demo === "playing" && <p className="demo-note" role="status">Demo: watching “moonfern” hatch. Type to try your own.</p>}
-    </div>
+    </main>
   );
 }

@@ -62,7 +62,7 @@ export function Grove() {
   if (counts.sleeping) parts.push(`${counts.sleeping} sleeping`);
 
   return (
-    <>
+    <main>
       {names.map((n) => <Tag key={n.domain} domain={n.domain} state={n.state} list={false} />)}
       {names.length === 0 ? (
         <div className="panel grove-empty" role="region" aria-label="Empty grove">
@@ -81,6 +81,6 @@ export function Grove() {
           {groveNames.length > 0 && names.some((n) => SAMPLES.some((s) => s.domain === n.domain)) && <span className="notice"><span className="sample-tag">Sample grove.</span> These are not your domains.</span>}
         </div>
       )}
-    </>
+    </main>
   );
 }

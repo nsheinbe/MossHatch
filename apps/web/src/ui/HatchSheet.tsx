@@ -46,7 +46,7 @@ export function HatchSheet() {
 
   return (
     <aside className="panel side" role="region" aria-label={`Hatch ${r.domain}`}>
-      <header><h2 ref={head} tabIndex={-1}>{r.domain}</h2></header>
+      <div className="head"><h2 ref={head} tabIndex={-1}>{r.domain}</h2></div>
       <div className="body">
         <p className="notice"><span className="sample-tag">Preview.</span> Nothing is bought or charged. Prices are sample prices.</p>
         <dl className="rows">

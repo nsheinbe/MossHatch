@@ -18,7 +18,7 @@ export function CardPanel() {
   };
   return (
     <aside className="panel side" role="region" aria-label={`${card.domain} has hatched`}>
-      <header><h2 ref={head} tabIndex={-1}>{card.domain} hatched</h2></header>
+      <div className="head"><h2 ref={head} tabIndex={-1}>{card.domain} hatched</h2></div>
       <div className="body">
         <img className="card-img" src={card.image} alt={`Portrait of ${card.domain}, a ${card.species}`} width={512} height={640} />
         <p style={{ marginTop: 10 }}><strong>{card.species}</strong>. Hatched {card.hatchedOn}.</p>

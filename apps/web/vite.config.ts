@@ -25,11 +25,27 @@ function staticPrices(): Plugin {
   };
 }
 
+/** Strip comments and indentation from GLSL imported with ?raw (keeps line breaks for #directives). */
+function glslMinify(): Plugin {
+  return {
+    name: "mosshatch-glsl-minify",
+    enforce: "pre",
+    transform(code, id) {
+      if (!/\.(glsl|vert|frag)\?raw$/.test(id)) return null;
+      const m = /^export default (".*")\s*;?\s*$/s.exec(code);
+      if (!m) return null;
+      const src: string = JSON.parse(m[1]!);
+      const out = src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").map((l) => l.replace(/\/\/.*$/, "").trim()).filter(Boolean).join("\n");
+      return { code: `export default ${JSON.stringify(out)};`, map: null };
+    },
+  };
+}
+
 // The debug entry (?debug=states via /debug.html) is a review tool. It is only part of a build when asked for.
 const withDebug = process.env.MOSSHATCH_DEBUG_ENTRY === "1";
 
 export default defineConfig({
-  plugins: [react(), staticPrices()],
+  plugins: [glslMinify(), react(), staticPrices()],
   build: {
     target: "es2022",
     modulePreload: { polyfill: false },

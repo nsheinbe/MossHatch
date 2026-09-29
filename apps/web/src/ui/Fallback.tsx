@@ -13,7 +13,7 @@ export function Fallback() {
     setRes(r ? r.results : []); setBusy(false);
   };
   return (
-    <main className="static-find">
+    <main className="static-find" tabIndex={0}>
       <h1>Every name hatches.</h1>
       <p className="lede">Type a name and see what is open.</p>
       <div id="boot-panel" className="boot-panel" role="status">

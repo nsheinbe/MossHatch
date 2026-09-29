@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 export interface PartOpts {
   color: THREE.ColorRepresentation;
@@ -60,9 +59,8 @@ export class GeoBuilder {
   }
 
   build(): THREE.BufferGeometry {
-    const g = mergeGeometries(this.parts, false);
+    const g = mergeNonIndexed(this.parts);
     for (const p of this.parts) p.dispose();
-    if (!g) throw new Error("empty geometry");
     g.computeBoundingSphere();
     return g;
   }
@@ -84,3 +82,19 @@ export function xf(p: [number, number, number], r: [number, number, number] = [0
   return new THREE.Matrix4().compose(new THREE.Vector3(...p), q.clone(), new THREE.Vector3(sc[0], sc[1], sc[2]));
 }
 void m4;
+
+/** Concatenate non-indexed geometries that share the same attribute set. */
+function mergeNonIndexed(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  if (!parts.length) throw new Error("empty geometry");
+  const out = new THREE.BufferGeometry();
+  for (const name of Object.keys(parts[0]!.attributes)) {
+    const first = parts[0]!.attributes[name] as THREE.BufferAttribute;
+    const size = first.itemSize;
+    const total = parts.reduce((a, p) => a + p.attributes[name]!.count, 0);
+    const arr = new Float32Array(total * size);
+    let off = 0;
+    for (const p of parts) { const a = p.attributes[name] as THREE.BufferAttribute; arr.set(a.array as Float32Array, off); off += a.count * size; }
+    out.setAttribute(name, new THREE.BufferAttribute(arr, size));
+  }
+  return out;
+}

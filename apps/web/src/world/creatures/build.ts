@@ -106,7 +106,7 @@ export function buildCreatureGeometry(t: Traits): THREE.BufferGeometry {
       b.add(cone, xf([0, 0.75, 0.1], [0, 0, 0], [0.03, 0.2, 0.3]), { color: accent, part: P.koi, pivot: [0, 0.5, 0.1] });
       for (const sx of [-1, 1]) b.add(cone, xf([sx * 0.26, 0.42, 0.35], [0, 0, sx * -1.2], [0.05, 0.22, 0.12]), { color: accent, part: P.koi, pivot: [0, 0.5, 0.3] });
       // Clockwork ring on the back.
-      b.add(new THREE.TorusGeometry(1, 0.28, 6, 12), xf([0, 0.76, -0.1], [Math.PI / 2, 0, 0], 0.09), { color: "#c8a35a", part: P.gear, pivot: [0, 0.76, -0.1] });
+      b.add(cyl, xf([0, 0.76, -0.1], [0, 0, 0], [0.1, 0.05, 0.1]), { color: "#c8a35a", part: P.gear, pivot: [0, 0.76, -0.1] });
       break;
     }
   }
