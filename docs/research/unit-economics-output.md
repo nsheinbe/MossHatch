@@ -53,7 +53,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 1.25 | 1.50 |
-| .ai | 8.25 | 5.75 |
+| .ai | 8.25 | 5.50 |
 | .dev | 1.25 | 1.50 |
 | .io | 4.75 | 3.50 |
 | .app | 1.50 | 1.75 |
@@ -64,7 +64,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 3.00 | 3.00 |
-| .ai | 9.75 | 7.25 |
+| .ai | 9.75 | 7.00 |
 | .dev | 3.00 | 3.00 |
 | .io | 6.50 | 5.00 |
 | .app | 3.25 | 3.25 |
@@ -75,7 +75,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 4.00 | 4.00 |
-| .ai | 10.75 | 8.50 |
+| .ai | 10.75 | 8.00 |
 | .dev | 4.00 | 4.25 |
 | .io | 7.50 | 6.00 |
 | .app | 4.25 | 4.25 |
@@ -86,7 +86,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 1.00 | 1.25 |
-| .ai | 6.25 | 4.75 |
+| .ai | 6.25 | 4.25 |
 | .dev | 1.25 | 1.25 |
 | .io | 4.50 | 3.25 |
 | .app | 1.25 | 1.50 |
@@ -97,7 +97,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 2.75 | 2.75 |
-| .ai | 8.00 | 6.25 |
+| .ai | 8.00 | 6.00 |
 | .dev | 2.75 | 3.00 |
 | .io | 6.00 | 4.75 |
 | .app | 3.00 | 3.00 |
@@ -108,7 +108,7 @@
 | TLD | first order F* | renewal F* |
 |---|---|---|
 | .com | 3.75 | 3.75 |
-| .ai | 9.00 | 7.25 |
+| .ai | 9.00 | 7.00 |
 | .dev | 4.00 | 4.00 |
 | .io | 7.00 | 5.75 |
 | .app | 4.00 | 4.00 |
@@ -127,18 +127,19 @@
 
 ## Sensitivity: expected contribution per domain-year at OpenSRS Essential wholesale
 
-Each row changes one assumption from the base case; F is $4.00 for .com and .app, $9.00 for .studio, .io, .ai.
+Each row changes one assumption from the base case; F is $4.00 for .com and .app, $9.00 for .studio and .io, $10.00 for .ai.
 
-| case | .com (F=$4.00) | .app (F=$4.00) | .studio (F=$9.00) | .io (F=$9.00) | .ai (F=$9.00) |
+| case | .com (F=$4.00) | .app (F=$4.00) | .studio (F=$9.00) | .io (F=$9.00) | .ai (F=$10.00) |
 |---|---|---|---|---|---|
-| base case | 2.62 | 2.40 | 5.91 | 3.95 | 0.92 |
-| disputes 0.25% (first) / 0.5% (renewal) | 2.73 | 2.52 | 6.09 | 4.15 | 1.17 |
-| disputes 1.0% / 2.0% | 2.40 | 2.16 | 5.54 | 3.56 | 0.42 |
-| disputes 2.0% / 3.0% (Stripe risk review would intervene) | 1.96 | 1.68 | 4.82 | 2.77 | -0.57 |
-| refunds 8% of first orders | 2.27 | 2.02 | 5.13 | 0.42 | -5.12 |
-| all cards international (share 100%) | 2.37 | 2.09 | 5.15 | 3.08 | -0.59 |
-| Stripe Tax on every order (0.5%) | 2.52 | 2.28 | 5.62 | 3.62 | 0.35 |
-| no upstream refund on cancel (AGP pool exhausted) | 2.21 | 1.83 | 4.53 | 3.95 | 0.92 |
+| base case | 2.62 | 2.40 | 5.91 | 3.95 | 1.85 |
+| disputes 0.25% (first) / 0.5% (renewal) | 2.73 | 2.52 | 6.09 | 4.15 | 2.10 |
+| disputes 1.0% / 2.0% | 2.40 | 2.16 | 5.54 | 3.56 | 1.35 |
+| disputes 2.0% / 3.0% (Stripe risk review would intervene) | 1.96 | 1.68 | 4.82 | 2.77 | 0.35 |
+| refunds 8% of first orders | 2.27 | 2.02 | 5.13 | 0.42 | -4.24 |
+| all cards international (share 100%) | 2.37 | 2.09 | 5.15 | 3.08 | 0.32 |
+| Stripe Tax on every order (0.5%) | 2.52 | 2.28 | 5.62 | 3.62 | 1.27 |
+| no upstream refund on cancel (AGP pool exhausted) | 2.21 | 1.83 | 4.53 | 3.95 | 1.85 |
+| wholesale deposits funded by card or PayPal (+3.09% of wholesale) | 2.15 | 1.76 | 4.34 | 2.11 | -1.55 |
 
 ## Renewal-cycle contribution per domain-year (renewal order, one year)
 
@@ -149,18 +150,22 @@ Each row changes one assumption from the base case; F is $4.00 for .com and .app
 | .app | 21.00 | 4.00 | 25.00 | 1.08 | 2.31 per 1 yr |
 | .studio | 51.00 | 9.00 | 60.00 | 2.18 | 5.79 per 1 yr |
 | .io | 60.00 | 9.00 | 69.00 | 2.46 | 5.40 per 1 yr |
-| .ai | 222.00 | 18.00 | 240.00 | 7.80 | 7.01 per 2 yr |
+| .ai | 222.00 | 20.00 | 242.00 | 7.86 | 8.92 per 2 yr |
 
 ## Monthly fixed-cost scenarios and break-even volume
 
-- lean (Vercel Pro 1 seat, Neon usage, Resend Free, KMS, fixed-IP gateway VPS): about $70/month
-- with Vercel Static IPs ($100): about $184/month
+- recommended path (Vercel Pro 20, Static IPs 100, Neon Scale 42 to 45, Resend Pro 20, KMS 4, domains and monitoring 15): about $201 to $204/month (Neon Scale = always-on 0.25 CU: 187.5 CU-h x $0.222 = $41.63 plus storage; Neon, gateway and monitoring are our own estimates; Private Data Transfer on Static IPs is extra)
+- gateway path (Vercel Pro 20, Neon Scale 42 to 45, Resend Free, KMS 4, gateway 6, domains and monitoring 15): about $87 to $90/month (Neon Scale = always-on 0.25 CU: 187.5 CU-h x $0.222 = $41.63 plus storage; Neon, gateway and monitoring are our own estimates; Private Data Transfer on Static IPs is extra)
 
-| fixed $/mo | expected contribution per domain-year | domain-years/month to break even |
-|---|---|---|
-| 70 | 1.50 | 47 |
-| 70 | 2.50 | 28 |
-| 70 | 3.00 | 24 |
-| 184 | 1.50 | 123 |
-| 184 | 2.50 | 74 |
-| 184 | 3.00 | 62 |
+| scenario | fixed $/mo | expected contribution per domain-year | domain-years/month to break even |
+|---|---|---|---|
+| recommended | 201 to 204 | 1.50 | 134 to 136 |
+| recommended | 201 to 204 | 2.50 | 81 to 82 |
+| recommended | 201 to 204 | 3.00 | 67 to 68 |
+| gateway | 87 to 90 | 1.50 | 58 to 60 |
+| gateway | 87 to 90 | 2.50 | 35 to 36 |
+| gateway | 87 to 90 | 3.00 | 29 to 30 |
+
+## Premium-priced names (why they are not sold at launch)
+
+- A renewal at wholesale $108.90 with the standard fee $4.00: customer pays $112.90, expected contribution $-1.50 per domain-year.
