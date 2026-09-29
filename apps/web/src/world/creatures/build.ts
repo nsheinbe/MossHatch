@@ -7,7 +7,18 @@ const cone = new THREE.ConeGeometry(1, 1, 8, 1);
 const cyl = new THREE.CylinderGeometry(1, 1, 1, 8);
 const box = new THREE.BoxGeometry(1, 1, 1);
 const dome = new THREE.SphereGeometry(1, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
-const wing = new THREE.PlaneGeometry(1, 1, 3, 3);
+const wing = (() => {
+  // Kite-shaped wing: narrow at the body (x=0), broad and rounded at the tip (x=1), swept back.
+  const g = new THREE.PlaneGeometry(1, 1, 6, 4);
+  const p = g.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < p.count; i++) {
+    const u = p.getX(i) + 0.5, v = p.getY(i);
+    const w = Math.sin(Math.min(1, u * 1.15) * Math.PI * 0.55) * (1 - 0.18 * u);
+    p.setXYZ(i, u, v * w * 1.5 - u * 0.25, Math.sin(u * 2) * 0.03);
+  }
+  g.computeVertexNormals();
+  return g;
+})();
 const INK = "#0c1122";
 const CREAM = "#f1ead8";
 
@@ -57,8 +68,8 @@ export function buildCreatureGeometry(t: Traits): THREE.BufferGeometry {
         b.add(sph, xf([sx * 0.07, 1.0, 0.34], [0, 0, 0], 0.045), { color: INK, part: P.eye, pivot: [sx * 0.07, 1.0, 0.34] });
         b.add(cone, xf([sx * 0.06, 1.16, 0.33], [-0.5, 0, sx * -0.35], [0.012, 0.22, 0.012]), { color: dark, part: P.head, pivot: [0, 0.95, 0.2] });
         // Two wing pairs: large forewing, small hindwing.
-        b.add(wing, xf([sx * 0.42, 0.98, 0.04], [Math.PI / 2, 0, 0], [0.76, 0.5, 1]), { color: accent, jitter: 0.06, part: P.wing, pivot: [sx * 0.06, 0.95, 0.02] });
-        b.add(wing, xf([sx * 0.32, 0.93, -0.22], [Math.PI / 2, 0, 0], [0.55, 0.36, 1]), { color: hsl(t.accentHue, 0.5, 0.5), part: P.wing, pivot: [sx * 0.06, 0.93, -0.1] });
+        b.add(wing, xf([sx * 0.06, 0.98, 0.04], [Math.PI / 2, 0, sx > 0 ? 0 : Math.PI], [0.8, 1.0, 1]), { color: accent, jitter: 0.06, part: P.wing, pivot: [sx * 0.06, 0.95, 0.02] });
+        b.add(wing, xf([sx * 0.06, 0.93, -0.16], [Math.PI / 2, 0, sx > 0 ? 0 : Math.PI], [0.55, 0.75, 1]), { color: hsl(t.accentHue, 0.5, 0.5), part: P.wing, pivot: [sx * 0.06, 0.93, -0.1] });
       }
       break;
     }

@@ -70,7 +70,7 @@ button.chip:hover { border-color: var(--lantern); }
 .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .chips-list { position: absolute; left: 0; right: 0; bottom: calc(clamp(24px, 9vh, 96px) + 112px); display: flex; gap: 8px; overflow-x: auto; padding: 4px 16px; scroll-snap-type: x proximity; }
 .chips-list .chip { position: static; transform: none !important; flex: 0 0 auto; scroll-snap-align: start; }
-.alternatives { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(clamp(24px, 9vh, 96px) + 112px); display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: min(640px, 100vw - 32px); }
+.alternatives { position: absolute; left: 50%; transform: translateX(-50%); top: clamp(190px, 27vh, 260px); display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: min(640px, 100vw - 32px); }
 .alternatives .lead { width: 100%; text-align: center; text-shadow: 0 1px 8px var(--ink); }
 
 /* Buttons */
@@ -127,9 +127,23 @@ details summary { cursor: pointer; min-height: 32px; }
 @media (max-width: 720px) {
   .nav { margin-left: 4px; }
   .nav button { padding: 0 10px; }
-  .tools button .label { display: none; }
+  .tools button .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .find.has-results .hero p { display: none; }
   .hero { top: 64px; }
   .side { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 62vh; border-radius: 16px 16px 0 0; }
   .site-header .wordmark span { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .flash.on { animation: none; } * { scroll-behavior: auto !important; } }
+
+.chip::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1px; height: calc(var(--gap, 0) * 62px + 8px); background: linear-gradient(rgba(241,234,216,.55), transparent); pointer-events: none; }
+.chips-list .chip::after { display: none; }
+@media (max-width: 720px) {
+  .site-header { flex-wrap: wrap; }
+  .nav { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; background: var(--glass); border-top: 1px solid var(--glass-border); backdrop-filter: blur(16px); z-index: 25; pointer-events: auto; }
+  .nav button { flex: 1; min-height: 48px; }
+  .pool-input { bottom: calc(72px + env(safe-area-inset-bottom)); }
+  .chips-list { bottom: calc(72px + env(safe-area-inset-bottom) + 108px); }
+  .demo-note { bottom: calc(72px + env(safe-area-inset-bottom) + 66px); white-space: normal; max-width: calc(100vw - 32px); text-align: center; }
+  .alternatives { top: 150px; }
+  .grove-bar { bottom: calc(72px + env(safe-area-inset-bottom)); }
+}

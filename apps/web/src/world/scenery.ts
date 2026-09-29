@@ -8,7 +8,7 @@ export const LANTERNS: [number, number, number][] = [[-4.4, 1.7, 1.2], [4.6, 1.8
 
 export interface Scenery { meshes: THREE.Mesh[]; dispose(): void }
 
-const bankY = (r: number) => -0.62 * (1 - smooth(POOL_R - 0.05, POOL_R + 0.7, r));
+const bankY = (r: number) => -0.5 * (1 - smooth(POOL_R - 0.05, POOL_R + 0.9, r));
 function smooth(a: number, b: number, x: number) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
 
 export function groundHeight(x: number, z: number): number {

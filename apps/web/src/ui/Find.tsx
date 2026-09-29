@@ -59,7 +59,7 @@ export function Find() {
   const hiding = hatchPhase === "hatching";
 
   return (
-    <div className="find" style={hiding ? { visibility: "hidden" } : undefined}>
+    <div className={`find${results.length ? " has-results" : ""}`} style={hiding ? { visibility: "hidden" } : undefined}>
       <div className="hero">
         <h1>Every name hatches.</h1>
         <p>Type a name and every free extension rises as an egg.</p>
