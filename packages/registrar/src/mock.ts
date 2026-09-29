@@ -1,15 +1,17 @@
-import { fnv1a, formatUsd, splitDomain, usd, normalizeDomain, type Money } from "@mosshatch/core";
-import type { Quote, RegistrarAdapter } from "./types";
+import { feePerYear, fnv1a, formatUsd, splitDomain, usd, normalizeDomain, type Money } from "@mosshatch/core";
+import type { Quote, RegistrarAdapter } from "./types.ts";
 
-/** Sample all-in first-year prices in cents (plan section 4.2). Labelled "sample price" in the UI. */
-const SAMPLE_PRICE: Record<string, { cents: number; years: number }> = {
-  com: { cents: 1925, years: 1 },
-  dev: { cents: 2100, years: 1 },
-  app: { cents: 2500, years: 1 },
-  studio: { cents: 6000, years: 1 },
-  io: { cents: 6900, years: 1 },
-  ai: { cents: 24200, years: 2 },
-};
+/** Sample per-year wholesale (USD cents; plan 4.1, `.com` and `.studio` at their announced next prices). */
+export const SAMPLE_WHOLESALE_CENTS: Record<string, number> = { com: 1525, dev: 1700, app: 2100, studio: 5100, io: 6000, ai: 11100 };
+const YEARS: Record<string, number> = { ai: 2 };
+
+/** Sample all-in first-order price = (wholesale + D-003 flat fee) x years. Labelled "sample price" in the UI. */
+export const SAMPLE_PRICE: Record<string, { cents: number; years: number }> = Object.fromEntries(
+  Object.entries(SAMPLE_WHOLESALE_CENTS).map(([tld, w]) => {
+    const years = YEARS[tld] ?? 1;
+    return [tld, { cents: (w + feePerYear(usd(w)).cents) * years, years }];
+  }),
+);
 
 export const EXTENSIONS = ["com", "ai", "dev", "io", "app", "studio"] as const;
 

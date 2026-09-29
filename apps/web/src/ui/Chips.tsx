@@ -1,0 +1,34 @@
+import { useEffect, useRef } from "react";
+import { handle } from "../world/handle";
+import type { Result } from "../store";
+
+/** Registers a DOM element with the world so it is positioned each frame by projection. */
+export function useAnchor(id: string, list: boolean) {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const w = handle.world, el = ref.current;
+    if (!w || !el || list) return;
+    w.overlay.set(id, el);
+    return () => { w.overlay.delete(id); };
+  }, [id, list]);
+  return ref;
+}
+
+export function Chip({ r, list, row, onPick }: { r: Result; list: boolean; row: number; onPick: (r: Result) => void }) {
+  const ref = useAnchor(r.domain, list);
+  const { label, tld } = { label: r.domain.slice(0, r.domain.indexOf(".")), tld: r.domain.slice(r.domain.indexOf(".")) };
+  if (!r.available) {
+    return (
+      <div ref={ref as React.RefObject<HTMLDivElement>} className="chip taken" data-row={row} role="group" aria-label={`${r.domain} is taken`}>
+        <span><span className="dot" aria-hidden="true" style={{ background: "var(--st-sleeping)" }} /><span className="name">{label}</span><span className="ext">{tld}</span></span>
+        <small>Taken. Sleeping on the far bank.</small>
+      </div>
+    );
+  }
+  return (
+    <button ref={ref as React.RefObject<HTMLButtonElement>} type="button" className="chip" data-row={row} onClick={() => onPick(r)} aria-label={`${r.domain}, ${r.price}${r.years === 2 ? " for two years" : ""}, sample price. Hatch it.`}>
+      <span><span className="dot" aria-hidden="true" style={{ background: "var(--st-egg)" }} /><span className="name">{label}</span><span className="ext">{tld}</span> <span className="price">{r.price}</span></span>
+      <small>{r.years === 2 ? "for 2 years · " : ""}renews the same · <span className="sample-tag">sample price</span></small>
+    </button>
+  );
+}

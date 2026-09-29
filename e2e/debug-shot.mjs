@@ -1,0 +1,16 @@
+import { chromium } from "@playwright/test";
+const [family, out, w = "1600", h = "900", cam = ""] = process.argv.slice(2);
+const b = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+const p = await b.newPage({ viewport: { width: +w, height: +h }, deviceScaleFactor: 1 });
+const logs = [];
+p.on("console", (m) => { if (m.type() !== "debug" && !m.text().includes("DevTools")) logs.push(`[${m.type()}] ${m.text()}`); });
+p.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
+await p.goto(`http://127.0.0.1:5173/debug.html?debug=states&family=${family}`);
+await p.waitForFunction(() => window.__mh);
+await p.evaluate(() => window.__mh.pause());
+if (cam) await p.evaluate((c) => { const [x, z] = c.split(",").map(Number); window.__mh.focus(x, z); }, cam);
+await p.evaluate(() => window.__mh.step(6));
+await p.waitForTimeout(200);
+await p.screenshot({ path: out });
+console.log(logs.join("\n") || "no console output");
+await b.close();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveTraits, deriveCreatureState, mossFromAge, feePerYear, usd, formatUsd } from "./index";
+import { deriveTraits, deriveCreatureState, mossFromAge, feePerYear, usd, formatUsd } from "./index.ts";
 
 describe("deriveTraits", () => {
   it("is deterministic and case-insensitive", () => {

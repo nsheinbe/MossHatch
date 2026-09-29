@@ -1,1 +1,1 @@
-export * from "./types"; export * from "./mock";
+export * from "./types.ts"; export * from "./mock.ts";

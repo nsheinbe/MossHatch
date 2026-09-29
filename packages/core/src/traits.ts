@@ -1,4 +1,4 @@
-import { fnv1a, normalizeDomain, stream } from "./hash";
+import { fnv1a, normalizeDomain, stream } from "./hash.ts";
 
 export type Family = "fox" | "moth" | "beetle" | "koi";
 export type Rarity = "common" | "uncommon" | "rare";

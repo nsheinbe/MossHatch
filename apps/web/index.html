@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#131a33" />
+  <title>Mosshatch: every name hatches</title>
+  <meta name="description" content="Find a domain name and watch it hatch. Every domain you own is a living creature in a grove at dusk." />
+  <link rel="preload" href="/fonts/young-serif-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="/fonts/atkinson-hyperlegible-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <script src="/boot.js"></script>
+  <script type="module" src="/src/main.tsx"></script>
+</head>
+<body>
+  <div id="root">
+    <header class="site-header"><span class="wordmark">Mosshatch</span></header>
+    <main class="static-find">
+      <h1>Every name hatches.</h1>
+      <p class="lede">Type a name and every free extension rises as an egg.</p>
+      <div id="boot-panel" class="boot-panel" role="status" hidden>
+        <p id="boot-title" class="boot-title"></p>
+        <p id="boot-msg" class="boot-msg"></p>
+      </div>
+      <form class="static-search" role="search">
+        <label for="static-name">What will you name it?</label>
+        <input id="static-name" type="text" disabled placeholder="Search needs JavaScript" />
+      </form>
+      <h2 class="prices-title">Sample prices</h2>
+      <ul class="static-prices"><!--PRICES--></ul>
+      <p class="fineprint">Sample prices as of <!--ASOF-->. Nothing is for sale in this preview.</p>
+      <noscript><p class="boot-note">Mosshatch needs JavaScript to search and to light the grove. The sample prices above are readable without it.</p></noscript>
+    </main>
+  </div>
+</body>
+</html>
