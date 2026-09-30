@@ -454,6 +454,13 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 **Why.** It adds no image pipeline and no uploaded pixels, and it keeps the cards build free of script and free of a renderer.
 **Would change if.** Previews without an image matter: many link-preview services do not render SVG (not tested against any of them), so a server-side or build-time PNG render of the same portrait would be needed.
 
+## D-058 Launch sequence: waitlist-only site, owner dogfooding, audit, entity, then invite-only launch
+**Status:** Decided by you on 2026-09-30.
+**Context.** The code for all six phases is built and tested against fakes and, for the registrar, the Openprovider sandbox. What stands between it and customers is real-world work: a legal entity, reviewed customer terms, an external audit and live provider accounts.
+**Choice.** (1) Finish the build. (2) Put mosshatch.com online as a waitlist-only demo: practice hatches with sample prices, a permanent "not open yet" banner, no real sign-up or payment. (3) The owner dogfoods the live path with their own domains and card (this is the plan's Phase 6 live rehearsal). (4) A thorough audit: external penetration test and retest, counsel review of the registrar contract and customer terms. (5) Form the entity (an LLC, or a Delaware C-corp if raising money is likely) and move the live Stripe and registrar accounts into its name. (6) Real launch by invite from the waitlist in small batches with a daily registration cap, then open; the Nest and agents follow as a second launch.
+**Why.** Demand is the largest unknown and a waitlist measures it cheaply; strangers only pay once the terms are reviewed and the liability sits in an entity.
+**Would change if.** You decide to raise money (entity type), the waitlist signal is weak (stay small), or the audit finds issues (launch waits for fixes).
+
 ## Where to veto
 An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 and D-050 are records with nothing to veto.
 
@@ -503,3 +510,4 @@ An entry with status Needs your decision is answered in `PLAN.md` under Open dec
 | D-055 | Mandates kept 3 years after the last renewal charge | new assumption to add |
 | D-056 | OAuth metadata-fetch and authorize rate limits | new assumption to add |
 | D-057 | The computed SVG as the link-preview image | new assumption to add |
+| D-058 | Launch sequence: waitlist-only, dogfood, audit, entity, invite-only launch | decided by you |
