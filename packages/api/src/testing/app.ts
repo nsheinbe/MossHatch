@@ -44,11 +44,11 @@ export async function createTestApp(router?: Router, config: Partial<Config> = {
       if (opts.authorization) h.set("authorization", opts.authorization);
       const isBody = opts.body !== undefined;
       const after = () => { for (const [k, v] of Object.entries(opts.headers ?? {})) h.set(k, v); };
-      if (method !== "GET" && opts.browser !== false) {
+      if (method !== "GET" && method !== "HEAD" && opts.browser !== false) {
         h.set("origin", TEST_ORIGIN); h.set("sec-fetch-site", "same-origin"); h.set("content-type", "application/json"); h.set("x-mh-client", "web");
       }
       after();
-      return new Request(TEST_ORIGIN + path, { method, headers: h, body: isBody ? JSON.stringify(opts.body) : method === "GET" ? undefined : "" });
+      return new Request(TEST_ORIGIN + path, { method, headers: h, body: isBody ? JSON.stringify(opts.body) : method === "GET" || method === "HEAD" ? undefined : "" });
     },
     async call(method, path, opts) {
       if (!app.router) throw new Error("no router");

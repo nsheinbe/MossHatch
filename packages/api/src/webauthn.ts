@@ -62,7 +62,7 @@ export function coseAlg(pub: Uint8Array): number {
 }
 
 /** Options for an assertion. `challenge` is supplied by step-up (a digest that binds the action); login uses a random one. */
-export function assertionOptions(ctx: AppContext, o: { challenge?: string; allowCredentialIds?: string[] }) {
+export function assertionOptions(ctx: AppContext, o: { challenge?: string | Uint8Array<ArrayBuffer>; allowCredentialIds?: string[] }) {
   return generateAuthenticationOptions({
     rpID: ctx.config.rpId, userVerification: "required", timeout: CEREMONY_TTL_MS,
     challenge: o.challenge, allowCredentials: o.allowCredentialIds?.map((id) => ({ id })),

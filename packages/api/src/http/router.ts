@@ -15,7 +15,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
 };
 
 export class HttpError extends Error {
-  constructor(public status: number, public code: string, message?: string, public headers?: Record<string, string>) { super(message ?? code); }
+  constructor(public status: number, public code: string, message?: string, public headers?: Record<string, string>, public extra?: Record<string, unknown>) { super(message ?? code); }
 }
 
 /** Registers routes and refuses any without a principal declaration (deny by default). */
@@ -57,7 +57,7 @@ export class Router {
     try {
       return finish(await this.run(ctx, request));
     } catch (e) {
-      if (e instanceof HttpError) return finish({ status: e.status, json: { error: { code: e.code, message: e.message === e.code ? undefined : e.message } }, headers: e.headers });
+      if (e instanceof HttpError) return finish({ status: e.status, json: { error: { code: e.code, message: e.message === e.code ? undefined : e.message, ...e.extra } }, headers: e.headers });
       // Unexpected: log a class name only (never the message, which may carry values), answer generically.
       console.error("unhandled", (e as Error)?.name, process.env.MH_DEBUG_ERRORS ? (e as Error).message : "");
       return finish({ status: 500, json: { error: { code: "internal" } } });
