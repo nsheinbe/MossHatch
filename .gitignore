@@ -7,3 +7,4 @@ playwright-report
 __pycache__
 .env*
 !.env.example
+api/_bundle.mjs

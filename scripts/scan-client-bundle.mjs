@@ -19,7 +19,8 @@ export function scanText(text, opts = {}) {
   for (const v of opts.values ?? []) if (v.length >= 8 && text.includes(v)) hits.push("a server variable's value");
   return hits;
 }
-function* walk(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) yield* walk(p); else if (!/\.(woff2?|png|jpg|ico)$/.test(e.name)) yield p; } }
+function* walk(d) {
+  if (fs.statSync(d).isFile()) { yield d; return; } for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) yield* walk(p); else if (!/\.(woff2?|png|jpg|ico)$/.test(e.name)) yield p; } }
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const dirs = args.filter((a) => !a.startsWith("--"));

@@ -1,4 +1,7 @@
-import { bootFromEnv, NotConfigured, type Boot } from "@mosshatch/api/boot";
+// The bundle is built by `npm run build` (scripts/build-api.mjs) before Vercel packages the function.
+import { bootFromEnv, NotConfigured } from "./_bundle.mjs";
+
+type Boot = Awaited<ReturnType<typeof bootFromEnv>>;
 
 /**
  * One Vercel function for every /api route. Until DATABASE_URL and the adapters are configured for the deployment it answers 503
