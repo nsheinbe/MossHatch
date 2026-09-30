@@ -321,8 +321,92 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 **Why.** A timer would be fake urgency, and "renews the same" would be false the first time a wholesale price moves.
 **Would change if.** You want the brief's chip wording exactly (then the promise needs a renewal price the upstream guarantees, which the research did not find in the OpenSRS terms), or counsel prefers different disclosure wording.
 
+## D-039 Transfer-in capture timing
+**Status:** Proposed default (departs from D-002 and PLAN 4.3b; decided during the build, 2026-09-30).
+**Context.** D-002 captures a transfer-in at submission and refunds it on failure, because a transfer can take about two weeks and a Checkout card hold lasts about seven days. Capturing at submission charges the customer for a transfer that has not happened and turns every failed transfer into a refund, which keeps Stripe's fee and is open to a dispute.
+**Choice.** Authorize at Checkout after the registrant email has confirmed the transfer. Capture only when the adapter reports `completed` and the name reads back as ours. If the transfer is still pending 48 hours before the card hold ends (`EARLY_CAPTURE_BEFORE_HOLD_END_MS` in `packages/api/src/transfers/policy.ts`), capture then, keep showing the transfer as pending, tell the customer why, and refund in full if it later fails. A failure before capture releases the hold and charges nothing.
+**Why.** A transfer that fails inside the hold costs nothing, the transfer is never shown as complete early (the Phase 5 exit criterion), and 48 hours stays clear of the order machine's 36-hour alarm.
+**Would change if.** Stripe test mode shows shorter holds than documented for some cards (then capture earlier), or counsel's answer on RAA 3.7.4 (D-002) requires capture before the upstream request.
+
+## D-040 Off-session charges in the capture-failed ladder
+**Status:** Proposed default (narrows PLAN 4.3b "Order state machine" and `docs/runbooks/payment-mismatch.md`; decided during the build, 2026-09-30).
+**Context.** When a name is registered but its capture fails and the PaymentIntent is cancelled or expired, the plan charges "a saved payment method off-session if one exists". A review found this could reach a card saved for another name, or a renewal mandate whose price ceiling is below the amount, which the consents behind C-31 and C-38 do not cover.
+**Choice.** The ladder charges off-session only the card this order itself saved at its opt-in Checkout, or else the card on the live renewal mandate the person signed for this same domain, and only when the amount is within that mandate's price ceiling. It never charges off-session for an agent-approved order. Otherwise the 7-day pay link follows (`offSessionCard` in `packages/api/src/orders/machine.ts`). This is the rule the renewal decline ladder already follows: one domain, one ceiling.
+**Why.** An off-session charge is only as good as the consent behind it, and each consent names one domain and one ceiling.
+**Would change if.** Counsel reads the auto-renew authorisation as covering other charges on the same account.
+
+## D-041 MCP server written without the SDK
+**Status:** Proposed default (departs from D-013 and D-019; decided during the build, 2026-09-30).
+**Context.** D-013 and D-019 put the MCP server on `@modelcontextprotocol/server` 2.x with the SDK's default `legacy: 'stateless'`. The build contract allows no new dependency without a reason the lead approves, and the SDK handler does no Origin or token checks of its own (MCP dossier F22), so those have to run before it anyway.
+**Choice.** A stateless JSON-RPC 2.0 handler in `packages/api/src/mcp/server.ts` behind `POST /mcp`. It targets the 2026-07-28 revision and answers 2025-era clients (2025-11-25, 2025-06-18, 2025-03-26) per request, as the SDK's stateless legacy mode does. Batches are refused, a notification runs nothing, the Origin allow-list and token check run first, and GET and DELETE answer 405.
+**Why.** One dependency fewer on the path that returns secrets, and every branch of the handler is covered by the ST-34, ST-81 to ST-84 and ST-136 tests.
+**Would change if.** A real client disagrees with the handler on a wire detail (the 2026-07-28 shapes of `server/discover`, `resultType`, `ttlMs` and `cacheScope` come from the dossier and are unverified; no real client has connected), or the SDK gains Origin and token hooks worth adopting.
+
+## D-042 OAuth error bodies follow RFC 6749
+**Status:** Proposed default (departs from the `{error:{code}}` rule in `docs/BUILD-CONTRACT.md`; decided during the build, 2026-09-30).
+**Context.** Every Mosshatch API error body is `{error:{code}}`. OAuth clients parse token, revocation and registration errors as RFC 6749 section 5.2 and RFC 7591 define them (`{"error": "invalid_grant"}`), and read authorization errors from the redirect query.
+**Choice.** The MCP authorization server's token, revocation and client-registration endpoints answer `{"error": "<code>"}` with `Cache-Control: no-store`, and authorization errors redirect with `error`, `state` and `iss` (`packages/api/src/oauth/token.ts`, `clients.ts`, `authorize.ts`). Every other route keeps `{error:{code}}`, including the consent-screen routes the web app calls and the CLI's device flow (`/api/v1/oauth/device/code`, `/api/v1/oauth/token`), whose `authorization_pending` and `slow_down` errors only the Mosshatch CLI reads.
+**Why.** A third-party OAuth client that cannot read an error cannot recover from it; the house shape stays everywhere Mosshatch's own code is the only reader.
+**Would change if.** A third-party RFC 8628 client needs the device flow, which would then move to the RFC shape too.
+
+## D-043 hatchkind.com portraits are computed from the name
+**Status:** Proposed default (departs from PLAN Assumption 15 and the `cards.snapshot_ref` design in 4.4; decided during the build, 2026-09-30).
+**Context.** The plan had the card image be the owner's creature snapshot, a small PNG stored outside the database. Threat row 42 says a card contains computed traits and the domain string as text, never free text. An uploaded PNG is pixels the owner controls: even after strict parsing and re-encoding to IHDR, IDAT and IEND only, it can carry drawn text such as a phishing line, which no parser removes.
+**Choice.** The cards site renders each portrait as an SVG computed from the domain name and creature family (`portraitSvg` in `packages/core`) and uses the same SVG for `og:image`. The uploaded PNG is still validated, re-encoded and stored, but the cards build never fetches it and no uploaded pixel reaches hatchkind.com (`apps/cards/src/generate.ts`; test "uploaded pixels never reach hatchkind.com").
+**Why.** A computed image cannot carry anything the owner typed or drew, so the card stays inside threat row 42 without an image-review step.
+**Would change if.** You want the owner's own render on the public card (then an image review, or a server-side render from the name, is needed), or link previews need a raster image, since many preview services do not render SVG.
+
+## D-044 Dotenv output quoting
+**Status:** Proposed default (departs from PLAN 4.5 CLI and threat row 22; decided during the build, 2026-09-30).
+**Context.** PLAN 4.5 has `pull` write every value with one encoder that double-quotes and escapes backslash, quotes, newline, carriage return and `$`. A review found that Node's `--env-file` and the `dotenv` package do not unescape `\\`, `\"` or `\$`, so a file written that way loads values that differ from the stored ones.
+**Choice.** Each value gets the first of five forms that the common readers (Node's `--env-file`, `dotenv`, docker compose) and Mosshatch's own parser all read back unchanged: plain double quotes; double quotes with `\n` when a newline is the only special character; single quotes; backticks; and, only as a last resort, the escaped double-quoted form, which only `mosshatch push` reads back. `pull` names the values that needed the last form and points to `mosshatch run`. `--format shell` single-quotes (`packages/cli/src/dotenv.ts`).
+**Why.** A file that silently loads different values is worse than one that refuses. ST-89's hostile values round-trip, and a test reads the file back through `node --env-file`.
+**Would change if.** A reader you rely on handles one of the forms differently; the form choice is one function.
+
+## D-045 Agent spend is consumed at capture
+**Status:** Proposed default (departs from PLAN 4.3b "Agent-approved purchase"; decided during the build, 2026-09-30).
+**Context.** PLAN 4.3b moves an agent request's reservation to spent when the passkey approves it. Approval charges nothing: the person may never pay on Checkout, the payment may fail, or the registration may fail and the order be voided, and none of those should use up the agent's cap.
+**Choice.** A proposal reserves its quoted amount against the binding (`reserved + spent + quoted <= cap`). A database trigger on `orders` moves it from reserved to spent only when the order the approval created reaches `captured`, counting what was actually taken and never more than was reserved. A void, an expired Checkout, a failed payment or a failed registration fails the request and releases the reservation (`packages/db/migrations/0950_agents.sql`). Between approval and capture the amount stays reserved, so the cap still holds. A reservation held by an approved request that is never paid was found not to expire; a fix was in progress on 2026-09-30 (`docs/PHASE5.md`, Round 3).
+**Why.** Spent means money taken, and the cap is never exceeded because the reservation counts until then.
+**Would change if.** You want the cap to count approvals the person never paid for.
+
+## D-046 Agents cannot propose transfers in v1
+**Status:** Proposed default (as PLAN 4.4 `agent_requests` and 4.5 already state; recorded here so it can be vetoed, 2026-09-30).
+**Context.** A transfer in needs the authorization code from the losing registrar, which the person types, and the registrant confirms it by email (C-08). An agent holding a code would hold the key to someone's domain, and the code would sit in its transcript.
+**Choice.** There is no `transfer.propose` capability. The transfer routes accept a signed-in session only (`packages/api/src/transfers/routes.ts`), so a bearer token cannot start, confirm or cancel a transfer (the route walk, ST-67). Agents can read a transfer's state through `transfer.status` and the `transfer_status` MCP tool, never a code (ST-22).
+**Why.** It keeps codes out of agent transcripts and keeps the approval with the registrant (C-02).
+**Would change if.** The Transfer Policy's TAC rules take effect and counsel says an agent can act as a designated representative (PLAN 4.7 question 2), or you want agents to prepare a transfer that the person completes.
+
+## D-047 The vault AAD binds the KEK class, not the KEK id
+**Status:** Proposed default (departs from the AAD encoding in PLAN 4.3b Secrets and threat row 1; decided during the build, 2026-09-30).
+**Context.** PLAN 4.3b defines the AAD as the length-prefixed concatenation of `format_version`, `alg_id`, `domain_id`, `secret_id`, `name`, `env` and `version`, never the KEK ARN, so a re-wrap keeps it valid. Nothing in it tied a row to the production or the non-production key, and binding a KEK id or ARN would break `ReEncrypt` onto a new key.
+**Choice.** The AAD is the RFC 8785 (JCS) canonical JSON of `{alg, domain_id, env, format_version, kek_class, kind, name, secret_id, user_id, version}` for a secret, and of the matching connection fields for a stored provider credential. It names the KEK class (`vault-prod` or `vault-nonprod`), never a key id or ARN, and is recomputed from the row at decrypt, never stored (`packages/api/src/vault/envelope.ts`).
+**Why.** A re-wrap onto a new key of the same class (rotation, or the compromise drill) keeps every row valid, while a row moved between classes fails to decrypt. JCS is as unambiguous as a length prefix (keys sorted, every string quoted and escaped) and is the form the step-up challenge already uses.
+**Would change if.** The independent review (D-032) prefers the length-prefixed form; a change needs a `format_version` bump and a re-encrypt of every row.
+
+## D-048 Public pages are generated from `apps/web/pages`
+**Status:** Proposed default (decided during the build, 2026-09-30).
+**Context.** Phase 6 asks for pre-rendered public pages, and each legal document's version is the SHA-256 of its file (C-72), so a page rendered differently at every deploy would change its hash and look like a new version of the document.
+**Choice.** Page bodies are fragments in `apps/web/pages`. `scripts/render-public-pages.mjs` wraps them in one shared header, footer and draft banner and writes complete static HTML to `apps/web/public`, deterministically (no dates, no build ids). The output is committed, and `npm run build` runs the renderer with `--check` and fails when it is stale. Today 13 pages come from fragments; the fee and commitments pages and five earlier legal documents are still hand-written in `apps/web/public`.
+**Why.** A document's hash changes only when its words change, reviewers see the exact HTML in the diff, and the pages carry no script under the strict CSP.
+**Would change if.** Counsel wants the documents delivered another way, or the hand-written pages move into fragments (which changes their hashes once).
+
+## D-049 hatchkind.com is its own Vercel project, switched by `MH_CARDS_PRODUCTION`
+**Status:** Proposed default (decided during the build, 2026-09-30).
+**Context.** PLAN 4.3b puts the card host in its own project (`cards`) with no cookies and a read-only view of published cards. The cards build falls back to sample cards when it has no export, which suits previews and must never happen in production. Keying that on `VERCEL_ENV` would also trip in any other project that runs the generator.
+**Choice.** `apps/cards` is a separate Vercel project (`apps/cards/vercel.json`: build `npm run build:cards`, its own headers with no `script-src`). A production build is recognised only by `MH_CARDS_PRODUCTION=1`, set in that project's Production environment; with it, a missing `CARDS_EXPORT_URL` fails the build instead of publishing samples, and reading the export needs `CARDS_EXPORT_KEY` (`apps/cards/src/generate.ts`).
+**Why.** A variable only the cards project holds cannot be set by accident in `web`, and a production site can never be built from fixtures.
+**Would change if.** The cards site moves to another host, or Vercel adds a per-project environment marker.
+
+## D-050 Phase gates waived
+**Status:** Recorded (2026-09-30).
+**Context.** PLAN section 5 has each phase wait for your "go", and each exit requires every compliance row of the phase to be built or deferred with your written approval.
+**Choice.** On 2026-09-30 you said "go all out and just finish this. make it excellent". Phases 3 to 6 were built without waiting at the gates (`docs/BUILD-CONTRACT.md`). The waiver covers the stop-and-wait only. The honesty rules are unchanged: nothing that ran only against a fake is called verified, every unbuilt compliance row is listed in the phase reports, and no deferral counts as approved, because you have approved none.
+**Why.** Recorded so that the "Not met" exits in `docs/PHASE4.md` to `docs/PHASE6.md` read as open items, not as gates that were passed.
+**Would change if.** You reinstate the gates.
+
 ## Where to veto
-An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 is a record with nothing to veto.
+An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 and D-050 are records with nothing to veto.
 
 | Entry | Proposed default | Assumption in `PLAN.md` |
 |---|---|---|
@@ -352,3 +436,14 @@ An entry with status Needs your decision is answered in `PLAN.md` under Open dec
 | D-036 | Sound off, no comfort dialog, cosmetic rarity, labelled Arrival demo | new assumption to add |
 | D-037 | Transfer timing copy | new assumption to add |
 | D-038 | No countdown, price-checked line, chip copy | new assumption to add |
+| D-039 | Transfer-in captured on completion, or 48 hours before the hold ends | new assumption to add |
+| D-040 | Capture-failed ladder charges only the order's own card or a same-domain mandate within its ceiling | new assumption to add |
+| D-041 | MCP as an in-repo JSON-RPC handler, no SDK | new assumption to add |
+| D-042 | RFC 6749 error bodies on the OAuth server | new assumption to add |
+| D-043 | Card portraits computed from the name; uploads never served | 15 covers the snapshot store; new assumption to add for the rest |
+| D-044 | Portable dotenv quoting | new assumption to add |
+| D-045 | Agent spend consumed at capture | new assumption to add |
+| D-046 | No transfer proposals by agents in v1 | new assumption to add |
+| D-047 | AAD as JCS, binding the KEK class | new assumption to add |
+| D-048 | Public pages generated from fragments and committed | new assumption to add |
+| D-049 | Cards project switched by `MH_CARDS_PRODUCTION` | new assumption to add |
