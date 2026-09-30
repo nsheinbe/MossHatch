@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useUi } from "../store";
 import { Header } from "./Header";
 import { WorldHost } from "./WorldHost";
 import { Find } from "./Find";
 import { HatchSheet } from "./HatchSheet";
 import { CardPanel } from "./CardPanel";
-import { Grove } from "./Grove";
+import { Grove, dropRealGrove } from "./Grove";
 import { Fallback } from "./Fallback";
 import { handle } from "../world/handle";
 import { sound } from "../audio/synth";
@@ -13,6 +13,9 @@ import { AccountPanel } from "./AccountPanel";
 import { OrderReturn } from "./OrderReturn";
 import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
+
+const DomainPanel = lazy(() => import("./DomainPanel"));
+const Ledger = lazy(() => import("./Ledger"));
 
 function hasWebGL2(): boolean {
   try { return !!document.createElement("canvas").getContext("webgl2"); } catch { return false; }
@@ -22,13 +25,16 @@ export function App() {
   const [gl] = useState(hasWebGL2);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
-  const { view, flash, hatchPhase, sound: soundOn, set } = useUi();
+  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, set } = useUi();
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // After a hatch the camera frames the newborn; restore the Find view once the card is dismissed.
-    if (ready && hatchPhase === "none") handle.world?.setView(view === "grove" ? "grove" : "find");
+    if (ready && hatchPhase === "none") handle.world?.setView(view === "grove" || view === "ledger" ? "grove" : "find");
   }, [hatchPhase, ready, view]);
+
+  // Signing out (or losing the session) takes the account's domains out of the scene and closes their panel.
+  useEffect(() => { if (!account) { dropRealGrove(); set({ domainPanel: null, view: useUi.getState().view === "ledger" ? "find" : useUi.getState().view }); } }, [account, set]);
 
   useEffect(() => {
     // Is there a backend behind this deployment? A preview without a database answers 503 and stays a practice place.
@@ -47,7 +53,8 @@ export function App() {
     <>
       <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />
       <Header />
-      {view === "find" ? <Find /> : <Grove />}
+      {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
+      {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
       <HatchSheet />
       <CardPanel />
       <AccountPanel />

@@ -36,9 +36,11 @@ export function registerAccountRoutes(router: Router): Router {
       // Which documents are in force, for the acceptance line at checkout.
       method: "GET", path: "/api/v1/documents", principals: ["anonymous", "session"], tag: "account",
       async handler(r) {
+        // Checkout shows two documents. The domain panel asks for the auto-renew authorisation as well with ?include=auto_renew (it is consented to apart from the terms).
+        const kinds = new URL(r.request.url).searchParams.get("include") === "auto_renew" ? ["terms", "registration_agreement", "auto_renew_authorisation"] : ["terms", "registration_agreement"];
         const rows = (await r.ctx.cron.query(
-          "select distinct on (kind) kind, version_hash from document_versions where kind in ('terms','registration_agreement') and effective_at <= $1 and (retired_at is null or retired_at > $1) order by kind, effective_at desc", [r.ctx.clock.now()])).rows;
-        const path: Record<string, string> = { terms: "/legal/terms.html", registration_agreement: "/legal/registration-agreement.html" };
+          "select distinct on (kind) kind, version_hash from document_versions where kind = any($2) and effective_at <= $1 and (retired_at is null or retired_at > $1) order by kind, effective_at desc", [r.ctx.clock.now(), kinds])).rows;
+        const path: Record<string, string> = { terms: "/legal/terms.html", registration_agreement: "/legal/registration-agreement.html", auto_renew_authorisation: "/legal/auto-renew-authorisation.html" };
         return json({ documents: rows.map((d) => ({ kind: d.kind, version: d.version_hash, url: path[d.kind as string] })) });
       },
     },

@@ -25,6 +25,7 @@ export function Header() {
       <nav className="nav" aria-label="Views">
         <button type="button" aria-current={view === "find" ? "page" : undefined} onClick={() => set({ view: "find" })}>Find a name</button>
         <button type="button" aria-current={view === "grove" ? "page" : undefined} onClick={() => set({ view: "grove" })}>My grove</button>
+        {apiReady && account && <button type="button" aria-current={view === "ledger" ? "page" : undefined} onClick={() => set({ view: "ledger" })}>Ledger</button>}
       </nav>
       <div className="tools">
         {apiReady && (
