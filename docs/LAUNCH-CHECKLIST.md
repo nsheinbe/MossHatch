@@ -28,10 +28,12 @@ The order agreed on 2026-09-30 (D-058). Each gate lists who owns it and the evid
 - [ ] Openprovider written answers: terms precedence, 4% annual rise, expired-name parking opt-out, USD funding, what counts as an operation
 
 ## Stage 5: entity (you)
-- [ ] LLC or Delaware C-corp formed (confirm with a lawyer or accountant); EIN; business bank account
-- [ ] Live Stripe and Openprovider accounts in the entity's name
-- [ ] Insurance (general and cyber liability)
-- [ ] Legal name and address filled into the documents and footer (Claude)
+Decided 2026-09-30: Mosshatch operates under your existing parent LLC.
+- [ ] DBA "Mosshatch" filed for the parent LLC (LA County); confirm local registration and tax points with an accountant
+- [ ] Live Stripe and Openprovider accounts in the parent LLC's name; separate bank account or books for Mosshatch
+- [ ] Insurance (general and cyber liability) covering the parent LLC
+- [ ] Legal name and address filled into the documents and footer as "Mosshatch, a trade name of [Parent LLC]" (Claude)
+- [ ] Later: consider a subsidiary LLC to ring-fence Mosshatch's liability, or a Delaware C-corp if raising money
 
 ## Stage 6: invite-only launch, then public (you + Claude)
 - [ ] Site mode switched to live with invite-only sign-up and the daily registration cap
