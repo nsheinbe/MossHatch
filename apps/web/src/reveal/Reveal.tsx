@@ -19,6 +19,9 @@ export function Reveal({ s, prodCopy }: { s: RevealTarget; prodCopy: boolean }) 
   const rehideSeconds = useUi((x) => x.rehideSeconds);
   const value = useRef<SecretValue | null>(null);
   const node = useRef<HTMLElement | null>(null);
+  const box = useRef<HTMLDivElement | null>(null);
+  const holdBtn = useRef<HTMLButtonElement | null>(null);
+  const refocus = useRef(false);
   const holdTimer = useRef(0);
   const clipTimer = useRef(0);
   const [shown, setShown] = useState(false);
@@ -35,21 +38,28 @@ export function Reveal({ s, prodCopy }: { s: RevealTarget; prodCopy: boolean }) 
     value.current?.drop();
     value.current = null;
   }, []);
-  const hide = useCallback((why: string) => { wipe(); setShown(false); setClock(null); setNote(why); }, [wipe]);
+  const hide = useCallback((why: string) => {
+    // Keyboard and screen-reader users were inside the value box; the box goes, so their place moves back to the reveal button.
+    if (box.current && box.current.contains(document.activeElement)) refocus.current = true;
+    wipe(); setShown(false); setClock(null); setNote(why);
+  }, [wipe]);
 
   useEffect(() => () => { wipe(); window.clearTimeout(holdTimer.current); window.clearTimeout(clipTimer.current); }, [wipe]);
+  useEffect(() => { if (!shown && refocus.current) { refocus.current = false; holdBtn.current?.focus(); } }, [shown]);
 
   // Write the value into its one node after it mounts; focus it so a screen reader reads it (it is not a live region).
   useLayoutEffect(() => {
-    if (!shown || !node.current || !value.current) return;
+    if (!shown || !node.current || !value.current || document.hidden) return;
     node.current.textContent = value.current.expose((v) => v);
     node.current.focus();
   }, [shown]);
 
   useEffect(() => {
     if (!shown) return;
-    const t = window.setInterval(() => setClock((c) => (c ? tick(c) : c)), 1000);
     const gone = () => hide("Hidden because you left the page.");
+    // Hidden before the listeners below exist (the tab changed as the value arrived): hide now, the event will not come again.
+    if (document.hidden) { gone(); return; }
+    const t = window.setInterval(() => setClock((c) => (c ? tick(c) : c)), 1000);
     const vis = () => { if (document.hidden) gone(); };
     document.addEventListener("visibilitychange", vis);
     document.addEventListener("freeze", gone);
@@ -74,6 +84,8 @@ export function Reveal({ s, prodCopy }: { s: RevealTarget; prodCopy: boolean }) 
       run: async (actionId) => {
         try {
           const v = await fetchReveal(s.id, actionId);
+          // The page was hidden while the value was on its way: the hide events already fired, so it is never shown. One step-up, one try.
+          if (document.hidden) { v.drop(); setNote("Hidden because you left the page. Reveal it with your passkey to see it."); return; }
           value.current?.drop();
           value.current = v;
           setClock(startRehide(rehideSeconds));
@@ -120,7 +132,7 @@ export function Reveal({ s, prodCopy }: { s: RevealTarget; prodCopy: boolean }) 
       {!shown && !req && (
         <>
           <button
-            type="button" className={`btn secondary small hold${holding ? " holding" : ""}`} aria-describedby={`hold-${s.id}`}
+            ref={holdBtn} type="button" className={`btn secondary small hold${holding ? " holding" : ""}`} aria-describedby={`hold-${s.id}`}
             onPointerDown={(e) => { if (e.button === 0) startHold(); }} onPointerUp={endHold} onPointerLeave={endHold} onPointerCancel={endHold}
             onClick={(e) => { if (e.detail === 0) begin(); }} onContextMenu={(e) => e.preventDefault()}
           >
@@ -134,7 +146,7 @@ export function Reveal({ s, prodCopy }: { s: RevealTarget; prodCopy: boolean }) 
       )}
       {req && <StepUp key={s.id} req={req} onDone={() => setReq(null)} />}
       {shown && (
-        <div className="code-box secret-box" role="group" aria-label={`Value of ${s.name}`}>
+        <div ref={box} className="code-box secret-box" role="group" aria-label={`Value of ${s.name}`}>
           <p>Hides in {left} {left === 1 ? "second" : "seconds"}.</p>
           <p><code ref={node} tabIndex={-1} className="xfer-code secret-value" /></p>
           <div className="row-actions">

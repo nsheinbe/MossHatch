@@ -8,8 +8,8 @@ import { safeEqual } from "../util/bytes.ts";
 import { enqueue, getJobDef, registerJob, type JobRow } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import { raiseAlert } from "../ops/alerts.ts";
-import { assertWritesOpen, mapRegistrarError, notifyDomainEvent, registrarOf } from "../domain-mgmt/common.ts";
-import { checkShape, diffZones, sensitiveOf, SNAPSHOT_TTL_MS as SNAPSHOT_TTL } from "../domain-mgmt/dns.ts";
+import { mapRegistrarError } from "../domain-mgmt/common.ts";
+import { checkShape, diffZones, sensitiveOf, writeZoneLocked, type ZoneChange, type ZoneWriter } from "../domain-mgmt/dns.ts";
 import { withConnectionCredential } from "../vault/connections.ts";
 import { writeSecret } from "../vault/secrets.ts";
 import { prodWriteNotice } from "../agents/notices.ts";
@@ -46,41 +46,46 @@ async function mergeFacts(ctx: AppContext, connectionId: string, facts: Record<s
   await ctx.cron.query("update connections set provider_facts = provider_facts || $2::jsonb, external_ref = coalesce($3, external_ref) where id = $1", [connectionId, JSON.stringify(facts), externalRef ?? null]);
 }
 
+/** A recipe (or a connection's removal) writing DNS: the snapshot says `recipe`, the audit actor is the system, the notice names the recipe. */
+const recipeWriter: ZoneWriter = {
+  snapshotKind: "recipe", actorKind: "system",
+  notice: ({ fqdn, sensitive, maybe }) => {
+    const n = `${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}`;
+    const lines = sensitive.slice(0, 10).map((s) => `- ${s.type} ${s.name === "" ? "@ (the domain itself)" : s.name}`).join("\n");
+    return maybe
+      ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `A wire-it recipe you approved may have changed ${n}: our registrar did not confirm the change.\n${lines}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.` }
+      : { subject: "A sensitive DNS record on your Mosshatch domain changed", text: `A wire-it recipe you approved changed ${n}:\n${lines}\n\nYou can roll the change back from the DNS tab, under History.` };
+  },
+};
+
 /**
- * Write a DNS change for a recipe under the same per-domain lock the DNS tab uses, against the zone the plan saw (a
- * different live zone fails the write), with a snapshot first so it can be rolled back from the DNS tab.
+ * Write a DNS change for a recipe with the DNS tab's write safety (`writeZoneLocked`): under the per-domain lock, against the zone
+ * the plan saw (a different live zone fails the write), with the pre-write snapshot and intent committed before the registrar is
+ * called, so a write whose outcome is unknown keeps its snapshot and can be rolled back from the DNS tab. `after` runs in the
+ * follow-up transaction, under the same lock (or in the first one when nothing changes).
  */
-export async function writeRecipeZone(ctx: AppContext, c: PoolClient, userId: string, d: { id: string; fqdn: string }, change: { add: DnsRecord[]; remove: DnsRecord[] }, expectBefore: string | null, ref: { application?: string; cause: string }): Promise<{ snapshotId: string | null; removed: number; added: number }> {
-  await assertWritesOpen(c);
-  await c.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`mh.dns:${d.id}`]);
-  let z;
-  try { z = await registrarOf(ctx).getDns(d.fqdn); } catch (e) { throw mapRegistrarError(e); }
-  if (!z.hosted) throw new RecipeFail("dns_not_hosted");
-  const live = canonicalZone(z.records);
-  if (expectBefore !== null && zoneHash(live) !== expectBefore) throw new RecipeFail("plan_changed");
+export async function writeRecipeZone<T = undefined>(
+  ctx: AppContext, userId: string, d: { id: string; fqdn: string }, change: { add: DnsRecord[]; remove: DnsRecord[] }, expectBefore: string | null,
+  ref: { application?: string; cause: string }, after?: (c: PoolClient, w: { removed: number; added: number; snapshotId: string | null }) => Promise<T>,
+): Promise<{ snapshotId: string | null; removed: number; added: number; after: T | undefined }> {
   const key = (r: DnsRecord) => JSON.stringify(normalizeRecord(r));
   const rm = new Set(change.remove.map(key));
-  const desired = canonicalZone([...live.filter((r) => !rm.has(key(r))), ...change.add]);
-  checkShape(desired); validateZone(desired);
-  const diff = diffZones(live, desired);
-  if (diff.added.length === 0 && diff.removed.length === 0) return { snapshotId: null, removed: 0, added: 0 };
-  const sensitive = sensitiveOf(d.fqdn, diff);
-  const now = ctx.clock.now();
-  const snap = (await c.query(
-    `insert into dns_snapshots (user_id, domain_id, reason, zone_hash, records, added_count, removed_count, sensitive_count, actor_kind, taken_at, expires_at)
-     values ($1,$2,'pre_write',$3,$4,$5,$6,$7,'recipe',$8,$9) returning id`,
-    [userId, d.id, zoneHash(live), JSON.stringify(live), diff.added.length, diff.removed.length, sensitive.length, now, new Date(now.getTime() + SNAPSHOT_TTL)])).rows[0];
-  let written;
-  try { written = await registrarOf(ctx).replaceZone(d.fqdn, desired); } catch (e) { throw mapRegistrarError(e); }
-  await c.query("update dns_snapshots set after_hash = $2 where id = $1", [snap.id, written.hash]);
-  await appendAudit(ctx, c, { chainId: userId, actorKind: "system", action: "dns.write", resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length, actor: "recipe", cause: ref.cause, application: ref.application ?? null } });
-  if (sensitive.length) {
-    await notifyDomainEvent(ctx, c, userId, {
-      kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
-      text: `A wire-it recipe you approved changed ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn}:\n${sensitive.slice(0, 10).map((s) => `- ${s.type} ${s.name === "" ? "@ (the domain itself)" : s.name}`).join("\n")}\n\nYou can roll the change back from the DNS tab, under History.`,
+  try {
+    const w = await writeZoneLocked(ctx, userId, d.id, recipeWriter, (live, dom) => {
+      if (expectBefore !== null && zoneHash(live) !== expectBefore) throw new RecipeFail("plan_changed");
+      const desired = canonicalZone([...live.filter((r) => !rm.has(key(r))), ...change.add]);
+      checkShape(desired); validateZone(desired);
+      const diff = diffZones(live, desired);
+      return { desired, diff, sensitive: sensitiveOf(dom.fqdn_ascii, diff) };
+    }, {
+      detail: { actor: "recipe", cause: ref.cause, application: ref.application ?? null },
+      ...(after ? { after: (c: PoolClient, r: { snapshotId: string | null; change: ZoneChange | null }) => after(c, { removed: r.change?.diff.removed.length ?? 0, added: r.change?.diff.added.length ?? 0, snapshotId: r.snapshotId }) } : {}),
     });
+    return { snapshotId: w.snapshotId, removed: w.change?.diff.removed.length ?? 0, added: w.change?.diff.added.length ?? 0, after: w.after };
+  } catch (e) {
+    if (e instanceof RecipeFail) throw e;
+    throw mapRegistrarError(e);
   }
-  return { snapshotId: snap.id, removed: diff.removed.length, added: diff.added.length };
 }
 
 // ---- recipe.apply ------------------------------------------------------------------------------------------------------------
@@ -179,7 +184,7 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
     if (agent && prodWrites.length) await prodNotices(ctx, userId, agent, d.fqdn, prodWrites).catch(() => undefined);
   }
   if (plan.dns.add.length || plan.dns.remove.length) {
-    await withUser(ctx.runtime, userId, (c) => writeRecipeZone(ctx, c, userId, d, plan.dns, plan.zone_before, { application: appId, cause: "recipe.apply" }));
+    await writeRecipeZone(ctx, userId, d, plan.dns, plan.zone_before, { application: appId, cause: "recipe.apply" });
   }
 }
 

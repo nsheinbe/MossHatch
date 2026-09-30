@@ -5,7 +5,7 @@ import { HttpError } from "../http/router.ts";
 import { appendAudit } from "../audit.ts";
 import { canonicalJson, safeEqual } from "../util/bytes.ts";
 import { kekClassFor, SECRET_ENVS, type SecretEnv } from "./kms/types.ts";
-import { kmsContext, open, seal, VaultIntegrityError, type SecretAad } from "./envelope.ts";
+import { kmsContext, open, seal, VaultIntegrityError, type SecretAad, type Sealed } from "./envelope.ts";
 import { vaultFailure, vaultOf, vaultTimeout } from "./context.ts";
 
 /** Secret identity and versions. Every function here runs as the vault role, under the owner's tenant context. */
@@ -77,6 +77,41 @@ export async function openRow(ctx: Pick<AppContext, "services">, r: SecretRow & 
 
 export interface WriteActor { kind: "user" | "agent" | "cli" | "system"; id: string }
 
+/** A version about to be written: the secret's identity, the version number, and the pointer it must still find (the compare-and-set). */
+export interface NextVersion { id: string; domainId: string; name: string; env: SecretEnv; version: number; current: number | null; created: boolean }
+
+/**
+ * Step 2 of every secret write (`writeSecret`, the CLI's batch `push`): GenerateDataKey and encrypt under the KEK class of the
+ * stored env, with the AAD binding identity and version. Runs outside any transaction; a KMS failure is the vault's error for
+ * this secret. The caller zeroes `ciphertext` when done.
+ */
+export async function sealVersion(ctx: AppContext, userId: string, n: NextVersion, value: Buffer): Promise<Sealed> {
+  const v = vaultOf(ctx);
+  try { return await seal(v.kms, kekClassFor(n.env), kmsContext(n.env, userId, n.id), secretAad({ id: n.id, user_id: userId, domain_id: n.domainId, name: n.name, env: n.env }, n.version), value, vaultTimeout(v)); }
+  catch (e) { throw await vaultFailure(ctx, e, n.id); }
+}
+
+/**
+ * Step 3 of every secret write, inside the caller's transaction (vault role, tenant set): the version row, then the pointer moved
+ * by compare-and-set with a fresh single-use MAC (migration 0805 refuses any MAC the database has held before), then the audit row.
+ * Anything other than what step 1 read means a concurrent writer got there first: 409, and the caller's transaction rolls back.
+ */
+export async function commitVersion(ctx: AppContext, c: PoolClient, userId: string, actor: WriteActor, n: NextVersion, sealed: Sealed): Promise<{ versionId: string }> {
+  const cur = (await c.query("select current_version from secrets where id = $1 and user_id = $2 and deleted_at is null for update", [n.id, userId])).rows[0];
+  if (!cur || (cur.current_version === null ? null : Number(cur.current_version)) !== n.current) throw new HttpError(409, "write_conflict");
+  const vid = (await c.query(
+    `insert into secret_versions (secret_id, user_id, version, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class, created_by_kind, created_by_id)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (secret_id, version) do nothing returning id`,
+    [n.id, userId, n.version, sealed.ciphertext, sealed.nonce, sealed.tag, sealed.wrappedDek, sealed.kekRef, sealed.kekClass, actor.kind, actor.id])).rows[0]?.id as string | undefined;
+  if (!vid) throw new HttpError(409, "write_conflict");
+  const mac = await pointerMac(ctx, { id: n.id, domain_id: n.domainId, name: n.name, env: n.env, current_version: n.version, current_version_id: vid });
+  const up = await c.query("update secrets set current_version = $2, current_version_id = $3, pointer_mac = $4 where id = $1 and current_version is not distinct from $5",
+    [n.id, n.version, vid, mac, n.current]);
+  if (up.rowCount !== 1) throw new HttpError(409, "write_conflict");
+  await appendAudit(ctx, c, { chainId: userId, actorKind: actor.kind, actorId: actor.id, action: "secret.write", resourceKind: "secret", resourceId: n.id, detail: { domain_id: n.domainId, env: n.env, version: n.version, created: n.created } });
+  return { versionId: vid };
+}
+
 /**
  * Write a new version. Three steps so KMS never runs inside a transaction: (1) make sure the identity row exists and
  * read the version to write; (2) GenerateDataKey and encrypt; (3) compare-and-set the pointer (a concurrent writer that
@@ -95,30 +130,11 @@ export async function writeSecret(ctx: AppContext, userId: string, actor: WriteA
     if (!r) throw new HttpError(409, "write_conflict");
     return { id: r.id as string, current: r.current_version === null ? null : Number(r.current_version), maxv: Number(r.maxv), created: ins.rowCount === 1 || r.current_version === null };
   });
-  const version = pre.maxv + 1;
-  const identity = { id: pre.id, user_id: userId, domain_id: domainId, name, env };
-  let sealed;
-  try { sealed = await seal(v.kms, kekClassFor(env), kmsContext(env, userId, pre.id), secretAad(identity, version), value, vaultTimeout(v)); }
-  catch (e) { throw await vaultFailure(ctx, e, pre.id); }
-  try {
-    await withUser(v.pool, userId, async (c) => {
-      const cur = (await c.query("select current_version from secrets where id = $1 and user_id = $2 and deleted_at is null for update", [pre.id, userId])).rows[0];
-      if (!cur || (cur.current_version === null ? null : Number(cur.current_version)) !== pre.current) throw new HttpError(409, "write_conflict");
-      const vid = (await c.query(
-        `insert into secret_versions (secret_id, user_id, version, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class, created_by_kind, created_by_id)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict (secret_id, version) do nothing returning id`,
-        [pre.id, userId, version, sealed.ciphertext, sealed.nonce, sealed.tag, sealed.wrappedDek, sealed.kekRef, sealed.kekClass, actor.kind, actor.id])).rows[0]?.id as string | undefined;
-      if (!vid) throw new HttpError(409, "write_conflict");
-      const mac = await pointerMac(ctx, { id: pre.id, domain_id: domainId, name, env, current_version: version, current_version_id: vid });
-      const up = await c.query("update secrets set current_version = $2, current_version_id = $3, pointer_mac = $4 where id = $1 and current_version is not distinct from $5",
-        [pre.id, version, vid, mac, pre.current]);
-      if (up.rowCount !== 1) throw new HttpError(409, "write_conflict");
-      await appendAudit(ctx, c, { chainId: userId, actorKind: actor.kind, actorId: actor.id, action: "secret.write", resourceKind: "secret", resourceId: pre.id, detail: { domain_id: domainId, env, version, created: pre.created } });
-    });
-  } finally {
-    sealed.ciphertext.fill(0);
-  }
-  return { id: pre.id, version, created: pre.created };
+  const next: NextVersion = { id: pre.id, domainId, name, env, version: pre.maxv + 1, current: pre.current, created: pre.created };
+  const sealed = await sealVersion(ctx, userId, next, value);
+  try { await withUser(v.pool, userId, (c) => commitVersion(ctx, c, userId, actor, next, sealed)); }
+  finally { sealed.ciphertext.fill(0); }
+  return { id: pre.id, version: next.version, created: pre.created };
 }
 
 /** Delete: the ciphertext and wrapped key of every version are nulled at once; Neon history keeps encrypted copies for its window. */

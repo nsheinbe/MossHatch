@@ -59,6 +59,21 @@ describe("C-19: retention purge by retain_until, never under legal_hold", () => 
     expect(r2.deleted).toMatchObject({ consents: 2, renewal_mandates: 1 });
   });
 
+  it("C-19: the consent behind a revoked mandate that is still kept (under legal hold, or before its own retain_until) is kept with it", async () => {
+    const u = await mkUser("ret2@example.com");
+    const d = (await q("insert into domains (user_id, fqdn_ascii, tld, registrar, livemode) values ($1,'ret-two.com','com','mock',false) returning id", [u]))[0].id;
+    const consent = async () => (await q("insert into consents (user_id, kind, document_hash, version, retain_until) values ($1,'auto_renew_mandate','h','v',$2) returning id", [u, ago(1)]))[0].id as string;
+    const cHeldMandate = await consent(); const cKeptMandate = await consent(); const cGoneMandate = await consent();
+    const mandate = async (retain: Date, consentId: string, hold: boolean) =>
+      (await q("insert into renewal_mandates (domain_id, user_id, price_ceiling_minor, text_hash, retain_until, revoked_at, consent_id, legal_hold) values ($1,$2,1000,'t',$3,$4,$5,$6) returning id",
+        [d, u, retain, ago(2), consentId, hold]))[0].id as string;
+    const mHeld = await mandate(ago(1), cHeldMandate, true); const mKept = await mandate(ahead(30), cKeptMandate, false); await mandate(ago(1), cGoneMandate, false);
+    const r = await purgeExpired(app.ctx);
+    expect(r.deleted).toMatchObject({ consents: 1, renewal_mandates: 1 });
+    expect((await q("select id from consents")).map((x) => x.id).sort()).toEqual([cHeldMandate, cKeptMandate].sort());
+    expect((await q("select id from renewal_mandates")).map((x) => x.id).sort()).toEqual([mHeld, mKept].sort());
+  });
+
   it("C-19: the retention jobs are registered on a daily schedule next to retention.purge", () => {
     registerOpsJobs();
     for (const k of ["retention.purge", "retention.expire", "retention.webhook_payloads"]) expect(getJobDef(k), k).toBeTruthy();

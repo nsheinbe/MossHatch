@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explainDomain, issueTransferCode, lockDomain, unlockDomain } from "../lib/domains";
+import { firstWindow } from "../reveal/rehide";
 import { StepUp, type StepUpRequest } from "./StepUp";
 
 /**
@@ -36,7 +37,8 @@ export function TransferCode({ fqdn, locked, onChanged }: { fqdn: string; locked
       run: async (id) => {
         if (type === "domain.unlock") { await unlockDomain(fqdn, id); setMsg("Unlocked. The name can now be transferred."); onChanged(); return; }
         const out = await issueTransferCode(fqdn, id);
-        if (out.code) { setCode(out.code); setLeft(rehide); } else setMsg(out.message ?? "We asked our registrar for the code.");
+        // The same window as a revealed value: the person's choice, never under 5 or over 100 seconds, whatever storage says.
+        if (out.code) { setCode(out.code); setLeft(firstWindow(rehide)); } else setMsg(out.message ?? "We asked our registrar for the code.");
       },
     });
   };

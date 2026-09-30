@@ -142,19 +142,29 @@ describe("C-40: dispute-rate alarm through ops/alerts", () => {
     expect(oct("own_target")).toMatchObject({ events: 1, transactions: 150, tripped: true });
     expect(oct("stripe_review").tripped).toBe(false);                            // 0.67% < 0.75%
     expect(oct("visa_vamp_non_compliant")).toMatchObject({ events: 1, transactions: 100, tripped: false });
-    expect(await alertsOf()).toEqual(["warn:own_target:2026-10"]);
+    expect(await alertsOf()).toEqual(["page:own_target:2026-10"]);
 
     await risk("radar.early_fraud_warning.created", visa[0]!, d);                // no brand on an EFW: taken from the payment
     for (let i = 1; i < 4; i++) await risk("charge.dispute.created", visa[i]!, d, "visa");
     r = await checkDisputeRates(app.ctx);
     expect(oct("visa_vamp_non_compliant")).toMatchObject({ events: 5, transactions: 100, tripped: true });
     expect(oct("mastercard_ecm")).toMatchObject({ events: 0, tripped: false });
-    expect(await alertsOf()).toEqual(["warn:own_target:2026-10", "page:stripe_review:2026-10", "page:visa_vamp_non_compliant:2026-10"]);
+    expect(await alertsOf()).toEqual(["page:own_target:2026-10", "page:stripe_review:2026-10", "page:visa_vamp_non_compliant:2026-10"]);
 
     // One alert per tier and month: closing them does not re-raise them on the next hourly run.
     await q("update alerts set state = 'closed'");
     await checkDisputeRates(app.ctx);
     expect((await q("select count(*)::int n from alerts where state = 'open'"))[0].n).toBe(0);
+  });
+
+  it("C-40: a dispute ratio at the own 0.5% target pages (PLAN Operations: \"dispute ratio at 0.5%\" is S1), before any network tier", async () => {
+    const d = new Date("2026-10-05T10:00:00Z");
+    const mc: string[] = [];
+    for (let i = 0; i < 150; i++) mc.push(await pay("mastercard", d));
+    await risk("charge.dispute.created", mc[0]!, d, "mastercard");                 // 0.67%: over the own target, under Stripe's 0.75% line
+    const r = await checkDisputeRates(app.ctx);
+    expect(r.filter((x) => x.tripped && x.month === "2026-10").map((x) => x.tier)).toEqual(["own_target"]);
+    expect(await alertsOf()).toEqual(["page:own_target:2026-10"]);
   });
 
   it("C-40: Mastercard ECM divides this month's chargebacks by last month's transactions, EFWs do not count for it, and events are recorded once", async () => {

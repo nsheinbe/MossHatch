@@ -17,7 +17,7 @@ import { ensureRenewalOrder, startRenewalCheckout } from "../domains/renewals.ts
 import { StripeError } from "../stripe/port.ts";
 import { applyApprovedDns } from "./dns.ts";
 import { confirmRule, expireIfDue, loadRequest, priceRegistration, priceRenewal, voidRequest, type RequestRow } from "./requests.ts";
-import { liveBinding, lockUser, notFound, sessionUserOf, UUID } from "./common.ts";
+import { assertAgentPurchasesOpen, liveBinding, lockUser, notFound, sessionUserOf, UUID } from "./common.ts";
 import { approvedNotice } from "./notices.ts";
 import { registerRoutedSpec } from "./specs.ts";
 
@@ -62,6 +62,7 @@ export const purchaseApproveSpec: ActionSpec<z.infer<typeof purchaseInput>> = {
     if (new Date(r.expires_at) <= now) { await expireIfDue(ctx, userId, r); throw new HttpError(409, "request_expired"); }
     const b = await liveBinding(c, userId, r.binding_id, now);
     if (!b) throw new HttpError(409, "binding_unavailable");
+    await assertAgentPurchasesOpen(c);
     const pr = r.kind === "register" ? await priceRegistration(ctx, c, r.fqdn_ascii!, r.years!) : await priceRenewal(ctx, c, r.fqdn_ascii!, r.years!);
     if (!r.price_hash || !safeEqual(pr.priceHash, Buffer.from(r.price_hash))) { await voidRequest(ctx, userId, r.id, "price_changed"); throw new HttpError(409, "price_changed"); }
     const confirm = await confirmRule(c, userId, r);
@@ -165,16 +166,47 @@ export async function decideHandler(req: HandlerReq): Promise<HandlerResult> {
   return json({ id: out.ok.id, state: "approved_awaiting_payment", ...pay }, 200, { headers: NO_STORE });
 }
 
+/** An order that would charge more than the passkey signed for (subtotal, tax ceiling or maximum total). */
+const exceedsSigned = (o: { subtotalMinor: bigint; taxCeilingMinor: bigint; totalMinor: bigint }, r: RequestRow) =>
+  o.subtotalMinor > BigInt(r.params.subtotal_minor ?? 0) || o.taxCeilingMinor > BigInt(r.params.tax_ceiling_minor ?? 0) || o.totalMinor > BigInt(r.quoted_minor);
+
+/**
+ * Before "Pay now" makes the order for an approval given earlier, the quote and the documents must still be the ones the
+ * passkey signed (the approval binds the quote hash and the terms hash; C-12, C-14). A change is a 409 that fails the
+ * request and releases its reservation; the agent can propose again. An order already made keeps the amounts it was made with.
+ */
+async function assertStillAsSigned(ctx: AppContext, userId: string, r: RequestRow, actionId: string): Promise<void> {
+  const refusal = await withUser(ctx.runtime, userId, async (c) => {
+    const made = r.kind === "register"
+      ? (await c.query("select 1 from orders where user_id = $1 and idempotency_key = $2", [userId, `agent:${r.id}`])).rowCount
+      : (r.order_id ? 1 : 0);
+    if (made) return null;
+    const signed = UUID.test(actionId ?? "")
+      ? (await c.query("select params from actions where id = $1 and user_id = $2 and type = 'agent.purchase.approve'", [actionId, userId])).rows[0]?.params as Record<string, unknown> | undefined
+      : undefined;
+    if (!signed || signed.request_id !== r.id) return "price_changed";
+    const pr = r.kind === "register" ? await priceRegistration(ctx, c, r.fqdn_ascii!, r.years!) : await priceRenewal(ctx, c, r.fqdn_ascii!, r.years!);
+    if (!r.price_hash || !safeEqual(pr.priceHash, Buffer.from(r.price_hash)) || signed.quote_hash !== pr.priceHash.toString("hex")) return "price_changed";
+    if (signed.terms_hash !== await termsHash(c, ctx.clock.now(), pr.tld)) return "terms_changed";
+    return null;
+  });
+  if (refusal) throw new HttpError(409, refusal, undefined, NO_STORE);
+}
+
 /**
  * The order and its Checkout for an approved request. Idempotent (key `agent:<request>`), so a lost response, a second tab
  * or the "Pay now" button later all reach the same order and the same Session. A refusal from the order path (the name was
- * taken, a new-account limit, no registrant contact) fails the request, which releases its reservation.
+ * taken, a new-account limit, no registrant contact, a quote or terms that changed since the approval) fails the request,
+ * which releases its reservation. The order never charges more than was signed: one priced higher gets no Checkout URL.
  */
-async function checkoutFor(req: HandlerReq, userId: string, r: RequestRow, actionId: string): Promise<{ order_id: string | null; checkout_url: string | null }> {
+async function checkoutFor(req: HandlerReq, userId: string, r: RequestRow, actionId: string, later = false): Promise<{ order_id: string | null; checkout_url: string | null }> {
   const { ctx } = req;
   try {
+    await withUser(ctx.runtime, userId, (c) => assertAgentPurchasesOpen(c));
+    if (later) await assertStillAsSigned(ctx, userId, r, actionId);
     if (r.kind === "register") {
       const res = await createOrder(ctx, { userId, fqdn: r.fqdn_ascii, years: r.years, idempotencyKey: `agent:${r.id}`, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily, assertionActionId: actionId, agentRequestId: r.id });
+      if (exceedsSigned(res.order, r)) throw new HttpError(409, "price_changed", undefined, NO_STORE);
       await withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set order_id = $2 where id = $1 and order_id is null", [r.id, res.order.id]));
       return { order_id: res.order.id, checkout_url: res.checkoutUrl };
     }
@@ -199,6 +231,7 @@ async function renewalCheckout(ctx: AppContext, userId: string, r: RequestRow, r
   if (term.state === "renewed") throw new HttpError(409, "already_renewed");
   const order = await ensureRenewalOrder(ctx, term, d);
   if (!order) throw new HttpError(503, "no_price");
+  if (exceedsSigned(order, r)) throw new HttpError(409, "price_changed", undefined, NO_STORE);
   const claimed = await ctx.cron.query("update orders set agent_request_id = $2 where id = $1 and (agent_request_id is null or agent_request_id = $2) returning id", [order.id, r.id]);
   if (!claimed.rowCount) throw new HttpError(409, "renewal_in_progress");
   await withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set order_id = $2 where id = $1 and order_id is null", [r.id, order.id]));
@@ -221,7 +254,7 @@ export async function checkoutHandler(req: HandlerReq): Promise<HandlerResult> {
     const o = await loadOrder(ctx.cron, r.order_id);
     if (o && o.kind === "register") { const s = await ensureSession(ctx, ordersSvc(ctx), o); return json({ id: r.id, order_id: o.id, checkout_url: s.url }, 200, { headers: NO_STORE }); }
   }
-  return json({ id: r.id, ...(await checkoutFor(req, userId, r, actionId)) }, 200, { headers: NO_STORE });
+  return json({ id: r.id, ...(await checkoutFor(req, userId, r, actionId, true)) }, 200, { headers: NO_STORE });
 }
 
 /** POST /approvals/:id/approve-dns (`dns.sensitive.approve`). Applies exactly the zone that was signed, or nothing. */

@@ -8,6 +8,8 @@ import { prepare } from "../stepup/testkit.ts";
 import { ACTION_HEADER } from "../stepup/gate.ts";
 import { appRow, applyReq, approvePlan, bearer, connect, makePerson, makeRecipeKit, plan, seedZone, tick, web, zone, type RecipeKit } from "./testkit.ts";
 import { resendRecordToDns } from "./registry.ts";
+import { RegistrarError } from "@mosshatch/registrar/port";
+import { zoneHash } from "@mosshatch/registrar/dns";
 
 let k: RecipeKit;
 beforeAll(async () => { k = await makeRecipeKit(); }, 120_000);
@@ -362,5 +364,103 @@ describe("ST-130: dangling targets are flagged in one scan, and disconnecting re
     expect(c.ciphertext).toBeNull(); expect(c.wrapped_dek).toBeNull(); expect(c.revoked_at).not.toBeNull();
     expect((await appRow(k, r.json.application_id)).state).toBe("removed");
     expect((await web(k, p, "DELETE", `/api/v1/connections/${connectionId}`)).status).toBe(404);
+  });
+});
+
+describe("review: a recipe's DNS write commits its snapshot and intent before the registrar is called (the domain-mgmt pattern, migration 0660)", () => {
+  const snapsOf = async (domainId: string) => (await k.app.db.owner.query("select * from dns_snapshots where domain_id = $1 order by taken_at, id", [domainId])).rows;
+  const dnsAudit = async (domainId: string) => (await k.app.db.owner.query("select action from audit_log where resource_id = $1 and action like 'dns.%' order by seq", [domainId])).rows.map((r) => r.action as string);
+
+  it("a write that lands but answers with an unknown outcome keeps its snapshot (unknown, with the zone it asked for), tells the owner, and rolls back from the DNS tab", async () => {
+    const { p } = await vercelPerson("unknownout");
+    await seedZone(k, p.domain.fqdn, [{ type: "A", name: "", value: "192.0.2.10" }, { type: "CNAME", name: "blog", value: "blog.example.net" }]);
+    const before = await zone(k, p.domain.fqdn);
+    const r = await plan(k, p, "hosting-vercel");
+    expect(r.status, r.text).toBe(201);
+    await approvePlan(k, p, r.json.application_id);
+    const orig = k.registrar.replaceZone.bind(k.registrar);
+    const seenDuringCall: { states: string[]; intent: number }[] = [];
+    let once = true;
+    k.registrar.replaceZone = async (fqdn, records) => {
+      if (fqdn === p.domain.fqdn && once) {
+        // Read from another connection while the registrar call is in flight: the snapshot and the intent row are already committed.
+        seenDuringCall.push({ states: (await snapsOf(p.domain.id)).map((s) => s.write_state as string), intent: (await dnsAudit(p.domain.id)).filter((a) => a === "dns.write_intent").length });
+      }
+      const w = await orig(fqdn, records);
+      if (fqdn === p.domain.fqdn && once) { once = false; throw new RegistrarError("unknown", "transport timeout", { retryable: true, outcomeUnknown: true }); }
+      return w;
+    };
+    k.app.email.clear();
+    try {
+      const ok = await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash);
+      expect(ok.status, ok.text).toBe(202);
+      await tick(k);
+    } finally { k.registrar.replaceZone = orig; }
+    expect(seenDuringCall).toEqual([{ states: ["pending"], intent: 1 }]);
+    const row = await appRow(k, r.json.application_id);
+    expect(row.state).toBe("failed"); expect(row.failure_code).toBe("outcome_unknown");
+    const landed = await zone(k, p.domain.fqdn);
+    expect(zoneHash(landed)).not.toBe(zoneHash(before));                 // it did land upstream
+    const s = await snapsOf(p.domain.id);
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ reason: "pre_write", actor_kind: "recipe", zone_hash: zoneHash(before), after_hash: null, write_state: "unknown", intended_hash: zoneHash(landed) });
+    expect(await dnsAudit(p.domain.id)).toEqual(["dns.write_intent", "dns.write_outcome_unknown"]);
+    const mail = k.app.email.sent.filter((m) => m.kind === "dns.sensitive_changed");
+    expect(mail.length).toBeGreaterThan(0);
+    expect(mail[0]!.text).toMatch(/may have changed/);
+    // The DNS tab lists it and its one-click rollback restores the zone the recipe saw.
+    const list = await web(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/dns-snapshots`);
+    expect(list.json.snapshots.map((x: { id: string; write_state: string }) => [x.id, x.write_state])).toEqual([[s[0].id, "unknown"]]);
+    const rb = await web(k, p, "POST", `/api/v1/domains/${p.domain.fqdn}/dns-snapshots/${s[0].id}/rollback`);
+    expect(rb.status, rb.text).toBe(200);
+    expect(zoneHash(await zone(k, p.domain.fqdn))).toBe(zoneHash(before));
+  });
+
+  it("a write the registrar refuses marks its snapshot refused (nothing to roll back to) and the application fails with the registrar's code", async () => {
+    const { p } = await vercelPerson("refusedwr");
+    const r = await plan(k, p, "hosting-vercel");
+    await approvePlan(k, p, r.json.application_id);
+    const orig = k.registrar.replaceZone.bind(k.registrar);
+    k.registrar.replaceZone = async (fqdn, records) => {
+      if (fqdn === p.domain.fqdn) throw new RegistrarError("rejected", "refused", { retryable: false, outcomeUnknown: false, code: "unsupported_record_type" });
+      return orig(fqdn, records);
+    };
+    try {
+      await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash);
+      await tick(k);
+    } finally { k.registrar.replaceZone = orig; }
+    const row = await appRow(k, r.json.application_id);
+    expect(row.state).toBe("failed"); expect(row.failure_code).toBe("unsupported_record_type");
+    expect((await snapsOf(p.domain.id)).map((x) => x.write_state)).toEqual(["refused"]);
+    expect(await dnsAudit(p.domain.id)).toEqual(["dns.write_intent", "dns.write_refused"]);
+    expect((await web(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/dns-snapshots`)).json.snapshots).toEqual([]);
+  });
+
+  it("disconnecting keeps the snapshot of an unknown-outcome removal, and the applications stay applied until a write is confirmed", async () => {
+    const { p, connectionId } = await vercelPerson("discunknown");
+    const r = await plan(k, p, "hosting-vercel");
+    await approvePlan(k, p, r.json.application_id);
+    await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash);
+    await tick(k);
+    expect((await appRow(k, r.json.application_id)).state).toBe("applied");
+    const wired = await zone(k, p.domain.fqdn);
+    const orig = k.registrar.replaceZone.bind(k.registrar);
+    let once = true;
+    k.registrar.replaceZone = async (fqdn, records) => {
+      const w = await orig(fqdn, records);
+      if (fqdn === p.domain.fqdn && once) { once = false; throw new RegistrarError("unknown", "transport timeout", { retryable: true, outcomeUnknown: true }); }
+      return w;
+    };
+    let del;
+    try { del = await web(k, p, "DELETE", `/api/v1/connections/${connectionId}`); }
+    finally { k.registrar.replaceZone = orig; }
+    expect(del.status, del.text).toBe(502); expect(del.json.error.code).toBe("outcome_unknown");
+    const s = (await snapsOf(p.domain.id)).at(-1)!;
+    expect(s).toMatchObject({ actor_kind: "recipe", write_state: "unknown", zone_hash: zoneHash(wired) });
+    expect((await appRow(k, r.json.application_id)).state).toBe("applied");
+    // Retrying the disconnect finds the records already gone, and finishes.
+    const again = await web(k, p, "DELETE", `/api/v1/connections/${connectionId}`);
+    expect(again.status, again.text).toBe(200);
+    expect((await appRow(k, r.json.application_id)).state).toBe("removed");
   });
 });

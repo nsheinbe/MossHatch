@@ -44,6 +44,34 @@ const ltx = <T>(m: M, fn: (c: PoolClient) => Promise<T>): Promise<T> => tx(m.ctx
   return fn(c);
 });
 
+/**
+ * Two workers can drive the same order at once (a fulfil job, the reconcile sweep, the transfer poll), each on the rows it read. Every
+ * transfer and order state write is therefore conditional on the state its worker read (rule 1): `hold` locks both rows and checks
+ * them, each write names its expected state, and a check that fails or a write that touches no row means another worker got there
+ * first. `lose()` then rolls the whole transaction back, the step returns "wait", and `advance` carries on from the fresh state.
+ */
+class RaceLost extends Error { constructor() { super("race_lost"); this.name = "RaceLost"; } }
+const lose = (): never => { throw new RaceLost(); };
+/** A conditional write must touch exactly one row; zero rows is the loser of a race. */
+const one = (r: { rowCount: number | null }): void => { if (r.rowCount !== 1) lose(); };
+
+/** A write transaction another worker can win: when it loses, nothing it wrote commits and the result is null. */
+async function raceTx<T>(m: M, fn: (c: PoolClient) => Promise<T>): Promise<T | null> {
+  try { return await ltx(m, fn); }
+  catch (e) { if (e instanceof RaceLost) return null; throw e; }
+}
+
+/**
+ * Lock the transfer row, then the order row (the order `confirm` and `expireUnconfirmed` take them in, so no two writers deadlock),
+ * and check each is still in a state this worker read; `null` accepts any state. Returns the locked states.
+ */
+async function hold(c: PoolClient, t: { id: string; states: readonly string[] | null }, o: { id: string; states: readonly OrderState[] | null }): Promise<{ transfer: string; order: OrderState }> {
+  const ts = (await c.query("select state from transfers_in where id = $1 for update", [t.id])).rows[0]?.state as string | undefined;
+  const os = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as OrderState | undefined;
+  if (!ts || !os || (t.states && !t.states.includes(ts)) || (o.states && !o.states.includes(os))) lose();
+  return { transfer: ts!, order: os! };
+}
+
 interface Op { id: string; seq: number; state: "intent" | "sent" | "resolved"; sentAt: Date | null; responseCode: string | null; registrarOrderId: string | null }
 async function latestOp(q: Pick<PoolClient, "query">, orderId: string): Promise<Op | null> {
   const r = (await q.query("select * from order_operations where order_id = $1 and kind = 'transfer' order by seq desc limit 1", [orderId])).rows[0];
@@ -62,6 +90,8 @@ const captureBeforeOf = (o: OrderRow) => o.captureBefore ?? new Date((o.authoriz
 const PRE_CAPTURE: OrderState[] = ["authorized", "registrar_unavailable", "registering", "outcome_unknown", "paid_before_registration", "review_hold"];
 /** Transfer states in which the request is out with the registrar and only its status can move it. */
 const UPSTREAM_STATES = ["submitted", "pending_owner_approval", "pending_registry"] as const;
+/** Transfer states before the one send is claimed. */
+const PRE_SEND = ["awaiting_payment", "submitting"] as const;
 
 // -------------------------------------------------------------------------------------------------------------------------------
 // The order-machine hook
@@ -113,7 +143,10 @@ async function beginTransfer(m: M, o: OrderRow): Promise<OrderStep> {
   const svc = m.svc;
   const pi = await svc.stripe.retrievePaymentIntent(o.paymentIntentId);
   if (pi.status === "canceled") return fail(m, o, t, [from], "auth_lost");
-  if (pi.review_open) { const r = await ltx(m, (c) => move(m, c, o.id, [from], "review_hold", {}, { cause: "webhook", detail: { review: "opened" } })); return r ? "progressed" : "wait"; }
+  if (pi.review_open) {
+    const r = await raceTx(m, async (c) => { await hold(c, { id: t.id, states: [t.state] }, { id: o.id, states: [from] }); return (await move(m, c, o.id, [from], "review_hold", {}, { cause: "webhook", detail: { review: "opened" } })) ?? lose(); });
+    return r ? "progressed" : "wait";
+  }
   if (pi.status === "succeeded") await ltx(m, (c) => alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "unexpected_capture" }));
 
   const bump = async (why: string, to: OrderState = from): Promise<OrderStep> => {
@@ -152,12 +185,12 @@ async function beginTransfer(m: M, o: OrderRow): Promise<OrderStep> {
     throw e;
   }
 
-  const moved = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, [from], "registering", { next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: true } });
-    if (!row) return null;
+  const moved = await raceTx(m, async (c) => {
+    await hold(c, { id: t.id, states: [t.state] }, { id: o.id, states: [from] });
+    const row = (await move(m, c, o.id, [from], "registering", { next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: true } })) ?? lose();
     const last = await latestOp(c, o.id);
     if (!last || last.state === "resolved") await insertIntent(c, o, (last?.seq ?? 0) + 1);
-    await c.query("update transfers_in set state = 'submitting' where id = $1 and state in ('awaiting_payment','submitting')", [t.id]);
+    one(await c.query("update transfers_in set state = 'submitting' where id = $1 and state = $2", [t.id, t.state]));
     return row;
   });
   return moved ? "progressed" : "wait";
@@ -168,9 +201,11 @@ async function beginTransfer(m: M, o: OrderRow): Promise<OrderStep> {
 // -------------------------------------------------------------------------------------------------------------------------------
 
 async function driveTransfer(m: M, o: OrderRow): Promise<OrderStep> {
+  // The operation first, then the transfer row: the send claim moves both in one transaction, so a worker that sees the claim also
+  // sees the transfer it wrote (and its next check), never an older transfer row beside a newer operation.
+  const op = await latestOp(cron(m), o.id);
   const t = await transferOfOrder(cron(m), o.id);
   if (!t) return "wait";
-  const op = await latestOp(cron(m), o.id);
   if (!op) {
     await ltx(m, async (c) => { const s = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state; if (s === "registering" || s === "paid_before_registration") await insertIntent(c, o, 1); });
     return "progressed";
@@ -191,16 +226,14 @@ async function sendTransfer(m: M, o: OrderRow, t: TransferRow, op: Op): Promise<
   const at = now(m);
 
   // Claim the one send and take the code out of storage in the same transaction.
-  const claimed = await ltx(m, async (c) => {
-    const r = await c.query(
-      `update order_operations op set state = 'sent', sent_at = $2, attempt_id = $3::uuid
-        where op.id = $1 and op.state = 'intent' and exists (select 1 from orders x where x.id = op.order_id and x.state in ('registering','paid_before_registration')) returning id`,
-      [op.id, at, m.attemptId ?? crypto.randomUUID()]);
-    if (r.rowCount !== 1) return null;
-    const row = (await c.query("select auth_code_enc from transfers_in where id = $1 for update", [t.id])).rows[0];
+  const claimed = await raceTx(m, async (c) => {
+    await hold(c, { id: t.id, states: PRE_SEND }, { id: o.id, states: ["registering", "paid_before_registration"] });
+    one(await c.query("update order_operations set state = 'sent', sent_at = $2, attempt_id = $3::uuid where id = $1 and state = 'intent'", [op.id, at, m.attemptId ?? crypto.randomUUID()]));
+    const row = (await c.query("select auth_code_enc from transfers_in where id = $1", [t.id])).rows[0];
     if (!row?.auth_code_enc) return { code: null as string | null };
     const code = await m.ctx.pii.decrypt(row.auth_code_enc, `transfer_auth:${t.id}`);
-    await c.query("update transfers_in set auth_code_enc = null, auth_code_wiped_at = $2, state = 'submitted', sent_at = $2, next_check_at = $3 where id = $1", [t.id, at, new Date(at.getTime() + POLL_EVERY_MS)]);
+    one(await c.query("update transfers_in set auth_code_enc = null, auth_code_wiped_at = $2, state = 'submitted', sent_at = $2, next_check_at = $3 where id = $1 and state = any($4)",
+      [t.id, at, new Date(at.getTime() + POLL_EVERY_MS), PRE_SEND]));
     return { code };
   });
   if (!claimed) return "wait";
@@ -216,30 +249,41 @@ async function sendTransfer(m: M, o: OrderRow, t: TransferRow, op: Op): Promise<
     // A worker that "died" after sending: the operation stays `sent`, the code is already gone, and the poll reconciles.
     if (!(e instanceof RegistrarError)) throw e;
     const code = authCode; authCode = "";
-    return onSendError(m, o, t, op, e, code);
+    // From here on the transfer is the row the claim wrote: `submitted`, sent, its code gone from storage.
+    return onSendError(m, o, { ...t, state: "submitted", sentAt: at, hasAuthCode: false }, op, e, code);
   } finally { authCode = ""; }
 
   const stage = res.status === "pending_owner" ? "pending_owner_approval" : "pending_registry";
-  await ltx(m, async (c) => {
-    await resolveOp(c, op.id, "accepted", res.registrarOrderId);
-    await c.query("update transfers_in set registrar_order_id = $2, upstream_status = $3, state = $4, owner_deadline_at = $5 where id = $1 and state = 'submitted'",
-      [t.id, res.registrarOrderId, res.status, stage, stage === "pending_owner_approval" ? new Date(at.getTime() + 5 * 86_400_000) : null]);
+  // The registrar's answer is a fact about the operation, whoever records the transfer's stage.
+  await ltx(m, (c) => resolveOp(c, op.id, "accepted", res.registrarOrderId));
+  const won = await raceTx(m, async (c) => {
+    // Still `submitted` and the order still waiting on this send: a poll that found the request first, or a sweep that already
+    // called the outcome unknown, wins, and its own next step records the stage.
+    await hold(c, { id: t.id, states: ["submitted"] }, { id: o.id, states: ["registering", "paid_before_registration"] });
+    one(await c.query("update transfers_in set registrar_order_id = $2, upstream_status = $3, state = $4, owner_deadline_at = $5 where id = $1 and state = 'submitted'",
+      [t.id, res.registrarOrderId, res.status, stage, stage === "pending_owner_approval" ? new Date(at.getTime() + 5 * 86_400_000) : null]));
     await appendAudit(m.ctx, c, { chainId: o.userId, actorKind: "system", action: "transfer_in.submitted", resourceKind: "transfer", resourceId: t.id, detail: { order: o.id, status: res.status } });
     await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: "submitted", actor: "system", transferId: t.id, detail: { status: res.status } });
+    return true;
   });
+  if (!won) return "wait";
   // Read the status once more now, so the stage mail carries the deadline the provider set.
   const fresh = await loadOrder(cron(m), o.id);
-  if (fresh) await pollTransfer(m, fresh, { ...t, state: stage, registrarOrderId: res.registrarOrderId, sentAt: at, nextCheckAt: null }, { ...op, state: "resolved", sentAt: at }, { force: true });
+  const ft = await transferOfOrder(cron(m), o.id);
+  if (fresh && ft) await pollTransfer(m, fresh, ft, await latestOp(cron(m), o.id), { force: true });
   return "progressed";
 }
 
 async function onSendError(m: M, o: OrderRow, t: TransferRow, op: Op, e: RegistrarError, code: string): Promise<OrderStep> {
   const at = now(m);
   if (e.outcomeUnknown || e.kind === "unknown") {
-    const r = await ltx(m, async (c) => {
+    const r = await raceTx(m, async (c) => {
+      // Only while the transfer is still `submitted`: a poll that already found the request upstream knows the outcome, and the
+      // order must never read `outcome_unknown` beside a transfer the registry has.
+      await hold(c, { id: t.id, states: ["submitted"] }, { id: o.id, states: ["registering", "paid_before_registration"] });
       const row = await move(m, c, o.id, "registering", "outcome_unknown", { next_check_at: new Date(at.getTime() + 60_000), check_count: 1 }, { cause: "job", detail: { code: e.code ?? e.kind } });
       if (row) await alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "transfer_outcome_unknown" });
-      await c.query("update transfers_in set next_check_at = $2 where id = $1", [t.id, new Date(at.getTime() + 60_000)]);
+      one(await c.query("update transfers_in set next_check_at = $2 where id = $1 and state = 'submitted'", [t.id, new Date(at.getTime() + 60_000)]));
       return row;
     });
     return r ? "progressed" : "wait";
@@ -248,13 +292,14 @@ async function onSendError(m: M, o: OrderRow, t: TransferRow, op: Op, e: Registr
     // Refused before any effect: nothing was submitted, so the code goes back into storage for the retry (encrypted, as before).
     const env = await m.ctx.pii.encrypt(code, `transfer_auth:${t.id}`);
     const next = { next_check_at: new Date(at.getTime() + backoffMs(o.checkCount)), check_count: o.checkCount + 1 };
-    const r = await ltx(m, async (c) => {
+    const r = await raceTx(m, async (c) => {
+      const now0 = await hold(c, { id: t.id, states: ["submitted"] }, { id: o.id, states: ["registering", "paid_before_registration"] });
       await resolveOp(c, op.id, e.kind);
-      await c.query("update transfers_in set auth_code_enc = $2, auth_code_wiped_at = null, state = 'submitting', sent_at = null where id = $1 and state = 'submitted'", [t.id, env]);
+      one(await c.query("update transfers_in set auth_code_enc = $2, auth_code_wiped_at = null, state = 'submitting', sent_at = null where id = $1 and state = 'submitted'", [t.id, env]));
       await insertIntent(c, o, op.seq + 1);
       if (e.kind === "insufficient_funds") await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "registrar_funds" });
-      if (o.state === "paid_before_registration") { await c.query("update orders set next_check_at = $2, check_count = $3 where id = $1", [o.id, next.next_check_at, next.check_count]); return null; }
-      return move(m, c, o.id, ["registering"], "registrar_unavailable", next, { cause: "job", detail: { kind: e.kind } });
+      if (now0.order === "paid_before_registration") { one(await c.query("update orders set next_check_at = $2, check_count = $3 where id = $1 and state = 'paid_before_registration'", [o.id, next.next_check_at, next.check_count])); return null; }
+      return (await move(m, c, o.id, ["registering"], "registrar_unavailable", next, { cause: "job", detail: { kind: e.kind } })) ?? lose();
     });
     return r ? "progressed" : "wait";
   }
@@ -291,9 +336,10 @@ export async function pollTransfer(m: M, o: OrderRow, t: TransferRow, op: Op | n
 
   if (!st) {
     if (o.state === "registering" && op?.state === "sent" && op.sentAt && at.getTime() - op.sentAt.getTime() > UNKNOWN_AFTER_MS) {
-      const r = await ltx(m, async (c) => {
-        const row = await move(m, c, o.id, "registering", "outcome_unknown", { next_check_at: new Date(at.getTime() + 60_000), check_count: 1 }, { cause: "system", detail: { sweep: true } });
-        if (row) await alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "transfer_outcome_unknown" });
+      const r = await raceTx(m, async (c) => {
+        await hold(c, { id: t.id, states: [t.state] }, { id: o.id, states: ["registering"] });
+        const row = (await move(m, c, o.id, "registering", "outcome_unknown", { next_check_at: new Date(at.getTime() + 60_000), check_count: 1 }, { cause: "system", detail: { sweep: true } })) ?? lose();
+        await alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "transfer_outcome_unknown" });
         return row;
       });
       return r ? "progressed" : "wait";
@@ -309,26 +355,31 @@ export async function pollTransfer(m: M, o: OrderRow, t: TransferRow, op: Op | n
 
   // The unknown submit turned out to have landed: back to registering, and the operation is resolved.
   if (o.state === "outcome_unknown") {
-    await ltx(m, async (c) => {
+    const back = await raceTx(m, async (c) => {
+      await hold(c, { id: t.id, states: [t.state] }, { id: o.id, states: ["outcome_unknown"] });
       if (op) await resolveOp(c, op.id, "accepted", st!.registrarOrderId ?? null);
-      await c.query("update transfers_in set registrar_order_id = coalesce(registrar_order_id, $2) where id = $1", [t.id, st!.registrarOrderId ?? null]);
-      await move(m, c, o.id, "outcome_unknown", "registering", { next_check_at: null, check_count: 0 }, { cause: "job", detail: { found: st!.status } });
+      one(await c.query("update transfers_in set registrar_order_id = coalesce(registrar_order_id, $2) where id = $1 and state = $3", [t.id, st!.registrarOrderId ?? null, t.state]));
+      return (await move(m, c, o.id, "outcome_unknown", "registering", { next_check_at: null, check_count: 0 }, { cause: "job", detail: { found: st!.status } })) ?? lose();
     });
-    o = (await loadOrder(cron(m), o.id)) ?? o;
+    if (!back) return "wait";
+    o = back;
   }
 
   if (st.status === "completed") return completeTransfer(m, o, t, st);
   if (st.status === "cancelled") return failUpstream(m, o, t, st.failure ?? "unknown", st.nackReason ?? null);
 
   const stage = st.status === "pending_owner" ? "pending_owner_approval" : "pending_registry";
-  await ltx(m, async (c) => {
+  const staged = await raceTx(m, async (c) => {
+    // Conditional on both rows as this worker read them: a worker whose view of the order is stale (it moved to outcome_unknown, say)
+    // or whose transfer row is older than another worker's write loses and writes nothing; the next poll reads again.
+    await hold(c, { id: t.id, states: [t.state] }, { id: o.id, states: [o.state] });
     const u = await c.query(
       `update transfers_in set state = $2, upstream_status = $3, registrar_order_id = coalesce(registrar_order_id, $4),
               owner_deadline_at = coalesce($5, owner_deadline_at), registry_deadline_at = coalesce($6, registry_deadline_at), next_check_at = $7
-        where id = $1 and state = any($8) returning state, owner_deadline_at, registry_deadline_at`,
-      [t.id, stage, st!.status, st!.registrarOrderId ?? null, st!.ownerDeadlineAt ?? null, st!.registryDeadlineAt ?? null, new Date(at.getTime() + POLL_EVERY_MS), ["submitted", "pending_owner_approval", "pending_registry"]]);
+        where id = $1 and state = $8 and state = any($9) returning state, owner_deadline_at, registry_deadline_at`,
+      [t.id, stage, st!.status, st!.registrarOrderId ?? null, st!.ownerDeadlineAt ?? null, st!.registryDeadlineAt ?? null, new Date(at.getTime() + POLL_EVERY_MS), t.state, [...UPSTREAM_STATES]]);
+    one(u);
     const row = u.rows[0];
-    if (!row) return;
     if (t.state !== stage) await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: stage, actor: "system", transferId: t.id });
     const deadline = stage === "pending_owner_approval" ? row.owner_deadline_at : row.registry_deadline_at;
     // One mail per stage. A pending_registry mail waits until the provider has named the registry deadline.
@@ -338,17 +389,18 @@ export async function pollTransfer(m: M, o: OrderRow, t: TransferRow, op: Op | n
         timing: timingFor(t.tld) === TIMING_REGISTRY ? "registry" : "standard",
       }, `transfer.stage:${t.id}:${stage}`);
     }
+    return true;
   });
+  if (!staged) return "wait";
   await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = any($3)", [o.id, new Date(at.getTime() + POLL_EVERY_MS), ["registering", "paid_before_registration"]]);
 
   // The card hold is about to end and the transfer is still pending: take the payment now (the transfer stays pending, never "complete").
   if (o.state === "registering" && at.getTime() >= captureBeforeOf(o).getTime() - EARLY_CAPTURE_BEFORE_HOLD_END_MS) {
-    const r = await ltx(m, async (c) => {
-      const row = await move(m, c, o.id, "registering", "capturing", {}, { cause: "system", detail: { early_capture: "hold_ending", transfer_state: stage } });
-      if (row) {
-        await c.query("update transfers_in set early_capture_at = $2 where id = $1", [t.id, at]);
-        await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: "charged_before_completion", actor: "system", transferId: t.id });
-      }
+    const r = await raceTx(m, async (c) => {
+      await hold(c, { id: t.id, states: [stage] }, { id: o.id, states: ["registering"] });
+      const row = (await move(m, c, o.id, "registering", "capturing", {}, { cause: "system", detail: { early_capture: "hold_ending", transfer_state: stage } })) ?? lose();
+      one(await c.query("update transfers_in set early_capture_at = $2 where id = $1 and state = $3", [t.id, at, stage]));
+      await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: "charged_before_completion", actor: "system", transferId: t.id });
       return row;
     });
     return r ? "progressed" : "wait";
@@ -373,12 +425,14 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
   const policy = await transferPolicy(cron(m), t.tld);
   const lockUntil = new Date(at.getTime() + (policy?.lockDays ?? 60) * 86_400_000);
   const expires = st.expiresAt ?? dom.expiresAt ?? null;
-  const done = await ltx(m, async (c) => {
-    const u = await c.query(
-      // The registry's word wins over ours: a transfer we had written off (late watch, or a cancel that lost the race) is still the customer's name.
-      "update transfers_in set state = 'completed', upstream_status = 'completed', completed_at = $2, next_check_at = null, auth_code_enc = null where id = $1 and state <> 'completed' returning id",
-      [t.id, at]);
-    if (u.rowCount !== 1) return null;
+  const done = await raceTx(m, async (c) => {
+    // The registry's word wins over ours: a transfer we had written off (late watch, or a cancel that lost the race) is still the
+    // customer's name, so any state but `completed` is expected. The order is acted on in the state it is in now, under the lock.
+    const now0 = await hold(c, { id: t.id, states: null }, { id: o.id, states: null });
+    if (now0.transfer === "completed") lose();
+    one(await c.query(
+      "update transfers_in set state = 'completed', upstream_status = 'completed', completed_at = $2, next_check_at = null, auth_code_enc = null where id = $1 and state = $3 returning id",
+      [t.id, at, now0.transfer]));
     const ins = await c.query(
       `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
        values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
@@ -397,10 +451,10 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
       [domainId, o.userId, lockUntil]);
     const pending = await c.query("select id from order_operations where order_id = $1 and kind = 'transfer' and state = 'sent'", [o.id]);
     for (const p of pending.rows) await resolveOp(c, p.id, "accepted", st.registrarOrderId ?? null);
-    if ((["registering", "outcome_unknown", "paid_before_registration", "registrar_unavailable", "canceling"] as OrderState[]).includes(o.state)) {
-      await move(m, c, o.id, [o.state], "registered", { registered_at: at, next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: "completed" } });
-    } else if (o.state === "captured" || o.state === "capturing" || o.state === "capture_failed") {
-      await c.query("update orders set registered_at = coalesce(registered_at, $2) where id = $1", [o.id, at]);
+    if ((["registering", "outcome_unknown", "paid_before_registration", "registrar_unavailable", "canceling"] as OrderState[]).includes(now0.order)) {
+      (await move(m, c, o.id, [now0.order], "registered", { registered_at: at, next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: "completed" } })) ?? lose();
+    } else if (now0.order === "captured" || now0.order === "capturing" || now0.order === "capture_failed") {
+      one(await c.query("update orders set registered_at = coalesce(registered_at, $2) where id = $1 and state = $3", [o.id, at, now0.order]));
     } else {
       // Completed after we gave up on it (late): the name is the customer's; the money is a person's decision.
       await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "late_transfer_unpaid" });
@@ -417,40 +471,50 @@ const stateFor = (f: TransferFailure) => (f === "nack" ? "nacked" : f === "cance
 
 /** The registrar reported the transfer over without completing. */
 async function failUpstream(m: M, o: OrderRow, t: TransferRow, failure: TransferFailure, nack: TransferDenialReason | null): Promise<OrderStep> {
-  return fail(m, o, t, [...PRE_CAPTURE, "capturing", "capture_failed", "captured"], failure, { nack });
+  return fail(m, o, t, [...PRE_CAPTURE, "capturing", "capture_failed", "captured"], failure, { nack, transferFrom: UPSTREAM_STATES });
 }
+
+/** Transfer states a transfer can end from. */
+const ENDABLE = ["awaiting_confirmation", "awaiting_payment", "submitting", "submitted", "pending_owner_approval", "pending_registry"] as const;
 
 /**
  * End a transfer: the transfer row reaches its terminal state and the order moves to canceling (the hold is released) or, when the
  * payment was already taken, to refund_pending. `lateWatch` keeps polling the name for 14 days after an unknown submit.
+ * Conditional on what the caller read: the order must be in `from`, and the transfer in the state the caller saw (`transferFrom`
+ * widens that for the registry's own word, which ends a transfer from any live state). Otherwise another worker moved one of them
+ * first (a stale "not sent yet" must never end a transfer that was just sent): nothing is written. A transfer already ended (by a
+ * cancel that got there first, say) is not ended twice; the order still follows, with the reason already recorded.
  */
-export async function fail(m: M, o: OrderRow, t: TransferRow, from: OrderState[], failure: TransferFailure, opts: { nack?: TransferDenialReason | null; lateWatch?: boolean; actor?: "user" | "system" } = {}): Promise<OrderStep> {
+export async function fail(m: M, o: OrderRow, t: TransferRow, from: OrderState[], failure: TransferFailure, opts: { nack?: TransferDenialReason | null; lateWatch?: boolean; actor?: "user" | "system"; transferFrom?: readonly string[] } = {}): Promise<OrderStep> {
   const at = now(m);
-  const r = await ltx(m, async (c) => {
-    const now0 = (await c.query("select state, failure, nack_reason from transfers_in where id = $1 for update", [t.id])).rows[0];
-    if (!now0 || now0.state === "completed") return null;
-    const u = await c.query(
-      `update transfers_in set state = $2, failure = $3, nack_reason = $4, ended_at = $5, next_check_at = $6, late_watch_until = $7,
-              auth_code_enc = null, auth_code_wiped_at = coalesce(auth_code_wiped_at, $5), confirm_code_hash = null
-        where id = $1 and state = any($8) returning id`,
-      [t.id, stateFor(failure), failure, opts.nack ?? null, at, opts.lateWatch ? new Date(at.getTime() + POLL_EVERY_MS) : null, opts.lateWatch ? new Date(at.getTime() + LATE_WATCH_MS) : null,
-        ["awaiting_confirmation", "awaiting_payment", "submitting", "submitted", "pending_owner_approval", "pending_registry"]]);
-    // Already ended (by a cancel that got there first, say): the order still follows, with the reason already recorded.
-    if (u.rowCount !== 1) { failure = (now0.failure as TransferFailure) ?? failure; opts = { ...opts, nack: now0.nack_reason ?? opts.nack }; }
-    else await appendAudit(m.ctx, c, { chainId: o.userId, actorKind: opts.actor ?? "system", actorId: opts.actor === "user" ? o.userId : undefined, action: `transfer_in.${stateFor(failure)}`, resourceKind: "transfer", resourceId: t.id, detail: { failure, ...(opts.nack ? { nack: opts.nack } : {}) } });
-    if (u.rowCount === 1) await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: stateFor(failure), actor: opts.actor ?? "system", transferId: t.id, detail: { failure, ...(opts.nack ? { nack: opts.nack } : {}) } });
-    const cur = (await c.query("select state, stripe_payment_intent_id, cancel_pi_id from orders where id = $1 for update", [o.id])).rows[0];
-    if (!cur || !from.includes(cur.state)) return "ended";
+  const r = await raceTx(m, async (c) => {
+    const locked = await hold(c, { id: t.id, states: null }, { id: o.id, states: from });
+    if (locked.transfer === "completed") return null;
+    const now0 = (await c.query("select state, failure, nack_reason from transfers_in where id = $1", [t.id])).rows[0];
+    const ended = !(ENDABLE as readonly string[]).includes(locked.transfer);
+    if (ended) { failure = (now0.failure as TransferFailure) ?? failure; opts = { ...opts, nack: now0.nack_reason ?? opts.nack }; }
+    else {
+      const expected = (opts.transferFrom ?? [t.state]).filter((x) => (ENDABLE as readonly string[]).includes(x));
+      if (!expected.includes(locked.transfer)) lose();
+      one(await c.query(
+        `update transfers_in set state = $2, failure = $3, nack_reason = $4, ended_at = $5, next_check_at = $6, late_watch_until = $7,
+                auth_code_enc = null, auth_code_wiped_at = coalesce(auth_code_wiped_at, $5), confirm_code_hash = null
+          where id = $1 and state = $8 returning id`,
+        [t.id, stateFor(failure), failure, opts.nack ?? null, at, opts.lateWatch ? new Date(at.getTime() + POLL_EVERY_MS) : null, opts.lateWatch ? new Date(at.getTime() + LATE_WATCH_MS) : null, locked.transfer]));
+      await appendAudit(m.ctx, c, { chainId: o.userId, actorKind: opts.actor ?? "system", actorId: opts.actor === "user" ? o.userId : undefined, action: `transfer_in.${stateFor(failure)}`, resourceKind: "transfer", resourceId: t.id, detail: { failure, ...(opts.nack ? { nack: opts.nack } : {}) } });
+      await logTransfer(m.ctx, c, { userId: o.userId, direction: "in", event: stateFor(failure), actor: opts.actor ?? "system", transferId: t.id, detail: { failure, ...(opts.nack ? { nack: opts.nack } : {}) } });
+    }
+    const cur = (await c.query("select state, stripe_payment_intent_id, cancel_pi_id from orders where id = $1", [o.id])).rows[0];
     if (cur.state === "captured") {
-      await move(m, c, o.id, "captured", "refund_pending", { cancel_pi_id: cur.stripe_payment_intent_id }, { cause: "system", detail: { reason: "transfer_failed", failure } });
+      (await move(m, c, o.id, "captured", "refund_pending", { cancel_pi_id: cur.stripe_payment_intent_id }, { cause: "system", detail: { reason: "transfer_failed", failure } })) ?? lose();
       await mailUser(m.ctx, c, o.userId, "transfer_failed", { fqdn: o.fqdn, reason: failure, ...(opts.nack ? { nackReason: opts.nack } : {}), money: "refunding" }, `transfer.failed:${t.id}`);
       return "refund";
     }
     if (cur.state === "draft") {
-      await move(m, c, o.id, "draft", "voided", { void_reason: "transfer_failed", failure_code: failure }, { cause: "system", detail: { failure } });
+      (await move(m, c, o.id, "draft", "voided", { void_reason: "transfer_failed", failure_code: failure }, { cause: "system", detail: { failure } })) ?? lose();
       return "voided";
     }
-    await move(m, c, o.id, [cur.state], "canceling", { void_reason: "transfer_failed", failure_code: failure, cancel_pi_id: cur.cancel_pi_id ?? cur.stripe_payment_intent_id }, { cause: "job", detail: { failure } });
+    (await move(m, c, o.id, [cur.state], "canceling", { void_reason: "transfer_failed", failure_code: failure, cancel_pi_id: cur.cancel_pi_id ?? cur.stripe_payment_intent_id }, { cause: "job", detail: { failure } })) ?? lose();
     return "canceling";
   });
   if (r === "refund") await advance(m, o.id);   // the machine settles the refund

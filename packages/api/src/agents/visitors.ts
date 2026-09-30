@@ -4,14 +4,13 @@ import type { AppContext } from "../ports.ts";
 import { HttpError, json } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
-import { revokeAllBindings } from "../bindings/tokens.ts";
 import { scopeString, storedScopes } from "../bindings/scopes.ts";
 import { ownedDomain } from "../domain-mgmt/common.ts";
 import { parseEnv, pointerMac } from "../vault/secrets.ts";
 import { normalizeSecretName } from "../vault/names.ts";
 import { vaultOf } from "../vault/context.ts";
 import { iso, notFound, sessionUserOf, DAY_MS } from "./common.ts";
-import { sentHomeNotice } from "./notices.ts";
+import { sendAllHome } from "./sendhome.ts";
 
 /**
  * The visitor experience (PLAN 4.5, threat row 15): everything that holds a token for the account, what each may do, when
@@ -53,23 +52,8 @@ function hostOf(u: string | undefined): string | null {
   try { return new URL(u).host; } catch { return null; }
 }
 
-/**
- * "Send all visitors home" (ST-66): every binding (agents, connected apps and command-line sign-ins), every refresh token
- * of either kind, every approved-but-unclaimed device grant, every pending request and every open OAuth consent, in one
- * transaction. Never rate limited: a revoke path must always work.
- */
-export async function sendAllHome(ctx: AppContext, userId: string, cause = "send_home") {
-  return withUser(ctx.runtime, userId, async (c) => {
-    const base = await revokeAllBindings(ctx, c, userId, cause);
-    const now = ctx.clock.now();
-    const oauthRefresh = await c.query("update oauth_refresh_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
-    const consents = await c.query("update oauth_authorizations set status = 'denied', decided_at = $2 where user_id = $1 and status in ('pending','approved')", [userId, now]);
-    const voided = await c.query("update agent_requests set state = 'void', decision_reason = 'send_home' where user_id = $1 and state = 'pending'", [userId]);
-    await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "visitors.sent_home", resourceKind: "user", resourceId: userId, detail: { ...base, oauth_refresh: oauthRefresh.rowCount ?? 0, consents: consents.rowCount ?? 0, voided: voided.rowCount ?? 0 } });
-    await sentHomeNotice(ctx, c, userId, { bindings: base.bindings });
-    return { revoked: base.bindings, refresh_tokens: base.refresh + (oauthRefresh.rowCount ?? 0), device_grants: base.devices, requests_declined: base.requests + (voided.rowCount ?? 0), consents_closed: consents.rowCount ?? 0 };
-  });
-}
+/** "Send all visitors home" (ST-66): the one revoke path, shared with the undo of a recovery (ST-48). */
+export { sendAllHome, sendAllHomeIn } from "./sendhome.ts";
 
 export async function sendHomeHandler(req: HandlerReq): Promise<HandlerResult> {
   return json(await sendAllHome(req.ctx, sessionUserOf(req)));

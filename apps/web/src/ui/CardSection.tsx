@@ -11,6 +11,9 @@ import { StepUp, type StepUpRequest } from "./StepUp";
 const CARD_ERRORS: Record<string, string> = {
   card_screen_refused: "This name can't have a public card. Names that look like a well-known brand, mix alphabets, or appear on a safety list are refused.",
   card_publish_blocked: "Publishing cards is switched off for this account after earlier take-downs. Write to support@mosshatch.com to ask about it.",
+  card_taken_down: "This card was taken down after a report, so it cannot be published again for now. Nothing was published. Write to support@mosshatch.com to ask about it.",
+  card_not_eligible: "This domain cannot have a public card right now. Nothing was published.",
+  card_mismatch: "The portrait changed while you were confirming, so nothing was published. Press Publish card again.",
   screen_unavailable: "The safety check is not answering. Try again in a few minutes.",
   publish_not_configured: "Public cards are not switched on here yet.",
   invalid_image: "The portrait could not be prepared in this browser. Try again, or use another browser.",
@@ -30,7 +33,8 @@ export function CardSection({ domainId, fqdn }: { domainId: string; fqdn: string
     setMsg(null);
     try {
       const p = await renderPortrait(fqdn);
-      setReq({ type: "card.publish", target: domainId, input: { image_sha256: p.sha256, indexable: listed },
+      // The card's own refusals (at prepare or at upload) are shown in its words, inside the step-up where they happen.
+      setReq({ type: "card.publish", target: domainId, input: { image_sha256: p.sha256, indexable: listed }, explain,
         run: async (id) => { await publishCard(domainId, p.png, listed, id); setMsg("Your card is published. It appears on hatchkind.com after the next update, within a few minutes."); } });
     } catch (e) { setMsg(explain(e)); }
   };
@@ -50,7 +54,8 @@ export function CardSection({ domainId, fqdn }: { domainId: string; fqdn: string
       ) : info.eligible ? (
         <>
           <p>Share this domain's creature at <strong>{info.address.replace(/^https:\/\//, "")}</strong>. The card shows the name, its creature and the hatch date. It never shows your name or email.</p>
-          <p><label className="check"><input type="checkbox" checked={listed} onChange={(e) => setListed(e.target.checked)} /> Let search engines list this card</label></p>
+          {/* The passkey signs this choice, so it is locked while the prompt is open. */}
+          <p><label className="check"><input type="checkbox" checked={listed} disabled={!!req} onChange={(e) => setListed(e.target.checked)} /> Let search engines list this card</label></p>
           {!req && <div className="row-actions"><button type="button" className="btn primary" onClick={() => void start()}>Publish card</button></div>}
         </>
       ) : <p>This domain cannot have a public card right now.</p>}

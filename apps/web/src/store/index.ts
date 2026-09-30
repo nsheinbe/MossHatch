@@ -68,6 +68,24 @@ export interface UiState {
 }
 
 export const PERSISTED_KEYS = ["calm", "sound", "rehideSeconds"] as const;
+type Prefs = Pick<UiState, (typeof PERSISTED_KEYS)[number]>;
+
+/**
+ * The only way stored preferences come back (the read side of the store contract): the three keys, each type-checked, and
+ * `rehideSeconds` as a whole number from 5 to 100 (the most a value or code may stay up); anything else in the entry is ignored,
+ * so nothing stored can open a panel, name an account or keep a value on screen.
+ */
+export function restorePrefs(stored: unknown): Partial<Prefs> {
+  const o = stored && typeof stored === "object" && !Array.isArray(stored) ? (stored as Record<string, unknown>) : {};
+  const out: Partial<Prefs> = {};
+  if (typeof o.calm === "boolean") out.calm = o.calm;
+  if (typeof o.sound === "boolean") out.sound = o.sound;
+  if ("rehideSeconds" in o) {
+    const n = o.rehideSeconds;
+    out.rehideSeconds = typeof n === "number" && Number.isFinite(n) ? Math.min(100, Math.max(5, Math.round(n))) : 30;
+  }
+  return out;
+}
 
 const prefersReduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -82,7 +100,8 @@ export const useUi = create<UiState>()(
     }),
     {
       name: "mosshatch.prefs",
-      partialize: (s) => Object.fromEntries(PERSISTED_KEYS.map((k) => [k, s[k]])) as Pick<UiState, (typeof PERSISTED_KEYS)[number]>,
+      partialize: (s) => Object.fromEntries(PERSISTED_KEYS.map((k) => [k, s[k]])) as Prefs,
+      merge: (stored, current) => ({ ...current, ...restorePrefs(stored) }),
       version: 1,
     },
   ),

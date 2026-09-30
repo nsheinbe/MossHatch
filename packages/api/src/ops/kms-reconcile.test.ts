@@ -10,7 +10,7 @@ import { MemoryErasureLedger } from "./erasure.ts";
 import { FakeDns } from "../mail/dns.ts";
 import { registerOpsJobs } from "./jobs.ts";
 import {
-  AUDIT_SETTLE_MS, CloudTrailLookupEvents, FakeCloudTrail, KMS_RECONCILE_EVERY_SEC, kmsReconcile, parseCloudTrailDecrypt, UNAUDITED_ALERT_TARGET_MS, type KmsDecryptEvent,
+  AUDIT_SETTLE_MS, CloudTrailLookupEvents, FakeCloudTrail, KMS_RECONCILE_EVERY_SEC, kmsReconcile, parseCloudTrailDecrypt, UNAUDITED_ALERT_TARGET_MS, type CloudTrailPort, type KmsDecryptEvent,
 } from "./kms-reconcile.ts";
 
 let app: TestApp;
@@ -126,6 +126,40 @@ describe("ST-10: KMS reconcile under real KMS semantics (token from the original
       expect(pagedAfter!).toBeLessThanOrEqual(UNAUDITED_ALERT_TARGET_MS);
       expect(pagedAfter!).toBeGreaterThanOrEqual(5 * MIN);          // not before CloudTrail delivered it
     } finally { app.ctx.services = {}; }
+  });
+
+  it("ST-10: runs that did not happen leave no gap: after a two-hour outage the next run still judges a Decrypt from the start of it", async () => {
+    const ct = new FakeCloudTrail();
+    expect((await kmsReconcile(app.ctx, ct)).events).toBe(0);                          // the last run that read CloudTrail
+    const t0 = app.clock.now();
+    ct.events = [decrypt("in-gap", "row-gap", new Date(t0.getTime() + 2 * MIN))];
+    app.clock.advance(120 * MIN);                                                        // no run for two hours (tick outage, CloudTrail failing)
+    expect((await kmsReconcile(app.ctx, ct)).unaudited).toEqual(["in-gap"]);
+    expect((await q("select 1 from alerts where kind = 'kms.decrypt_unaudited' and state = 'open'")).length).toBe(1);
+    // A gap longer than the catch-up bound cannot be judged from the trail any more: that pages instead of passing silently.
+    app.clock.advance(30 * 60 * MIN);
+    await kmsReconcile(app.ctx, ct);
+    expect((await q("select severity from alerts where kind = 'kms.reconcile_gap'")).map((a) => a.severity)).toEqual(["page"]);
+  });
+
+  it("ST-10: a reconcile that cannot read CloudTrail pages once it has been blind for the 15-minute target", async () => {
+    const broken: CloudTrailPort = { listDecryptEvents: async () => { throw new Error("cloudtrail: http 403"); } };
+    await kmsReconcile(app.ctx, new FakeCloudTrail());
+    app.clock.advance(5 * MIN);
+    await expect(kmsReconcile(app.ctx, broken)).rejects.toThrow();
+    expect((await q("select 1 from alerts where kind = 'kms.reconcile_blind'")).length).toBe(0);   // one failed run is not yet blindness
+    app.clock.advance(11 * MIN);
+    await expect(kmsReconcile(app.ctx, broken)).rejects.toThrow();
+    expect((await q("select severity, detail from alerts where kind = 'kms.reconcile_blind'"))).toEqual([{ severity: "page", detail: { minutes: 16 } }]);
+    // Seeing CloudTrail again closes it; a monitor that never saw CloudTrail counts from its first failure.
+    app.clock.advance(MIN);
+    await kmsReconcile(app.ctx, new FakeCloudTrail());
+    expect((await q("select 1 from alerts where kind = 'kms.reconcile_blind' and state = 'open'")).length).toBe(0);
+    await q("delete from flags where name like 'audit.%'");
+    await expect(kmsReconcile(app.ctx, broken)).rejects.toThrow();
+    app.clock.advance(15 * MIN);
+    await expect(kmsReconcile(app.ctx, broken)).rejects.toThrow();
+    expect((await q("select 1 from alerts where kind = 'kms.reconcile_blind' and state = 'open'")).length).toBe(1);
   });
 
   it("the CloudTrail LookupEvents adapter signs, filters on Decrypt, paginates and parses (fake fetch: the real API is unproven)", async () => {

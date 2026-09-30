@@ -135,6 +135,16 @@ export function explainDomain(e: unknown): string {
   return explain(e);
 }
 
+/**
+ * A roll back the server refuses (422). It keeps the write-safety rules: rolling back an older snapshot also undoes every change made
+ * after it, so it may not remove mail, verification or service records those changes added, nor more than five records at once.
+ */
+export function explainRollback(e: unknown): string {
+  if (e instanceof ApiError && e.code === "unrelated_delete") return "Nothing was changed. Rolling back this far would also undo the changes made after it, including mail, verification or service records they added. Roll back the newer changes first, one at a time from the top of the list.";
+  if (e instanceof ApiError && e.code === "too_many_deletes") return "Nothing was changed. Rolling back this far would remove more than five records at once. Roll back the newer changes first, one at a time from the top of the list, or delete records one by one.";
+  return explainDomain(e);
+}
+
 export function money(minor: string | null | undefined): string {
   if (minor === null || minor === undefined) return "";
   const neg = minor.startsWith("-"), digits = (neg ? minor.slice(1) : minor).padStart(3, "0");

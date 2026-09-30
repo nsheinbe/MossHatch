@@ -6,7 +6,8 @@ import type { StripeEvent } from "./port.ts";
 /**
  * C-40 dispute-rate alarm. Each tier is config: the network whose ratio it reads, the ratio and event-count floors (both must
  * be reached), and the denominator. Sources (COMPLIANCE C-40, accessed 2026-09-29; the per-event fee is unverified):
- * - own target 0.5% (C-40 "alarm at 0.5%", PLAN 4.6 row 25): warns early, before any network program;
+ * - own target 0.5% (C-40 "alarm at 0.5%", PLAN 4.6 row 25): pages early, before any network program (PLAN Operations lists
+ *   "dispute ratio at 0.5%" as S1, which is a page);
  * - Stripe reviews accounts from about 0.75%;
  * - Visa VAMP, Stripe-documented Non-compliant tier: 0.5% and 5 events, where Visa "may assess fees" (reachable at launch volume);
  * - Visa VAMP Excessive (US, since 1 Apr 2026): 1.5% and 1,500 events;
@@ -29,7 +30,7 @@ export interface DisputeTier {
   denominator: "same_month" | "previous_month";
 }
 export const DISPUTE_TIERS: DisputeTier[] = [
-  { id: "own_target", network: "all", minRatio: 0.005, minEvents: 1, severity: "warn", counts: "vamp", denominator: "same_month" },
+  { id: "own_target", network: "all", minRatio: 0.005, minEvents: 1, severity: "page", counts: "vamp", denominator: "same_month" },
   { id: "stripe_review", network: "all", minRatio: 0.0075, minEvents: 1, severity: "page", counts: "vamp", denominator: "same_month" },
   { id: "visa_vamp_non_compliant", network: "visa", minRatio: 0.005, minEvents: 5, severity: "page", counts: "vamp", denominator: "same_month" },
   { id: "visa_vamp_excessive", network: "visa", minRatio: 0.015, minEvents: 1500, severity: "page", counts: "vamp", denominator: "same_month" },

@@ -73,7 +73,8 @@ async function cancelHandler(r: HandlerReq) {
       await advance(m, o.id);          // it may have just completed or ended: the next read shows which
       throw new HttpError(409, "not_cancellable", "The transfer can no longer be cancelled.");
     }
-    await fail(m, o, t, ["registering", "outcome_unknown", "paid_before_registration", "registrar_unavailable", "capturing", "capture_failed", "captured"], "cancelled_by_us", { actor: "user" });
+    // The registrar confirmed the cancel: it ends the transfer from whichever upstream stage a poll has recorded meanwhile.
+    await fail(m, o, t, ["registering", "outcome_unknown", "paid_before_registration", "registrar_unavailable", "capturing", "capture_failed", "captured"], "cancelled_by_us", { actor: "user", transferFrom: ["submitted", "pending_owner_approval", "pending_registry"] });
     await advance(m, o.id);
   } else {
     throw new HttpError(409, "not_cancellable", "The transfer can no longer be cancelled.");

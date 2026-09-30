@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { withUser } from "@mosshatch/db";
+import { withUser, type PoolClient } from "@mosshatch/db";
 import type { Router } from "../http/router.ts";
 import { HttpError, json } from "../http/router.ts";
 import type { HandlerReq, HandlerResult, Route } from "../http/types.ts";
@@ -212,15 +212,18 @@ async function deleteConnection(req: HandlerReq): Promise<HandlerResult> {
   if (!cn) throw notFound();
   let removed = 0;
   try {
-    removed = await withUser(req.ctx.runtime, actor.userId, async (c) => {
-      const apps = (await c.query("select id, applied_records from recipe_applications where user_id = $1 and domain_id = $2 and state = 'applied' and plan->'connections' @> $3::jsonb", [actor.userId, cn.domain_id, JSON.stringify([{ id: cn.id }])])).rows;
-      const records = apps.flatMap((a) => (a.applied_records ?? []) as DnsRecord[]);
-      let n = 0;
-      if (records.length) n = (await writeRecipeZone(req.ctx, c, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" })).removed;
+    const apps = await withUser(req.ctx.runtime, actor.userId, async (c) => (await c.query("select id, applied_records from recipe_applications where user_id = $1 and domain_id = $2 and state = 'applied' and plan->'connections' @> $3::jsonb", [actor.userId, cn.domain_id, JSON.stringify([{ id: cn.id }])])).rows);
+    const records = apps.flatMap((a) => (a.applied_records ?? []) as DnsRecord[]);
+    // The applications are marked removed only with a confirmed write (in its follow-up, under the zone lock): a removal whose outcome
+    // is unknown keeps its snapshot for rollback and leaves them applied, so the disconnect can be retried.
+    const done = async (c: PoolClient, n: number) => {
       if (apps.length) await c.query("update recipe_applications set state = 'removed' where id = any($1::uuid[]) and state = 'applied'", [apps.map((a) => a.id)]);
       await appendAudit(req.ctx, c, { chainId: actor.userId, actorKind: "user", actorId: actor.userId, action: "connection.records_removed", resourceKind: "connection", resourceId: cn.id, detail: { applications: apps.length, removed: n } });
       return n;
-    });
+    };
+    removed = records.length
+      ? (await writeRecipeZone(req.ctx, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" }, (c, w) => done(c, w.removed))).after ?? 0
+      : await withUser(req.ctx.runtime, actor.userId, (c) => done(c, 0));
   } catch (e) { if (e instanceof RecipeFail) throw new HttpError(409, e.code); throw e; }
   await disconnect(req.ctx, actor.userId, cn.domain_id, cn.service);
   return json({ connection_id: cn.id, status: "ended", records_removed: removed });

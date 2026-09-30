@@ -10,7 +10,7 @@ import { mintToken, parseToken } from "../util/token.ts";
 import { revokeBinding, ACCESS_TTL_MS, REFRESH_IDLE_MS } from "../bindings/tokens.ts";
 import { scopeString, storedScopes } from "../bindings/scopes.ts";
 import { mcpResource } from "../mcp/routes.ts";
-import { resolveClient } from "./clients.ts";
+import { clientByRef, resolveClient } from "./clients.ts";
 
 /**
  * The token and revocation endpoints of the MCP authorization server (RFC 6749 3.2 and 5, RFC 7636, RFC 7009; OAuth 2.1).
@@ -60,7 +60,11 @@ async function codeGrant(ctx: AppContext, b: Record<string, unknown>): Promise<H
   if (resource !== undefined && resource !== (row.resource ?? mcpResource(ctx))) return oauthError("invalid_target");
   const out = await withUser(ctx.runtime, row.user_id, async (c) => {
     const won = await c.query("update oauth_authorizations set status = 'exchanged' where id = $1 and status = 'approved' and code_hash = $2", [row.id, sha256(code)]);
-    if (won.rowCount !== 1) return null;
+    if (won.rowCount !== 1) {
+      // Lost a race with another exchange of the same code: that is a second use too, so the grant it produced is revoked.
+      if (row.binding_id) await revokeBinding(ctx, c, row.user_id, row.binding_id, "oauth_code_reuse", { kind: "system" });
+      return null;
+    }
     const bind = (await c.query("select id, family_expires_at, revoked_at from bindings where id = $1 and user_id = $2 for update", [row.binding_id, row.user_id])).rows[0];
     if (!bind || bind.revoked_at || !bind.family_expires_at || new Date(bind.family_expires_at) <= now) return null;
     const t = await issue(ctx, c, { userId: row.user_id, bindingId: row.binding_id, clientRef: row.client_ref, familyEnd: new Date(bind.family_expires_at) });
@@ -102,12 +106,17 @@ async function refreshGrant(ctx: AppContext, b: Record<string, unknown>): Promis
   return out ? json(out, 200, { headers: NO_STORE }) : oauthError("invalid_grant");
 }
 
-/** POST /oauth/mcp/token (anonymous, form-encoded). */
+/**
+ * POST /oauth/mcp/token (anonymous, form-encoded). The limit keys on (source range, presented credential prefix), never on the
+ * range alone: hosted connectors (claude.ai's 160.79.104.0/21) share one range, so a burst of bad calls from it must not
+ * throttle every other client there (threat row 38, as for bearer failures).
+ */
 export async function tokenHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
-  const rl = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `oauth.token:${req.ipPrefix}`, TOKEN_LIMIT));
-  if (!rl.allowed) return json({ error: "slow_down" }, 429, { headers: { ...NO_STORE, "Retry-After": String(rl.retryAfterSeconds) } });
   const b = (req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
+  const cred = typeof b.refresh_token === "string" ? b.refresh_token : typeof b.code === "string" ? b.code : "";
+  const rl = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `oauth.token:${req.ipPrefix}|${cred.slice(0, 12)}`, TOKEN_LIMIT));
+  if (!rl.allowed) return json({ error: "slow_down" }, 429, { headers: { ...NO_STORE, "Retry-After": String(rl.retryAfterSeconds) } });
   if (Object.values(b).some((v) => Array.isArray(v))) return oauthError("invalid_request");
   if (b.grant_type === "authorization_code") return codeGrant(ctx, b);
   if (b.grant_type === "refresh_token") return refreshGrant(ctx, b);
@@ -125,14 +134,16 @@ export async function revokeHandler(req: HandlerReq): Promise<HandlerResult> {
   if (!token) return oauthError("invalid_request");
   const parsed = parseToken(token);
   if (!parsed) return json({}, 200, { headers: NO_STORE });
-  const client = clientId ? await resolveClient(ctx, clientId) : null;
   let owner: { binding_id: string; user_id: string; client_ref: string | null } | undefined;
   if (parsed.kind === "clr") owner = (await withNoUser(ctx.runtime, (c) => c.query("select binding_id, user_id, client_ref from oauth_refresh_get($1)", [parsed.hash]))).rows[0];
   else {
     const g = (await withNoUser(ctx.runtime, (c) => c.query("select id, user_id from auth_binding_get($1,$2)", [parsed.prefix, parsed.hash]))).rows[0];
     if (g) owner = { binding_id: g.id, user_id: g.user_id, client_ref: (await withUser(ctx.runtime, g.user_id, (c) => c.query("select oauth_client_id from bindings where id = $1", [g.id]))).rows[0]?.oauth_client_id ?? null };
   }
-  if (owner && (!owner.client_ref || !client || client.id === owner.client_ref)) {
+  // A presented client id must be the grant's own. It is compared with the stored client only: this anonymous, never limited
+  // endpoint never fetches a metadata document (it would make the server fetch any URL on request).
+  const sameClient = !owner?.client_ref || !clientId || (await clientByRef(ctx, owner.client_ref))?.client_id === clientId;
+  if (owner && sameClient) {
     await withUser(ctx.runtime, owner.user_id, (c) => revokeBinding(ctx, c, owner.user_id, owner.binding_id, "oauth_revoke", { kind: "agent", id: owner.binding_id }));
   }
   return json({}, 200, { headers: NO_STORE });

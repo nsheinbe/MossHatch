@@ -1,4 +1,5 @@
-import dns from "node:dns/promises";
+import dns from "node:dns";
+import https from "node:https";
 import net from "node:net";
 import { z } from "zod";
 import { withNoUser } from "@mosshatch/db";
@@ -45,7 +46,10 @@ export function redirectMatches(registered: readonly string[], presented: string
 export const isLoopback = (u: string) => { try { const x = new URL(u); return LOOPBACK.has(x.hostname); } catch { return false; } };
 export const hostOf = (u: string) => { try { return new URL(u).host; } catch { return "unknown"; } };
 
-const cleanName = (s: unknown) => (typeof s === "string" ? s.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || null : null);
+// Control, bidi (overrides, embeddings, isolates, marks), zero-width and line-separator characters: a reported name shown on the
+// consent screen cannot reorder or hide its own text.
+// eslint-disable-next-line no-control-regex
+const cleanName = (s: unknown) => (typeof s === "string" ? s.replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\ufff9-\ufffb]/g, "").trim().slice(0, 80) || null : null);
 
 // ---- Dynamic Client Registration (RFC 7591), the fallback ----------------------------------------------------------------------
 
@@ -84,6 +88,8 @@ const CimdDoc = z.looseObject({
   token_endpoint_auth_method: z.string().max(50).optional(),
 });
 export const CIMD_TTL_MS = 24 * 3_600_000;
+/** Metadata document fetches (own targets): a document at most 3 times and a host at most 30 times in 10 minutes. */
+export const CIMD_FETCH_LIMITS = { url: { bucket: "oauth.cimd.url", max: 3, windowSeconds: 600 }, host: { bucket: "oauth.cimd.host", max: 30, windowSeconds: 600 } };
 
 /** A client id that is a metadata document URL: https, a path, no fragment, no credentials, no query. */
 export function isCimdUrl(s: string): boolean {
@@ -91,32 +97,67 @@ export function isCimdUrl(s: string): boolean {
   return u.protocol === "https:" && u.pathname.length > 1 && !u.hash && !u.username && !u.password && !u.search && s.length <= 500;
 }
 
+export const CIMD_MAX_BYTES = 16_384;
+export const CIMD_TIMEOUT_MS = 5000;
+
 /**
- * The real fetcher (not exercised in this container: no outbound calls). SSRF-safe as far as `fetch` allows: https only, no
- * redirects, a 5-second timeout, 16 KiB at most, and a name that resolves only to public addresses (checked before the
- * request; a rebinding between the check and the connect is the residual risk this cannot close).
+ * The socket's own name lookup: every address a name resolves to must be public, and the connection uses exactly the addresses
+ * checked here, so a name that answers differently between a check and the connect (DNS rebinding) cannot reach a private one.
+ */
+export const publicOnlyLookup = ((host: string, opts: dns.LookupOptions, cb: (err: Error | null, address: string | dns.LookupAddress[], family?: number) => void) => {
+  dns.lookup(host, { ...opts, all: true }, (err, addrs) => {
+    if (err) return cb(err, "");
+    const list = addrs as unknown as dns.LookupAddress[];
+    if (list.length === 0 || list.some((a) => !publicAddress(a.address))) return cb(new Error("private_address"), "");
+    if (opts?.all) cb(null, list); else cb(null, list[0]!.address, list[0]!.family);
+  });
+}) as unknown as net.LookupFunction;
+
+/**
+ * The real fetcher (not exercised against a live host in this container: no outbound calls). https only, no redirects (a 3xx is
+ * a failure), 5 seconds in all, at most 16 KiB read from the wire (the stream is cut, never buffered first), and only public
+ * addresses, checked by the lookup the socket connects with (an IP literal is checked before the request).
  */
 export class SafeMetadataFetcher implements ClientMetadataPort {
+  constructor(private readonly timeoutMs = CIMD_TIMEOUT_MS) {}
   async fetch(url: string): Promise<unknown> {
     if (!isCimdUrl(url)) throw new Error("bad_url");
-    const host = new URL(url).hostname;
-    const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true });
-    if (addrs.length === 0 || addrs.some((a) => !publicAddress(a.address))) throw new Error("private_address");
-    const res = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(5000), headers: { accept: "application/json" } });
-    if (!res.ok) throw new Error("fetch_failed");
-    const text = await res.text();
-    if (text.length > 16_384) throw new Error("too_large");
-    return JSON.parse(text);
+    const u = new URL(url);
+    const literal = u.hostname.replace(/^\[(.*)\]$/, "$1");
+    if (net.isIP(literal) && !publicAddress(literal)) throw new Error("private_address");
+    const body = await new Promise<Buffer>((resolve, reject) => {
+      let settled = false;
+      const done = (e: Error | null, v?: Buffer) => { if (settled) return; settled = true; clearTimeout(timer); if (e) { req.destroy(); reject(e); } else resolve(v!); };
+      const timer = setTimeout(() => done(new Error("timeout")), this.timeoutMs);
+      const req = https.request(u, { method: "GET", headers: { accept: "application/json" }, lookup: publicOnlyLookup, agent: false }, (res) => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status > 299) return done(new Error("fetch_failed"));
+        if (Number(res.headers["content-length"] ?? 0) > CIMD_MAX_BYTES) return done(new Error("too_large"));
+        const parts: Buffer[] = [];
+        let n = 0;
+        res.on("data", (chunk: Buffer) => { n += chunk.length; if (n > CIMD_MAX_BYTES) done(new Error("too_large")); else parts.push(chunk); });
+        res.on("end", () => done(null, Buffer.concat(parts)));
+        res.on("error", () => done(new Error("fetch_failed")));
+        res.on("close", () => done(new Error("fetch_failed")));
+      });
+      req.on("error", (e) => done(e.message === "private_address" ? e : new Error("fetch_failed")));
+      req.end();
+    });
+    return JSON.parse(body.toString("utf8"));
   }
 }
 
+// Not public: this host, private and shared ranges, link-local and site-local, multicast and reserved, and the IPv6 forms that
+// carry an IPv4 address (mapped, compatible, NAT64, 6to4), whatever that address is.
+// Two lists: a BlockList also matches an IPv4 address against IPv6 rules through its mapped form, and ::ffff:0:0/96 is here.
+const PRIVATE_V4 = new net.BlockList(), PRIVATE_V6 = new net.BlockList();
+for (const [a, p] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3]] as const) PRIVATE_V4.addSubnet(a, p, "ipv4");
+for (const [a, p] of [["::", 96], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]] as const) PRIVATE_V6.addSubnet(a, p, "ipv6");
+
 export function publicAddress(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split(".").map(Number) as [number, number];
-    return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224);
-  }
-  const x = ip.toLowerCase();
-  return !(x === "::" || x === "::1" || x.startsWith("fe80") || x.startsWith("fc") || x.startsWith("fd") || x.startsWith("::ffff:") || x.startsWith("ff"));
+  const kind = net.isIP(ip);
+  if (kind === 0) return false;
+  try { return kind === 4 ? !PRIVATE_V4.check(ip, "ipv4") : !PRIVATE_V6.check(ip, "ipv6"); } catch { return false; }
 }
 
 export function metadataPort(ctx: Pick<AppContext, "services">): ClientMetadataPort {
@@ -132,6 +173,11 @@ export async function resolveClient(ctx: AppContext, clientId: unknown): Promise
   if (have?.disabled_at) return null;
   if (have && (have.registration === "dcr" || (have.fetched_at && ctx.clock.now().getTime() - new Date(have.fetched_at).getTime() < CIMD_TTL_MS))) return have;
   if (!isCimdUrl(clientId)) return null;
+  // Anyone can name any URL here (the authorize endpoint is anonymous), so fetches are limited per document and per host: the
+  // server is never a free reflector against one site. Over the limit, a cached client is used as it stands.
+  const may = await withNoUser(ctx.runtime, async (c) => (await hit(ctx, c, `oauth.cimd:${clientId}`, CIMD_FETCH_LIMITS.url)).allowed
+    && (await hit(ctx, c, `oauth.cimd.host:${new URL(clientId).hostname}`, CIMD_FETCH_LIMITS.host)).allowed);
+  if (!may) return have ?? null;
   let doc;
   try { doc = CimdDoc.parse(await metadataPort(ctx).fetch(clientId)); } catch { return have ?? null; }
   // The document must name itself, and every redirect it lists must be one we would accept.

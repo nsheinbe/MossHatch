@@ -1,7 +1,7 @@
-import { tx } from "@mosshatch/db";
+import { tx, type Pool, type PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { signV4, type AwsCredentials, type FetchLike } from "../vault/kms/aws.ts";
-import { raiseAlert } from "./alerts.ts";
+import { closeAlerts, raiseAlert } from "./alerts.ts";
 
 /**
  * audit.kms_reconcile (PLAN 4.6 row 2, ST-10): every CloudTrail `Decrypt` must match an audit row written BEFORE the call.
@@ -25,9 +25,15 @@ import { raiseAlert } from "./alerts.ts";
  * guaranteed), so an unmatched Decrypt pages within about 10 minutes, inside the 15-minute own target of ST-10. An event
  * delivered more than 60 minutes late is missed by this job; the audit-side check below (an audited read whose Decrypt
  * never appeared within 30 minutes) is the signal that delivery is late or the trail is excluding KMS events.
+ *
+ * Runs that did not happen (a tick outage, CloudTrail failing) leave no gap: the window starts one lookback before the last
+ * run that read CloudTrail, up to MAX_CATCHUP_MS back; a longer gap pages (`kms.reconcile_gap`) because it can no longer be
+ * judged here. A monitor that has not read CloudTrail for the 15-minute target pages too (`kms.reconcile_blind`).
  */
 export const KMS_RECONCILE_EVERY_SEC = 300;
 export const CLOUDTRAIL_LOOKBACK_MS = 60 * 60_000;
+/** How far back a run reaches to cover runs that did not happen. */
+export const MAX_CATCHUP_MS = 24 * 60 * 60_000;
 /** An audited read whose Decrypt has not appeared after this long is reported (trail late, misconfigured, or the call failed). */
 export const AUDIT_SETTLE_MS = 30 * 60_000;
 export const MATCH_BEFORE_MS = 5 * 60_000;
@@ -136,7 +142,21 @@ export function parseCloudTrailDecrypt(raw: string): KmsDecryptEvent | null {
 }
 
 const AUDIT_CURSOR = "audit.kms_reconcile.audit_cursor";
+/** The `now` of the last run that read CloudTrail and judged what it listed. */
+const EVENT_CURSOR = "audit.kms_reconcile.event_cursor";
+/** Set by the first failing read after a success; cleared by the next success. */
+const FAILING_SINCE = "audit.kms_reconcile.failing_since";
 const LOCK = "audit.kms_reconcile";
+
+type Q = Pick<Pool | PoolClient, "query">;
+async function flagTime(q: Q, name: string): Promise<Date | null> {
+  const v = (await q.query("select value from flags where name = $1", [name])).rows[0]?.value;
+  const d = typeof v === "string" ? new Date(v) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+const setFlagTime = (q: Q, name: string, at: Date) => q.query(
+  "insert into flags (name, value, updated_by) values ($1, to_jsonb($2::text), 'kms_reconcile') on conflict (name) do update set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()",
+  [name, at.toISOString()]);
 
 export interface KmsReconcileResult {
   /** Newly judged events this run. */
@@ -151,11 +171,26 @@ interface AuditCand { chain_id: string; seq: string; at: Date; token: string; us
 
 export async function kmsReconcile(ctx: Pick<AppContext, "cron" | "clock" | "services">, ct: CloudTrailPort): Promise<KmsReconcileResult> {
   const now = ctx.clock.now();
-  const from = new Date(now.getTime() - CLOUDTRAIL_LOOKBACK_MS);
-  const listed = (await ct.listDecryptEvents(from, now)).filter((e) => !e.errorCode);
+  const lastRead = await flagTime(ctx.cron, EVENT_CURSOR);
+  const wanted = new Date(Math.min(now.getTime(), (lastRead ?? now).getTime()) - CLOUDTRAIL_LOOKBACK_MS);
+  const floor = new Date(now.getTime() - MAX_CATCHUP_MS);
+  const from = wanted < floor ? floor : wanted;
+  let listed: KmsDecryptEvent[];
+  try {
+    listed = (await ct.listDecryptEvents(from, now)).filter((e) => !e.errorCode);
+  } catch (e) {
+    // Blind: nothing is being judged. Page once it lasts as long as the ST-10 target, counted from the last good read (or the first failure).
+    await ctx.cron.query("insert into flags (name, value, updated_by) values ($1, to_jsonb($2::text), 'kms_reconcile') on conflict (name) do nothing", [FAILING_SINCE, now.toISOString()]);
+    const since = lastRead ?? await flagTime(ctx.cron, FAILING_SINCE) ?? now;
+    if (now.getTime() - since.getTime() >= UNAUDITED_ALERT_TARGET_MS) {
+      await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "kms.reconcile_blind", subject: "cloudtrail", detail: { minutes: Math.floor((now.getTime() - since.getTime()) / 60_000) } });
+    }
+    throw e;
+  }
 
   return tx(ctx.cron, async (c) => {
     await c.query("select pg_advisory_xact_lock(hashtext($1))", [LOCK]);
+    if (wanted < floor) await raiseAlert(ctx, c, { severity: "page", kind: "kms.reconcile_gap", subject: "cloudtrail", detail: { unjudged_minutes: Math.floor((floor.getTime() - wanted.getTime()) / 60_000) } });
     const ids = [...new Set(listed.map((e) => e.eventId))];
     const judged = new Set((await c.query("select event_id from kms_reconcile_events where event_id = any($1::text[])", [ids])).rows.map((r) => r.event_id as string));
     const seen = new Set<string>();
@@ -200,6 +235,11 @@ export async function kmsReconcile(ctx: Pick<AppContext, "cron" | "clock" | "ser
         "insert into flags (name, value, updated_by) values ($1, to_jsonb($2::text), 'kms_reconcile') on conflict (name) do update set value = excluded.value, updated_by = excluded.updated_by, updated_at = now()",
         [AUDIT_CURSOR, settled.toISOString()]);
     }
+
+    // CloudTrail was read and every listed event judged: the next run's window starts from here.
+    await setFlagTime(c, EVENT_CURSOR, now);
+    await c.query("delete from flags where name = $1", [FAILING_SINCE]);
+    await closeAlerts(c, "kms.reconcile_blind", "cloudtrail");
 
     // Event ids and counts only (opaque), never context values. The open page is what the vault's auto-deny watches.
     if (unaudited.length) await raiseAlert(ctx, c, { severity: "page", kind: "kms.decrypt_unaudited", subject: "cloudtrail", detail: { count: unaudited.length, event_ids: unaudited.slice(0, 10) } });

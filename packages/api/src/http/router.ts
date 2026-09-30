@@ -132,7 +132,7 @@ export class Router {
       // On every non-cron route a value that is not an mh_ token is 401, and the cron secret is just a bad token here.
       const m = /^Bearer (\S+)$/.exec(authz);
       const parsed = m ? parseToken(m[1]!) : null;
-      if (!parsed) throw new HttpError(401, "unauthorized");
+      if (!parsed) { await countBearerFailure(ctx, _req, (m?.[1] ?? authz).slice(0, 12)); throw new HttpError(401, "unauthorized"); }
       if (!allowed.has("binding")) throw new HttpError(403, "forbidden_principal");
       const row = (await withNoUser(ctx.runtime, (c) => c.query("select * from auth_binding_get($1, $2)", [parsed.prefix, parsed.hash]))).rows[0];
       const now = ctx.clock.now();

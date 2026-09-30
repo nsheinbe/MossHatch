@@ -3,7 +3,7 @@ import type { AppContext } from "../ports.ts";
 import { raiseAlert } from "../ops/alerts.ts";
 import { advance, machine, move, requestRefund, RefundRefused } from "../orders/machine.ts";
 import { loadOrder } from "../orders/support.ts";
-import type { OrderRow } from "../orders/types.ts";
+import { REFUND_CAP_PER_30_DAYS, type OrderRow } from "../orders/types.ts";
 import { DAY_MS, loadDomain, registrarOf, svcOf, tableExists, type Q } from "./common.ts";
 import { releaseDomain } from "./release.ts";
 import { advanceRenewal, cancelDraftRenewals, startRefund } from "./renewals.ts";
@@ -83,17 +83,32 @@ export async function refundOrder(ctx: AppContext, userId: string, orderId: stri
     if (!w.refundable) throw new RefundDenied("tld_non_refundable");
     if (!o.registeredAt || now.getTime() > o.registeredAt.getTime() + Math.min(5, w.windowDays ?? 5) * DAY_MS) throw new RefundDenied("window_closed");
     if (!opts.confirmDelete) throw new RefundDenied("confirm_delete_required");
-    const n = (await ctx.cron.query("select count(*)::int as n from refunds where user_id = $1 and created_at >= $2", [userId, new Date(now.getTime() - 30 * DAY_MS)])).rows[0].n as number;
-    if (n >= 3) throw new RefundDenied("refund_cap");
     if (!o.paymentIntentId) throw new RefundDenied("not_refundable");
-    const moved = await tx(ctx.cron, (c) => move(m, c, o.id, "renewed", "refund_pending", { cancel_pi_id: o.paymentIntentId }, { cause: "user", detail: { reason: "renewal_refund_deletes_name", renewal: true } }));
-    if (!moved) throw new RefundDenied("not_refundable");
+    const piId = o.paymentIntentId;
+    // The cap is checked and the refund_pending move made in one transaction under the same per-user lock as the orders module's
+    // requestRefund, and a refund still in flight counts as much as a booked one: parallel requests cannot pass it.
+    const moved = await tx(ctx.cron, async (c) => {
+      await c.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`mh.refunds:${userId}`]);
+      if (await refundsInWindow(c, userId, new Date(now.getTime() - 30 * DAY_MS)) >= REFUND_CAP_PER_30_DAYS) return "cap" as const;
+      return (await move(m, c, o.id, "renewed", "refund_pending", { cancel_pi_id: piId }, { cause: "user", detail: { reason: "renewal_refund_deletes_name", renewal: true } })) ? "moved" as const : "lost" as const;
+    });
+    if (moved === "cap") throw new RefundDenied("refund_cap");
+    if (moved !== "moved") throw new RefundDenied("not_refundable");
     await advance(m, o.id);
     const out = (await loadOrder(ctx.cron, o.id))!;
     await afterNameRefund(ctx, out, d.id, d.fqdn);
     return out;
   }
   throw new RefundDenied("not_refundable");
+}
+
+/** Refunds booked in the window plus refunds in flight (refund_pending with no refund row yet), counted the way the orders module counts them. */
+async function refundsInWindow(c: Q, userId: string, since: Date): Promise<number> {
+  const r = await c.query(
+    `select (select count(*) from refunds where user_id = $1 and created_at >= $2)
+          + (select count(*) from orders x where x.user_id = $1 and x.state = 'refund_pending' and not exists (select 1 from refunds r where r.order_id = x.id)) as n`,
+    [userId, since]);
+  return Number(r.rows[0].n);
 }
 
 async function termOfOrder(ctx: AppContext, orderId: string): Promise<TermRow | null> {

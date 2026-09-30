@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { machine, requestRefund } from "./machine.ts";
-import { buyAndPay, deliverAll, drain, makeBuyer, makeHarness, orderRow, postOrder, type Buyer, type OrdersHarness } from "./testkit.ts";
+import { buyAndPay, deliver, deliverAll, drain, makeBuyer, makeHarness, orderRow, postOrder, type Buyer, type OrdersHarness } from "./testkit.ts";
 import { REGION_NOT_AVAILABLE_MESSAGE, billingRegion } from "./tax.ts";
 import { nexusReadings, recordSales } from "./sales-ledger.ts";
 import { voidMessage } from "./support.ts";
@@ -106,6 +106,28 @@ describe("C-43: the sales ledger per billing region, and nexus alerts at 60% and
     expect(await or()).toEqual({ gross: 0, tax: 0, txn_count: 1 });            // a full refund nets the money out; the sale still counted as a transaction
     const ent = await q("select source_kind, gross_minor::int as gross, txn_delta from sales_ledger_entries where region = 'US-OR' order by source_kind");
     expect(ent).toEqual([{ source_kind: "payment", gross: pay.amount - pay.tax, txn_delta: 1 }, { source_kind: "refund", gross: -(pay.amount - pay.tax), txn_delta: 0 }]);
+  });
+
+  it("C-43: Dashboard refunds after a partial one reach the payment total and the ledger, once each, whatever order they arrive in", async () => {
+    const b = await makeBuyer(h, `ledger-dash-${++n}@example.com`);
+    const { id } = await paidThrough(b, { country: "US", state: "ID" });
+    const pi = (await orderRow(h, id)).stripe_payment_intent_id as string;
+    const amount = Number((await q("select amount_minor from payments where order_id = $1 and status = 'succeeded'", [id]))[0].amount_minor);
+    h.stripe.takeEvents();
+    await h.stripe.createRefund({ paymentIntent: pi, amount: 500 }, `dash-a-${n}`);            // an operator refunds part in the Dashboard
+    await deliverAll(h);
+    expect((await orderRow(h, id)).state).toBe("partially_refunded");
+    await h.stripe.createRefund({ paymentIntent: pi, amount: 300 }, `dash-b-${n}`);            // then a bit more
+    const second = h.stripe.takeEvents();
+    await h.stripe.createRefund({ paymentIntent: pi }, `dash-c-${n}`);                         // then the rest
+    const third = h.stripe.takeEvents();
+    for (const ev of [...third, ...second, ...third]) expect((await deliver(h, ev)).status).toBe(200);   // out of order, and a replay
+    expect((await orderRow(h, id)).state).toBe("refunded");
+    expect(Number((await q("select refunded_minor from payments where order_id = $1 and status = 'succeeded'", [id]))[0].refunded_minor)).toBe(amount);
+    expect((await q("select amount_minor::int as a from refunds where order_id = $1 order by created_at, id", [id])).map((r) => r.a)).toEqual([500, amount - 500]);
+    await recordSales(h.app.ctx);
+    const net = (await q("select sum(gross_minor + tax_minor)::int as net, sum(txn_delta)::int as txns from sales_ledger_entries where region = 'US-ID'"))[0];
+    expect(net).toEqual({ net: 0, txns: 1 });
   });
 
   it("C-43: an off-session charge with no Checkout address takes the buyer's last known region; with none it is entered as unknown and an operator is told", async () => {

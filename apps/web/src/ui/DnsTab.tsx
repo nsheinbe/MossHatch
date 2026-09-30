@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  addRecords, changeDs, changeNameservers, deleteRecord, draftContact, explainDomain, getContactStart, getDns, getDs, getSnapshots, getVerification, rollback,
+  addRecords, changeDs, changeNameservers, deleteRecord, draftContact, explainDomain, explainRollback, getContactStart, getDns, getDs, getSnapshots, getVerification, rollback,
   sendVerification, submitContact, verifyRegistrant, type ContactFields, type DnsRecordView, type DnsView, type DomainDetail, type DsView, type Security, type Snapshot,
 } from "../lib/domains";
 import { StepUp, type StepUpRequest } from "./StepUp";
@@ -36,9 +36,9 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
   }, [f]);
   useEffect(() => { void load(); }, [load]);
 
-  const act = async (fn: () => Promise<string | void>) => {
+  const act = async (fn: () => Promise<string | void>, explain: (e: unknown) => string = explainDomain) => {
     setBusy(true); setMsg(null);
-    try { const m = await fn(); if (m) setMsg(m); await load(); } catch (e) { setMsg(explainDomain(e)); } finally { setBusy(false); }
+    try { const m = await fn(); if (m) setMsg(m); await load(); } catch (e) { setMsg(explain(e)); } finally { setBusy(false); }
   };
   const changed = (r: { changed: boolean; sensitive?: boolean }, what: string) =>
     !r.changed ? "Nothing changed." : `${what}${r.sensitive ? " This touched a sensitive record, so we emailed you. Roll it back under History if it was not you." : ""}`;
@@ -118,7 +118,7 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
               {snaps.map((s) => (
                 <li key={s.id}>
                   <span>{when(s.taken_at)}: {s.reason === "pre_rollback" ? "before a roll back" : "before a change"}, {s.added} added, {s.removed} removed{s.sensitive ? `, ${s.sensitive} sensitive` : ""}{s.rolled_back_at ? ", rolled back" : ""}. </span>
-                  <button type="button" className="btn secondary small" disabled={busy} aria-label={`Roll back to before the change of ${when(s.taken_at)}`} onClick={() => void act(async () => changed(await rollback(f, s.id), "Rolled back."))}>Roll back</button>
+                  <button type="button" className="btn secondary small" disabled={busy} aria-label={`Roll back to before the change of ${when(s.taken_at)}`} onClick={() => void act(async () => changed(await rollback(f, s.id), "Rolled back."), explainRollback)}>Roll back</button>
                 </li>
               ))}
             </ul>

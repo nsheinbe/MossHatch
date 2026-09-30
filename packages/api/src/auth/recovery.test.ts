@@ -459,3 +459,63 @@ describe("recovery", () => {
     expect(a.status).toBe(422); expect(b.status).toBe(422); expect(a.text).toBe(b.text);
   });
 });
+
+describe("ST-48 review: what a recovery's session enabled beyond passkeys", () => {
+  it("ST-48 review: undoing a recovery also revokes agent and CLI tokens it enabled", async () => {
+    const p = await signUp(app, "r-tokens@example.com");
+    await start(p.email, "codes_email");
+    const r1 = await redeemAndRegister(p, { recoveryCode: p.recoveryCodes[0] });
+    expect(r1.reg!.status).toBe(201);
+    // The hold ends. The recovery's credential then creates what a signed-in person can: an agent token with a pending purchase
+    // request holding a reservation, a CLI sign-in with its refresh token, a connected app with its refresh token, a device
+    // grant approved but not yet claimed, and a consent whose code is not yet exchanged.
+    app.clock.advance(25 * 3600_000);
+    const now = app.clock.now();
+    const o = app.db.owner;
+    const far = new Date(now.getTime() + 30 * 86_400_000);
+    const bytes = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32)));
+    const client = (await o.query("insert into oauth_clients (client_id, registration, redirect_uris) values ($1, 'dcr', array['https://app.example.net/cb']) returning id", [`review-client-${Date.now()}`])).rows[0].id as string;
+    const binding = async (kind: "agent" | "cli", name: string, extra: { cap?: number; reserved?: number; oauth?: boolean } = {}) => {
+      const t = mintToken(kind === "cli" ? "cli" : "live");
+      const id = (await o.query(
+        `insert into bindings (user_id, kind, name, token_prefix, token_hash, scopes, spend_cap_minor, reserved_minor, expires_at, family_expires_at, oauth_client_id, created_at, updated_at)
+         values ($1,$2,$3,$4,$5,'[]',$6,$7,$8,$8,$9,$10,$10) returning id`,
+        [p.userId, kind, name, t.prefix, t.hash, extra.cap ?? 0, extra.reserved ?? 0, far, extra.oauth ? client : null, now])).rows[0].id as string;
+      return id;
+    };
+    const agent = await binding("agent", "Attacker bot", { cap: 100_000, reserved: 5000 });
+    const cli = await binding("cli", "CLI login");
+    const app1 = await binding("agent", "Connected app", { oauth: true });
+    const clr = mintToken("clr"), oref = mintToken("clr");
+    await o.query("insert into binding_refresh_tokens (binding_id, user_id, token_prefix, token_hash, created_at, idle_expires_at, expires_at) values ($1,$2,$3,$4,$5,$6,$6)", [cli, p.userId, clr.prefix, clr.hash, now, far]);
+    await o.query("insert into oauth_refresh_tokens (binding_id, user_id, client_ref, token_prefix, token_hash, created_at, idle_expires_at, expires_at) values ($1,$2,$3,$4,$5,$6,$7,$7)", [app1, p.userId, client, oref.prefix, oref.hash, now, far]);
+    const req = (await o.query(
+      `insert into agent_requests (user_id, binding_id, kind, state, request_hash, params, fqdn_ascii, years, quoted_minor, reservation, created_at, expires_at)
+       values ($1,$2,'register','pending',$3,'{}','review-undo.com',1,5000,'held',$4,$5) returning id`, [p.userId, agent, bytes(), now, new Date(now.getTime() + 3600_000)])).rows[0].id as string;
+    const device = (await o.query("insert into device_requests (device_code_hash, user_code_hash, state, user_id, approved_scopes, created_at, expires_at) values ($1,$2,'approved',$3,'[]',$4,$5) returning id",
+      [bytes(), bytes(), p.userId, now, new Date(now.getTime() + 600_000)])).rows[0].id as string;
+    const consent = (await o.query(
+      `insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, status, binding_id, code_hash, code_expires_at, created_at, expires_at)
+       values ($1,'https://app.example.net/cb',$2,$3,'approved',$4,$5,$6,$7,$6) returning id`, [client, "A".repeat(43), p.userId, app1, bytes(), new Date(now.getTime() + 60_000), now])).rows[0].id as string;
+
+    // The owner signs in with the passkey the recovery suspended: the undo.
+    const undo = await signIn(app, p.auth);
+    expect(undo.res.status).toBe(200);
+    expect(undo.res.json.restored).toBe(true);
+    const b = (await o.query("select id, revoked_at, reserved_minor from bindings where id = any($1::uuid[])", [[agent, cli, app1]])).rows;
+    expect(b).toHaveLength(3);
+    for (const x of b) expect(x.revoked_at, x.id).not.toBeNull();
+    expect((await o.query("select revoked_at from binding_refresh_tokens where binding_id = $1", [cli])).rows[0].revoked_at).not.toBeNull();
+    expect((await o.query("select revoked_at from oauth_refresh_tokens where binding_id = $1", [app1])).rows[0].revoked_at).not.toBeNull();
+    const r = (await o.query("select state, reservation from agent_requests where id = $1", [req])).rows[0];
+    expect(["declined", "void"]).toContain(r.state);
+    expect(r.reservation).toBe("released");
+    expect(String(b.find((x) => x.id === agent)!.reserved_minor)).toBe("0");
+    expect((await o.query("select state from device_requests where id = $1", [device])).rows[0].state).toBe("denied");
+    expect((await o.query("select status from oauth_authorizations where id = $1", [consent])).rows[0].status).toBe("denied");
+    expect(await auditActions(app, p.userId)).toEqual(expect.arrayContaining(["auth.recovery.undone", "binding.revoke_all"]));
+    // The owner's fresh session is untouched and the undo notice says the tokens went too.
+    expect((await me(app, undo.cookie!)).status).toBe(200);
+    expect(app.email.to(p.email).filter((m) => m.kind === "recovery.undone").at(-1)!.text).toMatch(/token/i);
+  });
+});

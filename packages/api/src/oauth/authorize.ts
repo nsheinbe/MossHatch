@@ -4,6 +4,7 @@ import type { AppContext } from "../ports.ts";
 import { HttpError, json } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
+import { hit } from "../ratelimit.ts";
 import { b64u, randomBytes, sha256 } from "../util/bytes.ts";
 import { mintToken } from "../util/token.ts";
 import { markExecuted, requireAction } from "../stepup/gate.ts";
@@ -28,6 +29,8 @@ import { clientByRef, hostOf, isLoopback, redirectMatches, resolveClient } from 
 
 export const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 export const CODE_TTL_MS = 60_000;
+/** Authorization requests per source range (own target). */
+export const AUTHORIZE_LIMIT = { bucket: "oauth.authorize.ip", max: 60, windowSeconds: 600 };
 export const issuer = (ctx: Pick<AppContext, "config">) => ctx.config.origin;
 
 const errorPage = (title: string, text: string): HandlerResult => ({
@@ -50,6 +53,9 @@ const one = (url: URL, k: string): string | undefined | null => {
 /** GET /oauth/authorize (anonymous or a signed-in browser). */
 export async function authorizeHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx, url } = req;
+  // Each call stores a request and may fetch a metadata document: limited per source range (a person's browser comes here).
+  const rl = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `oauth.authorize:${req.ipPrefix}`, AUTHORIZE_LIMIT));
+  if (!rl.allowed) return { ...errorPage("Too many sign-in requests", "Wait a few minutes and try again. Nothing was shared."), status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(rl.retryAfterSeconds) } };
   const clientId = one(url, "client_id"), redirectUri = one(url, "redirect_uri");
   if (!clientId || !redirectUri) return errorPage("This sign-in link is not valid", "The app that sent you here did not say who it is or where to return. Nothing was shared.");
   const client = await resolveClient(ctx, clientId);

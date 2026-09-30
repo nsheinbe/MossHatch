@@ -44,6 +44,9 @@ export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
   const msg = req.body;
   if (Array.isArray(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Batches are not supported" } }, 400);
   if (!isRpcRequest(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Invalid request" } }, 400);
+  // A request's id is never null (MCP), and a message without an id is a notification: only `notifications/*` methods are
+  // accepted as one, so a tool never runs from a message the protocol says gets no answer.
+  if (msg.id === null || (msg.id === undefined && !msg.method.startsWith("notifications/"))) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Invalid request" } }, 400);
   // 2026-07-28 method headers, when sent, must agree with the body (a proxy may route on them).
   const hm = req.request.headers.get("mcp-method"), hn = req.request.headers.get("mcp-name");
   if (hm !== null && hm !== msg.method) return json({ jsonrpc: "2.0", id: msg.id ?? null, error: { code: RPC.invalidRequest, message: "Mcp-Method does not match" } }, 400);

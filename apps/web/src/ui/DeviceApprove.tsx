@@ -37,9 +37,12 @@ export default function DeviceApprove({ onClose }: { onClose: () => void }) {
   useEffect(() => { head.current?.focus(); }, []);
   useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === "Escape" && !req) onClose(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose, req]);
 
+  // What is shown and what the passkey signs are one request: a new or changed code drops the looked-up request and any pending
+  // approval of it, and the scope choices are locked while the passkey prompt is open (the step-up signs the choices made before it).
+  const typed = (v: string) => { setCode(v); setFound(null); setReq(null); };
   const look = async (ev: React.FormEvent) => {
     ev.preventDefault();
-    setMsg(null); setFound(null); setBusy(true);
+    setMsg(null); setFound(null); setReq(null); setBusy(true);
     try { const f = await lookupDevice(code); setFound(f); setEnvs(f.default_envs); setProd([]); }
     catch (e) { setMsg(explainDevice(e)); }
     finally { setBusy(false); }
@@ -68,7 +71,7 @@ export default function DeviceApprove({ onClose }: { onClose: () => void }) {
           <p>Type the code that <code>mosshatch login</code> shows in your terminal. Only do this if you started that sign-in yourself, just now. Nobody from Mosshatch will ever ask you for this code.</p>
           <form className="form-grid" onSubmit={(e) => void look(e)}>
             <label htmlFor="device-code">Code from your terminal</label>
-            <input id="device-code" className="text-input" name="device-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase().slice(0, 12))}
+            <input id="device-code" className="text-input" name="device-code" value={code} onChange={(e) => typed(e.target.value.toUpperCase().slice(0, 12))}
               autoComplete="off" autoCapitalize="characters" spellCheck={false} inputMode="text" placeholder="XXXX-XXXX" aria-describedby="device-code-hint" />
             <p id="device-code-hint" className="fineprint">Eight letters, like BCDF-GHJK.</p>
             <div className="row-actions"><button type="submit" className="btn primary" disabled={busy || code.replace(/[^A-Z]/g, "").length !== 8 || !account}>Look up</button>
@@ -87,14 +90,14 @@ export default function DeviceApprove({ onClose }: { onClose: () => void }) {
               <h4>Reported by the device, not verified</h4>
               <p>{found.reported.client_name ?? "No name given"}{found.reported.client_version ? ` ${found.reported.client_version}` : ""}</p>
               <h4>What it will be able to do</h4>
-              <fieldset className="plain">
+              <fieldset className="plain" disabled={!!req}>
                 <legend>Environments</legend>
                 {(["dev", "preview"] as const).map((e) => (
                   <label key={e} className="check"><input type="checkbox" checked={envs.includes(e)} onChange={(x) => setEnvs(toggle(envs, e, x.target.checked))} /> {e}</label>
                 ))}
               </fieldset>
               {found.prod_choices.length > 0 && (
-                <fieldset className="plain">
+                <fieldset className="plain" disabled={!!req}>
                   <legend>Production, only for the domains you tick</legend>
                   {found.prod_choices.map((d) => <label key={d} className="check"><input type="checkbox" checked={prod.includes(d)} onChange={(x) => setProd(toggle(prod, d, x.target.checked))} /> {d} (prod)</label>)}
                 </fieldset>

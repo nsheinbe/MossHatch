@@ -142,8 +142,9 @@ export default function Visitors() {
               <section className="section" aria-labelledby="new-h">
                 <h3 id="new-h">New token</h3>
                 {made ? (
-                  <div role="status">
-                    <p>Here is the token for {made.name}. It is shown once. Store it where the program reads it, never in a repository.</p>
+                  <div>
+                    {/* Only the sentence is announced; a live region would read the token itself aloud. */}
+                    <p role="status">Here is the token for {made.name}. It is shown once. Store it where the program reads it, never in a repository.</p>
                     <p><code className="token-once" style={{ wordBreak: "break-all" }}>{made.token}</code></p>
                     <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setMade(null)}>I stored it</button></div>
                   </div>

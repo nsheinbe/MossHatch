@@ -18,8 +18,9 @@ export interface PurgeRule {
   extra?: string;
 }
 export const RETENTION_RULES: PurgeRule[] = [
-  // A consent that is the evidence for a live auto-renew mandate stays while the mandate lives.
-  { table: "consents", extra: "not exists (select 1 from renewal_mandates m where m.consent_id = t.id and m.revoked_at is null)" },
+  // A consent that is the evidence for an auto-renew mandate stays while the mandate is kept: live, under legal hold, or before its own
+  // retain_until (a held mandate without the consent that proves it is no evidence).
+  { table: "consents", extra: "not exists (select 1 from renewal_mandates m where m.consent_id = t.id and (m.revoked_at is null or m.legal_hold or m.retain_until >= $1))" },
   { table: "notices" },
   { table: "transfer_log" },
   // A live mandate is never purged, whatever its retain_until says.

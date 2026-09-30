@@ -6,6 +6,7 @@ export * from "./envelope.ts";
 export * from "./names.ts";
 export { installVault, vaultOf, NO_STORE, type VaultServices } from "./context.ts";
 export { writeSecret, deleteSecret, listSecrets, pointerMac } from "./secrets.ts";
+export { sealVersion, commitVersion, type NextVersion, type WriteActor } from "./secrets.ts";
 export { readSecretsForBinding, parseScopes, allowsSecretsRead, holdsForbiddenPair, READ_LIMITS, MAX_READ, type BindingRef, type ReadRequest, type ReadSecret, type ScopeEntry } from "./read.ts";
 export { secretRevealSpec, registerRevealSpec, REVEAL_LIMITS, REVEAL_WINDOW_MS } from "./reveal.ts";
 export { storeConnectionCredential, disconnect, withConnectionCredential, SERVICES as CONNECTION_SERVICES } from "./connections.ts";

@@ -11,7 +11,7 @@ import { checkNewAccountLimits } from "../compliance/velocity.ts";
 import { allows, lintScopes, scopeString, storedScopes, type Scope } from "../bindings/scopes.ts";
 import { canonical, parseForUser } from "../bindings/specs.ts";
 import type { OrdersServices } from "../orders/types.ts";
-import { agentState, displayName, iso, LIMITS, liveBinding, lockUser, notFound, REQUEST_TTL_MS, UUID, type Caller, DAY_MS, HOUR_MS } from "./common.ts";
+import { agentState, assertAgentPurchasesOpen, displayName, iso, LIMITS, liveBinding, lockUser, notFound, REQUEST_TTL_MS, UUID, type Caller, DAY_MS, HOUR_MS } from "./common.ts";
 import { requestNotice, type RequestFacts } from "./notices.ts";
 
 /**
@@ -103,8 +103,13 @@ export async function createRequest(ctx: AppContext, caller: Caller, r: NewReque
   const out = await withUser(ctx.runtime, caller.userId, async (c) => {
     await lockUser(c, caller.userId);
     const now = ctx.clock.now();
-    const b = await liveBinding(c, caller.userId, caller.bindingId, now, true);
+    let b = await liveBinding(c, caller.userId, caller.bindingId, now, true);
     if (!b) throw new HttpError(401, "unauthorized");
+    // This binding's requests past their expiry are expired here, whether or not the sweeper has run: an expired twin still
+    // holds the pending-once index (a repeat would fail on it) and its reservation. The binding row is locked first (the same
+    // order as revoke-all), and read again when the trigger released a reservation.
+    const due = await c.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $3 where binding_id = $1 and user_id = $2 and state = 'pending' and expires_at <= $3", [caller.bindingId, caller.userId, now]);
+    if (due.rowCount) b = (await liveBinding(c, caller.userId, caller.bindingId, now, true))!;
     const twin = (await c.query("select id, expires_at from agent_requests where binding_id = $1 and request_hash = $2 and state = 'pending' and expires_at > $3", [caller.bindingId, r.requestHash, now])).rows[0];
     if (twin) return { ok: { approval_id: twin.id as string, status: "pending_human_approval" as const, created: false, expires_at: iso(twin.expires_at)! } };
     const counts = (await c.query(
@@ -144,6 +149,7 @@ export async function propose(ctx: AppContext, caller: Caller, raw: unknown): Pr
   const p = ProposeInput.safeParse(raw);
   if (!p.success) throw new HttpError(400, "invalid_request");
   if (lintScopes(caller.scopes)) throw new HttpError(403, "scope_conflict");
+  await withUser(ctx.runtime, caller.userId, (c) => assertAgentPurchasesOpen(c));
   if (p.data.kind === "register") {
     if (!allows(caller.scopes, "register.propose", "*", null)) throw new HttpError(403, "scope_missing");
     const priced = await withUser(ctx.runtime, caller.userId, async (c) => {

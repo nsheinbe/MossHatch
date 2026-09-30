@@ -164,6 +164,25 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
     return false;
   }
 
+  // C-43: a further Dashboard refund of an order that is already partially refunded is mirrored too (the block below handles the first
+  // one, from `captured`), so the payment total and the sales ledger, which reads `refunds`, see every refund. Cumulative and idempotent:
+  // an older or replayed event adds nothing.
+  if (ev.type === "charge.refunded" && order && typeof o.payment_intent === "string") {
+    const piRef = o.payment_intent as string;
+    const handled = await tx(ctx.cron, async (c) => {
+      const st = (await c.query("select state, stripe_payment_intent_id from orders where id = $1 for update", [order.id])).rows[0];
+      if (st?.state !== "partially_refunded") return false;
+      if (piRef !== st.stripe_payment_intent_id) return true;
+      const p = (await c.query("select id, amount_minor, refunded_minor from payments where order_id = $1 and stripe_payment_intent_id = $2 for update", [order.id, piRef])).rows[0];
+      const total = BigInt(o.amount_refunded ?? 0);
+      if (!p || total <= BigInt(p.refunded_minor)) return true;
+      await c.query("update payments set refunded_minor = $2 where id = $1", [p.id, total]);
+      await c.query("insert into refunds (order_id, payment_id, user_id, amount_minor, reason) values ($1,$2,$3,$4,'dashboard')", [order.id, p.id, order.userId, total - BigInt(p.refunded_minor)]);
+      if (total >= BigInt(p.amount_minor)) await move(m, c, order.id, "partially_refunded", "refunded", {}, { cause: "webhook", stripeEventId: ev.id, detail: { source: "dashboard" } });
+      return true;
+    });
+    if (handled) return false;
+  }
   if (ev.type === "charge.refunded" && order) {
     const refunded = BigInt(o.amount_refunded ?? 0);
     const piId = typeof o.payment_intent === "string" ? o.payment_intent : null;

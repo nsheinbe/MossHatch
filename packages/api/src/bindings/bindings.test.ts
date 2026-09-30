@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makeBinding, makePerson, makeVaultKit, putSecret, type Person, type VaultKit } from "../vault/testkit.ts";
+import { activateReveal, reveal } from "../vault/testkit.ts";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { commit, prepare } from "../stepup/testkit.ts";
 import { ACTION_HEADER } from "../stepup/gate.ts";
 import { mintToken } from "../util/token.ts";
@@ -344,5 +348,40 @@ describe("ST-88: reserved and malformed names on push", () => {
     const cookie = await web(k.app, p.user, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: { A: "1" } });
     expect(cookie.status).toBe(403);
     void mintToken;
+  });
+});
+
+describe("review: push writes through the vault's own version write (single-use pointer MACs, migration 0805)", () => {
+  it("pushing the same name twice moves the pointer with a fresh MAC each time, and the reveal serves the latest value", async () => {
+    const p = await makePerson(k, "pushtwice");
+    const t = await makeBinding(k, p, [{ capability: "secrets.write", domain_id: p.domain.id, env: "dev" }], "cli");
+    const one = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: { API_KEY: "first-value-PUSHCANARY1" } }, t.token);
+    expect(one.status, one.text).toBe(200);
+    expect(one.json.written).toEqual([{ name: "API_KEY", version: 1 }]);
+    const two = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: { API_KEY: "second-value-PUSHCANARY2", OTHER_KEY: "x" } }, t.token);
+    expect(two.status, two.text).toBe(200);
+    expect(two.json.written).toEqual([{ name: "API_KEY", version: 2 }, { name: "OTHER_KEY", version: 1 }]);
+    const s = (await k.app.db.owner.query("select id, current_version, pointer_mac from secrets where domain_id = $1 and env = 'dev' and name = 'API_KEY' and deleted_at is null", [p.domain.id])).rows[0];
+    expect(s.current_version).toBe(2);
+    // Every pointer move carried its own MAC, and 0805 recorded each one as spent.
+    const macs = (await k.app.db.owner.query("select mac from secret_pointer_macs where secret_id = $1", [s.id])).rows.map((r) => Buffer.from(r.mac).toString("hex"));
+    expect(macs).toHaveLength(2);
+    expect(new Set(macs).size).toBe(2);
+    expect(macs).toContain(Buffer.from(s.pointer_mac).toString("hex"));
+    // The reveal (which checks the pointer MAC before any decrypt) serves version 2.
+    const r = await reveal(k, p, s.id, await activateReveal(k, p, s.id));
+    expect(r.status, r.text).toBe(200);
+    expect(r.json).toMatchObject({ secret_id: s.id, name: "API_KEY", env: "dev", version: 2, value: "second-value-PUSHCANARY2" });
+    // Writing version 1's saved pointer back is refused by the database (the MAC was used before).
+    const v1 = (await k.app.db.owner.query("select id from secret_versions where secret_id = $1 and version = 1", [s.id])).rows[0];
+    const oldMac = (await k.app.db.owner.query("select mac from secret_pointer_macs where secret_id = $1 and mac <> $2", [s.id, s.pointer_mac])).rows[0].mac;
+    await expect(k.app.db.owner.query("update secrets set current_version = 1, current_version_id = $2, pointer_mac = $3 where id = $1", [s.id, v1.id, oldMac])).rejects.toThrow(/used before/);
+  });
+
+  it("source scan: push keeps no copy of the vault's version write; the vault owns sealing and the pointer compare-and-set", () => {
+    const src = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "push.ts"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    for (const copy of [/insert\s+into\s+secret_versions/i, /update\s+secrets\s+set\s+current_version/i, /pointerMac\s*\(/, /\bseal\s*\(/, /secretAad\s*\(/]) expect(src, String(copy)).not.toMatch(copy);
+    expect(src).toMatch(/import \{[^}]*\bcommitVersion\b[^}]*\bsealVersion\b[^}]*\} from "\.\.\/vault\/(index|secrets)\.ts"/);
+    expect(src).toMatch(/await sealVersion\(/); expect(src).toMatch(/await commitVersion\(/);
   });
 });
