@@ -117,6 +117,8 @@ export interface FindingInput {
   runId: string | null; domain: Pick<DomainRow, "id" | "userId"> & { fqdn?: string };
   kind: "unexplained_change" | "missing_domain" | "extra_domain" | "mismatch";
   fields: string[]; detail?: Record<string, unknown>; observed?: unknown; withFqdn?: string;
+  /** false: record the finding (and the audit entry) without a page, for an event someone was already paged about. */
+  page?: boolean;
 }
 /** Open a finding once per distinct observation; a repeat of the same observation is a no-op. Returns true when a new row was written. */
 export async function openFinding(ctx: AppContext, c: PoolClient, f: FindingInput): Promise<boolean> {
@@ -128,7 +130,7 @@ export async function openFinding(ctx: AppContext, c: PoolClient, f: FindingInpu
     [f.runId, f.domain.id === "" ? null : f.domain.id, f.withFqdn ?? null, f.kind, fields, f.detail ?? {}, fingerprint, ctx.clock.now()]);
   if (r.rowCount !== 1) return false;
   const id = r.rows[0].id as string;
-  await raiseAlert(ctx, c, { severity: "page", kind: f.kind === "unexplained_change" ? "unattributed_change" : `reconcile_${f.kind}`, subject: f.domain.id || id, detail: { finding_id: id, fields, domain_id: f.domain.id || null } });
+  if (f.page !== false) await raiseAlert(ctx, c, { severity: "page", kind: f.kind === "unexplained_change" ? "unattributed_change" : `reconcile_${f.kind}`, subject: f.domain.id || id, detail: { finding_id: id, fields, domain_id: f.domain.id || null } });
   if (f.domain.userId) {
     await appendAudit(ctx, c, { chainId: f.domain.userId, actorKind: "system", action: `domain.${f.kind}`, resourceKind: "domain", resourceId: f.domain.id || undefined, detail: { fields, finding_id: id } });
   }

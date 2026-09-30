@@ -28,6 +28,10 @@ describe("ST-114: the detector fires within its cadence on an out-of-band change
   ];
 
   it("every field of the diff produces a finding and a page within the hourly sweep, and a quiet domain produces none", async () => {
+    // Mid-day UTC, so the steps below never cross midnight into the nightly posture job (which records its own fixes).
+    const t = h.app.clock.now();
+    at(h, new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate() + 1, 10, 5)));
+    ada = await relogin(h, ada);
     const doms: { label: string; field: string; id: string; fqdn: string }[] = [];
     for (const [i, [label, field]] of cases.entries()) {
       const d = await buyDomain(h, ada, `free-det${i}.dev`);
@@ -73,6 +77,27 @@ describe("ST-114: the detector fires within its cadence on an out-of-band change
     const runs = (await h.app.db.owner.query("select kind, finished_at from reconciliation_runs where kind = 'inventory'")).rows;
     expect(runs.length).toBeGreaterThanOrEqual(2);
     expect(runs.every((x) => x.finished_at)).toBe(true);
+  });
+
+  it("a change the detector already paged for is put right by the nightly posture job without a second page", async () => {
+    // Pin the clock to 22:30 UTC: the 23:00 hourly sweep pages, then the steps cross midnight and the daily posture job runs.
+    const now = h.app.clock.now();
+    at(h, new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 22, 30)));
+    ada = await relogin(h, ada);
+    const d = await buyDomain(h, ada, "free-detmidnight.dev");
+    await syncDomain(h.app.ctx, d.id);
+    h.registrar.oob.setAutoRenew(d.fqdn, true);
+    await step(40 * 60_000);                                  // 23:10: the hourly sweep, still before midnight
+    const kindOf = async (kind: string) => (await findings(h, kind)).filter((f) => f.domain_id === d.id).flatMap((f) => f.fields as string[]);
+    expect(await kindOf("unexplained_change")).toEqual(["auto_renew"]);
+    const pages = async () => (await alertRows(h)).filter((a) => a.subject === d.id || (a.detail as any)?.domain_id === d.id).length;
+    const pagesBefore = await pages();
+    expect(pagesBefore).toBeGreaterThanOrEqual(1);
+    await step(HOUR);                                         // 00:10: posture turns auto-renew off again and records it
+    expect((await h.registrar.getDomain(d.fqdn))!.autoRenew).toBe(false);
+    expect(await kindOf("unexplained_change")).toEqual(["auto_renew"]);
+    expect(await kindOf("mismatch")).toEqual(["auto_renew"]);
+    expect(await pages()).toBe(pagesBefore);                  // one out-of-band change, one page
   });
 });
 

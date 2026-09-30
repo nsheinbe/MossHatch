@@ -38,7 +38,12 @@ export async function runPosture(ctx: AppContext): Promise<PostureResult> {
     if (up.privacyStatus !== expectedPrivacy(d.tld) || up.privacyServiceEnabled) bad.push("privacy");
     if (bad.length === 0) continue;
     res.mismatches++;
-    await tx(ctx.cron, (c) => openFinding(ctx, c, { runId, domain: d, kind: "mismatch", fields: bad, observed: { ar: up!.autoRenew, le: !!up!.letExpire, l: up!.locked, p: up!.privacyStatus, ps: !!up!.privacyServiceEnabled }, detail: { fields: bad.length } }));
+    // The detector may already have paged for this very change (an open unexplained_change covering these fields). Posture still puts the
+    // domain right and records it, but pages only when some field is news, so one out-of-band change is one page, not two.
+    const covered = new Set<string>((await ctx.cron.query(
+      "select unnest(fields) f from reconciliation_findings where domain_id = $1 and kind = 'unexplained_change' and state = 'open'", [d.id])).rows.map((r) => r.f as string));
+    const page = bad.some((f) => !covered.has(f));
+    await tx(ctx.cron, (c) => openFinding(ctx, c, { runId, domain: d, kind: "mismatch", fields: bad, page, observed: { ar: up!.autoRenew, le: !!up!.letExpire, l: up!.locked, p: up!.privacyStatus, ps: !!up!.privacyServiceEnabled }, detail: { fields: bad.length } }));
     for (const fix of fixes) { try { await fix(); res.fixed++; } catch (e) { if (!(e instanceof RegistrarError)) throw e; res.errors++; } }
   }
 
