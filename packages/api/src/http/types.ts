@@ -17,12 +17,15 @@ export interface Principal {
 export type ActionType =
   | "secret.reveal" | "domain.nameservers.change" | "domain.unlock" | "domain.transfer_out" | "domain.contact.change"
   | "agent.purchase.approve" | "agent.token.create" | "agent.token.widen" | "dns.sensitive.approve" | "device.approve"
-  | "passkey.add" | "card.publish" | "mandate.sign";
+  | "passkey.add" | "card.publish" | "mandate.sign"
+  // Account closure and export (closure module, migration 1050).
+  | "account.close" | "account.export";
 
 export const ACTION_TYPES: readonly ActionType[] = [
   "secret.reveal", "domain.nameservers.change", "domain.unlock", "domain.transfer_out", "domain.contact.change",
   "agent.purchase.approve", "agent.token.create", "agent.token.widen", "dns.sensitive.approve", "device.approve",
   "passkey.add", "card.publish", "mandate.sign",
+  "account.close", "account.export",
 ];
 
 export interface HandlerReq {
@@ -71,6 +74,13 @@ export interface Route {
   tag?: string;
   /** Request body format. `form` accepts `application/x-www-form-urlencoded` (OAuth token and revocation endpoints, RFC 6749/7009). */
   body?: "json" | "form";
+  /** A stricter body cap in bytes than the router default: refused with 413 by declared length or while reading (the CSP report). */
+  maxBodyBytes?: number;
   /** `WWW-Authenticate` value sent with a 401 from this route (RFC 9728 `resource_metadata` for /mcp). */
   challenge?: (ctx: AppContext) => string;
+  /**
+   * The protected resource this route belongs to (RFC 8707, e.g. `/mcp`). A bearer token minted for a resource (an OAuth grant's
+   * `audience`) is accepted only on routes that declare that same resource; tokens with no audience are unaffected.
+   */
+  resource?: (ctx: AppContext) => string;
 }

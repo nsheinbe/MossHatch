@@ -59,7 +59,11 @@ async function list(req: HandlerReq): Promise<HandlerResult> {
 async function create(req: HandlerReq): Promise<HandlerResult> {
   const userId = sessionUser(req);
   const action = requireAction(req, "agent.token.create");
-  const p = action.params as { name: string; scopes: Scope[]; spend_cap_minor: number; expires_in_days: number };
+  const p = action.params as { route?: unknown; name: string; scopes: Scope[]; spend_cap_minor: number; expires_in_days: number };
+  // `agent.token.create` also signs an OAuth consent (params carry `route: "oauth"`, D-019). That action is redeemed only at its own
+  // approve route, which issues the grant bound to its client and resource; here it would mint a plain token nobody approved.
+  // Refused before the action is consumed, so the consent can still be approved where it belongs.
+  if (p.route !== undefined) throw new HttpError(409, "action_unavailable");
   const out = await withUser(req.ctx.runtime, userId, async (c) => {
     await markExecuted(c, action);
     const expiresAt = new Date(req.ctx.clock.now().getTime() + Math.min(p.expires_in_days * DAY, AGENT_MAX_MS));

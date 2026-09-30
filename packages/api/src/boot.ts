@@ -21,6 +21,7 @@ import { installPublish } from "./publish/service.ts";
 import { installDomainsFromEnv, registrarFromEnv } from "./domains/boot-wiring.ts";
 import { installVaultFromEnv } from "./vault/wiring.ts";
 import { installRecipesFromEnv } from "./recipes/wiring.ts";
+import { installClosureFromEnv } from "./closure/services.ts";
 
 export class NotConfigured extends Error {
   override name = "NotConfigured";
@@ -77,5 +78,6 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   installDomainsFromEnv(ctx, env);
   installVaultFromEnv(ctx, env, config.mode);
   installRecipesFromEnv(ctx, config.mode);
+  installClosureFromEnv(ctx, env);
   return { router, ctx };
 }

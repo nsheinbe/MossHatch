@@ -74,6 +74,22 @@ describe("C-19: retention purge by retain_until, never under legal_hold", () => 
     expect((await q("select id from renewal_mandates")).map((x) => x.id).sort()).toEqual([mHeld, mKept].sort());
   });
 
+  it("C-19: a transfer_log row under legal hold survives its retain_until, and is purged once the hold is lifted", async () => {
+    const u = await mkUser("ret-tl@example.com");
+    const tl = async (retain: Date, hold: boolean) => (await q("insert into transfer_log (user_id, direction, event, actor_kind, at, retain_until, legal_hold) values ($1,'in','completed','system',$2,$3,$4) returning id", [u, ago(500), retain, hold]))[0].id as string;
+    const held = await tl(ago(30), true); const gone = await tl(ago(30), false);
+    expect((await q("select legal_hold from transfer_log where id = $1", [held]))[0].legal_hold).toBe(true);
+    expect((await q("select legal_hold from transfer_log where id = $1", [gone]))[0].legal_hold).toBe(false);
+    const r = await purgeExpired(app.ctx);
+    expect(r.deleted.transfer_log).toBe(1);
+    expect(r.held).toBe(1);
+    expect((await q("select id from transfer_log")).map((x) => x.id)).toEqual([held]);
+    // New rows default to no hold; lifting the hold lets the next run delete the row.
+    await q("update transfer_log set legal_hold = false where id = $1", [held]);
+    expect((await purgeExpired(app.ctx)).deleted.transfer_log).toBe(1);
+    expect(await q("select id from transfer_log")).toEqual([]);
+  });
+
   it("C-19: the retention jobs are registered on a daily schedule next to retention.purge", () => {
     registerOpsJobs();
     for (const k of ["retention.purge", "retention.expire", "retention.webhook_payloads"]) expect(getJobDef(k), k).toBeTruthy();

@@ -231,4 +231,32 @@ describe("C-20: DS records", () => {
     const res = await call(k, alice, "POST", `/api/v1/domains/${io.fqdn}/ds`, {}, await stepUp(k, alice, "domain.nameservers.change", io.fqdn, { kind: "ds_add", ds }));
     expect(res.status).toBe(409); expect(res.json.error.code).toBe("dnssec_unsupported");
   });
+
+  it("ST-58, ST-122: the step-up summary and the signed params name the DS record, so two different removals never read the same", async () => {
+    const d = await makeDomain(k, alice, "c20-ds-summary.com");
+    const one = { keyTag: 11111, algorithm: 13, digestType: 2, digest: "A1B2C3D4E5F60718".repeat(4) };
+    const two = { keyTag: 22222, algorithm: 8, digestType: 1, digest: "0f".repeat(20) };
+    const prep = async (kind: string, ds: typeof one) => {
+      const r = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind, ds } });
+      expect(r.status, r.text).toBe(200);
+      const params = (await row("select params from actions where id = $1", [r.json.action_id]))[0].params;
+      return { summary: r.json.summary as string, params };
+    };
+    const a = await prep("ds_remove", one), b = await prep("ds_remove", two);
+    expect(a.summary).not.toBe(b.summary);
+    // Key tag, algorithm, digest type and a short prefix of the digest (lower case, as relayed), never the whole digest.
+    expect(a.summary).toBe(`Remove the DNSSEC record with key tag 11111, algorithm 13, digest type 2, digest a1b2c3d4e5f60718… from ${d.fqdn}.`);
+    expect(b.summary).toBe(`Remove the DNSSEC record with key tag 22222, algorithm 8, digest type 1, digest 0f0f0f0f0f0f0f0f… from ${d.fqdn}.`);
+    expect(a.summary).not.toContain(one.digest.toLowerCase());
+    const add = await prep("ds_add", one);
+    expect(add.summary).toBe(`Add the DNSSEC record with key tag 11111, algorithm 13, digest type 2, digest a1b2c3d4e5f60718… to ${d.fqdn}.`);
+    // The identity is in the params the passkey signs (hashed into the challenge), and the summary is rendered from those params.
+    for (const [x, ds] of [[a, one], [b, two]] as const) {
+      expect(x.params.ds).toEqual({ ...ds, digest: ds.digest.toLowerCase() });
+      expect(x.params.ds_label).toBe(`key tag ${ds.keyTag}, algorithm ${ds.algorithm}, digest type ${ds.digestType}, digest ${ds.digest.toLowerCase().slice(0, 16)}…`);
+    }
+    // Changing only the digest after the first 16 characters still changes what is signed.
+    const tail = await prep("ds_remove", { ...one, digest: one.digest.slice(0, 60) + "ffff" });
+    expect(tail.params.ds.digest).not.toBe(a.params.ds.digest);
+  });
 });

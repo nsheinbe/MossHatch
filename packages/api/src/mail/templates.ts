@@ -227,6 +227,26 @@ export const TEMPLATES = {
       return { subject: `We refused a transfer of ${v.fqdn}`, text: `We asked our registrar to refuse the transfer of ${v.fqdn} to another registrar. The reason: ${why[v.reason]}.\n\nThis is one of the reasons the ICANN Transfer Policy allows or requires. If you think it is wrong, reply to this email or write to support@mosshatch.com.\n` };
     },
   }),
+  // Account closure, export and erasure (closure module; design docs/design/account-closure-export-erasure.md, C-28).
+  account_closing: def({
+    klass: "B", schema: z.strictObject({ requestedAt: iso, coolingOffUntil: iso, domainCount: z.number().int().min(0).max(10_000) }),
+    render: (v, l) => {
+      const names = v.domainCount === 0 ? "" : `${v.domainCount === 1 ? "One name is" : `${v.domainCount} names are`} still in your account. After ${when(v.coolingOffUntil)} we ask the registry to delete ${v.domainCount === 1 ? "it" : "them"}, and deletion is final. To keep a name, sign in (which keeps your account open), transfer the name out, then close your account again.\n\n`;
+      return { subject: "Your Mosshatch account is closing", text: `You asked to close your Mosshatch account on ${when(v.requestedAt)}. We signed out every session, revoked your tokens and connected apps, turned off auto-renew and took down your cards.\n\n${names}To keep your account, sign in with your passkey at ${l.home} before ${when(v.coolingOffUntil)}. Signing in cancels the closure.\n\nIf you did not ask for this, sign in now and write to security@mosshatch.com.\n` };
+    },
+  }),
+  account_closure_cancelled: def({
+    klass: "B", schema: z.strictObject({ at: iso }),
+    render: (v) => ({ subject: "Your Mosshatch account stays open", text: `You signed in on ${when(v.at)}, so your account stays open and nothing more is deleted.\n\nWhat closing switched off stays off: sessions, tokens, connected apps, auto-renew and cards. Set up again the ones you need.\n` }),
+  }),
+  account_closed: def({
+    klass: "B", schema: z.strictObject({ closedAt: iso }),
+    render: (v) => ({ subject: "Your Mosshatch account is closed", text: `Your Mosshatch account closed on ${when(v.closedAt)}. We now erase your email addresses, contact details and passkeys, and we deleted your customer record at Stripe.\n\nThe law makes us keep receipts, payment records and the record of what you agreed to, under an account number instead of your name, until each one's retention ends. Our registrar, OpenSRS, keeps its own registration and payment records for 3 years. This is the last email we send you.\n` }),
+  }),
+  account_export_ready: def({
+    klass: "B", schema: z.strictObject({ readyAt: iso, expiresAt: iso }),
+    render: (v, l) => ({ subject: "Your Mosshatch data export is ready", text: `The copy of your account data you asked for is ready since ${when(v.readyAt)}.\n\nSign in at ${l.home}, open Your account and choose Download my data. The download works until ${when(v.expiresAt)}, and only while you are signed in.\n\nIf you did not ask for it, sign in and write to security@mosshatch.com.\n` }),
+  }),
 } as const;
 
 export type MailKind = keyof typeof TEMPLATES;

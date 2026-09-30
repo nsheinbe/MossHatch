@@ -84,6 +84,8 @@ export function HatchSheet() {
         </details>
         {tld === "ai" && <p className="notice">.ai is sold for 2 years at a time, so the price is the total for 2 years. Its contact details show in public lookups, and it cannot be refunded.</p>}
         {tld === "io" && <p className="notice">.io follows its registry's own rules, needs at least two nameservers, and cannot be refunded. Its future depends on a treaty about the Chagos Archipelago that is not in force.</p>}
+        {/* C-58: .dev and .app are HSTS-preloaded; the same words come with the quote from the server (closure/tld-https.ts). */}
+        {(tld === "dev" || tld === "app") && <p className="notice">.{tld} names work only over HTTPS: browsers refuse plain HTTP for every site and subdomain on .{tld}, so each one needs a TLS certificate before it serves anything.</p>}
         {live && account && hasContact && authorisation && (
           <div className="consent" role="group" aria-labelledby="ar-h">
             <h3 id="ar-h">Auto-renew (optional)</h3>

@@ -30,3 +30,4 @@ export * as transfers from "./transfers/index.ts";
 export * as bindings from "./bindings/index.ts";
 export * as recipes from "./recipes/index.ts";
 export * as agents from "./agents/index.ts";
+export * as closure from "./closure/index.ts";

@@ -43,7 +43,10 @@ export async function assertAgentPurchasesOpen(c: PoolClient): Promise<void> {
   if ((await c.query("select value from flags where name = 'agent_purchases_paused'")).rows[0]?.value === true) throw new HttpError(503, "agent_purchases_paused");
 }
 
-/** Per-user serialization of proposals and approvals (the reservation arithmetic runs under it). */
+/**
+ * Per-user serialization of proposals, approvals and revoke-all (the reservation arithmetic runs under it). It is the first lock of the
+ * one order every path follows: this lock, then agent requests (by id), then bindings (by id), then refresh tokens.
+ */
 export const lockUser = (c: PoolClient, userId: string) => c.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`mh.agents:${userId}`]);
 
 /**

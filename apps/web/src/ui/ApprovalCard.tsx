@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StepUpType } from "../lib/domains";
-import { ago, approveDns, decide, decline, explainVisitor, getCard, payNow, resolveScope, usd, when, widenToken, type Card } from "../lib/visitors";
+import { ago, approveDns, decide, decline, explainVisitor, getCard, payNow, resolveScope, scopesToSign, usd, when, widenToken, type Card } from "../lib/visitors";
+import { ApiError } from "../lib/api";
 import { StepUp, type StepUpRequest } from "./StepUp";
 
 const REASON: Record<string, string> = {
@@ -12,13 +13,15 @@ const REASON: Record<string, string> = {
 /**
  * The approval card (threat row 18). Everything here comes from the server as plain values and is rendered as text: the
  * requester is the token name you chose; nothing the agent wrote is shown. Reached only from the Visitors view, never by a
- * link in an email. Approving signs exactly these facts with your passkey; it charges nothing: you pay on Stripe next.
+ * link in an email. Approving signs exactly these facts with your passkey; it charges nothing: you pay on Stripe next. For more access,
+ * the request and the token are fetched again before the passkey step (`scopesToSign`), so nothing loaded earlier widens what is signed.
  */
-export default function ApprovalCard({ id, currentScopes, onClose, onDone }: { id: string; currentScopes: string[]; onClose: () => void; onDone: (msg: string) => void }) {
+export default function ApprovalCard({ id, onClose, onDone }: { id: string; onClose: () => void; onDone: (msg: string) => void }) {
   const [card, setCard] = useState<Card | null>(null);
   const [typed, setTyped] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [req, setReq] = useState<StepUpRequest | null>(null);
+  const [busy, setBusy] = useState(false);
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { getCard(id).then(setCard).catch((e) => setMsg(explainVisitor(e))); }, [id]);
   useEffect(() => { if (card) head.current?.focus(); }, [card]);
@@ -27,7 +30,7 @@ export default function ApprovalCard({ id, currentScopes, onClose, onDone }: { i
   const d = card.domain;
   const typedOk = !card.confirm?.required || (!!d && [d.ascii, d.unicode].includes(typed.trim().toLowerCase().replace(/\.$/, "")));
 
-  const approve = () => {
+  const approve = async () => {
     setMsg(null);
     if (card.kind === "register" || card.kind === "renew") {
       setReq({
@@ -37,8 +40,15 @@ export default function ApprovalCard({ id, currentScopes, onClose, onDone }: { i
     } else if (card.kind === "dns_change") {
       setReq({ type: "dns.sensitive.approve" as StepUpType, target: `ar_${card.id}`, run: async (actionId) => { await approveDns(card.id, actionId); onDone("Approved. The DNS change is written."); } });
     } else {
-      const scopes = [...new Set([...currentScopes, ...(card.scopes ?? [])])];
-      setReq({ type: "agent.token.widen" as StepUpType, target: card.requester.binding_id, input: { scopes }, run: async (actionId) => { await widenToken(card.requester.binding_id, actionId); await resolveScope(card.id); onDone("Approved. The token can now do that."); } });
+      setBusy(true);
+      try {
+        const f = await scopesToSign(card.id, card.scopes ?? []);
+        // The server's version replaces what is shown, and nothing is signed until the person has seen it.
+        if (!f.ok) { setCard(f.card); setMsg(f.reason === "changed" ? "This request changed. Check what it asks for now, then approve again." : explainVisitor(new ApiError(409, f.reason))); return; }
+        const b = f.card.requester.binding_id;
+        setReq({ type: "agent.token.widen" as StepUpType, target: b, input: { scopes: f.scopes }, run: async (actionId) => { await widenToken(b, actionId); await resolveScope(f.card.id); onDone("Approved. The token can now do that."); } });
+      } catch (e) { setMsg(explainVisitor(e)); }
+      finally { setBusy(false); }
     }
   };
   const no = async () => { try { await decline(card.id); onDone("Declined. Nothing happens."); } catch (e) { setMsg(explainVisitor(e)); } };
@@ -83,7 +93,7 @@ export default function ApprovalCard({ id, currentScopes, onClose, onDone }: { i
           )}
           {(card.kind === "register" || card.kind === "renew") && <p>You pay on Stripe next. Nothing is charged until you do.</p>}
           <div className="row-actions">
-            <button type="button" className="btn primary" disabled={!typedOk || !card.requester.live} onClick={approve}>Approve</button>
+            <button type="button" className="btn primary" disabled={busy || !typedOk || !card.requester.live} onClick={() => void approve()}>Approve</button>
             <button type="button" className="btn secondary" onClick={() => void no()}>Decline</button>
             <button type="button" className="btn secondary" onClick={onClose}>Back</button>
           </div>

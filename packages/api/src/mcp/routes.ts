@@ -63,7 +63,7 @@ export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
 
 export const mcpRoutes: Route[] = [
   // `anonymous` is admitted only so the handler can answer 401 with the metadata challenge; every tool needs a binding.
-  { method: "POST", path: MCP_PATH, principals: ["binding", "anonymous"], handler: mcpHandler, challenge: (ctx) => mcpChallenge(ctx, "invalid_token"), tag: "mcp" },
+  { method: "POST", path: MCP_PATH, principals: ["binding", "anonymous"], handler: mcpHandler, challenge: (ctx) => mcpChallenge(ctx, "invalid_token"), resource: mcpResource, tag: "mcp" },
 ];
 
 export function registerMcpRoutes(router: Router): Router {

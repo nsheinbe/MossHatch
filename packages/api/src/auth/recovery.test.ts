@@ -53,7 +53,7 @@ describe("holds table (4.5)", () => {
     const held = rows.filter((r) => r[2]!.trim() === "H").map((r) => r[1]!).sort();
     expect(held).toEqual([...HELD_ACTIONS].sort());
     expect(HELD_ACTIONS).not.toContain("mandate.sign");
-    expect(HELD_ACTIONS).toHaveLength(12);
+    expect(HELD_ACTIONS).toHaveLength(14);                              // the H rows of PLAN 4.5: twelve, plus account.close and account.export (closure module)
   });
 });
 
@@ -78,7 +78,7 @@ describe("recovery", () => {
       for (const t of HELD_ACTIONS) await expect(assertNotHeld(app.ctx, c, p.userId, t), t).rejects.toMatchObject({ status: 423, code: "recovery_hold" });
       await expect(assertNotHeld(app.ctx, c, p.userId, "mandate.sign")).resolves.toBeUndefined();
     });
-    expect(await heldIds(p.userId)).toHaveLength(12);
+    expect(await heldIds(p.userId)).toHaveLength(14);
     const m = await me(app, done.cookie!);
     expect(m.json.hold).toMatchObject({ active: true });
     expect(m.json.recovery).toMatchObject({ status: "holding", path: "codes_email" });
@@ -113,9 +113,9 @@ describe("recovery", () => {
     expect(done.reg!.status).toBe(201);
     const hold = (await app.db.owner.query("select until from action_holds where user_id = $1", [p.userId])).rows[0];
     expect(new Date(hold.until).getTime() - app.clock.now().getTime()).toBe(72 * 3600_000);
-    expect(await heldIds(p.userId)).toHaveLength(12);
+    expect(await heldIds(p.userId)).toHaveLength(14);
     app.clock.advance(72 * 3600_000 - 1000);
-    expect(await heldIds(p.userId)).toHaveLength(12);
+    expect(await heldIds(p.userId)).toHaveLength(14);
     app.clock.advance(2000);
     expect(await heldIds(p.userId)).toEqual([]);
   });
@@ -276,7 +276,7 @@ describe("recovery", () => {
     for (const c of [recSession, atk.cookie!]) expect((await me(app, c)).status).toBe(401);
     expect((await me(app, undo.cookie!)).status).toBe(200);
     expect((await signIn(app, done.newAuth!)).res.status).toBe(401);       // the recovery's credential is dead
-    expect(await heldIds(p.userId)).toHaveLength(12);                       // held again
+    expect(await heldIds(p.userId)).toHaveLength(14);                       // held again
     const hold = (await app.db.owner.query("select until from action_holds where user_id = $1 order by created_at desc", [p.userId])).rows[0];
     expect(new Date(hold.until).getTime() - app.clock.now().getTime()).toBe(24 * 3600_000);
     expect(app.email.to(p.email).some((m) => m.kind === "recovery.undone")).toBe(true);
@@ -331,7 +331,7 @@ describe("recovery", () => {
     for (const a of [r1.newAuth!, r2.newAuth!, a3]) expect(byId(a.id).revoked_at, a.id).not.toBeNull();
     for (const a of [r2.newAuth!, a3, r1.newAuth!]) expect((await signIn(app, a)).res.status).toBe(401);
     expect((await app.db.owner.query("select status from recovery_requests where user_id = $1 order by created_at", [p.userId])).rows.map((r) => r.status)).toEqual(["cancelled", "cancelled"]);
-    expect(await heldIds(p.userId)).toHaveLength(12);
+    expect(await heldIds(p.userId)).toHaveLength(14);
   });
 
   it("ST-46 review: a sign-in that undoes a recovery also cancels a later request that is still open", async () => {
@@ -517,5 +517,47 @@ describe("ST-48 review: what a recovery's session enabled beyond passkeys", () =
     // The owner's fresh session is untouched and the undo notice says the tokens went too.
     expect((await me(app, undo.cookie!)).status).toBe(200);
     expect(app.email.to(p.email).filter((m) => m.kind === "recovery.undone").at(-1)!.text).toMatch(/token/i);
+  });
+});
+
+describe("ST-48 review: a completed recovery invalidates grants approved but not yet claimed", () => {
+  it("ST-48 review: completing a recovery denies approved device grants and open OAuth consents, so a later device poll gets no token", async () => {
+    const { tokenHandler } = await import("../bindings/device.ts");
+    const { sha256 } = await import("../util/bytes.ts");
+    const p = await signUp(app, "r-grants@example.com");
+    const o = app.db.owner;
+    const now = app.clock.now();
+    const bytes = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32)));
+    await o.query("update users set device_login_enabled = true where id = $1", [p.userId]);
+    // Before the recovery (for example by whoever holds the account now): a device grant approved and not yet polled for, a consent
+    // claimed on the consent screen, and a consent approved whose code is not yet exchanged.
+    const deviceCode = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+    const device = (await o.query("insert into device_requests (device_code_hash, user_code_hash, state, user_id, approved_scopes, created_at, expires_at) values ($1,$2,'approved',$3,'[]',$4,$5) returning id",
+      [sha256(deviceCode), bytes(), p.userId, now, new Date(now.getTime() + 600_000)])).rows[0].id as string;
+    const client = (await o.query("insert into oauth_clients (client_id, registration, redirect_uris) values ($1, 'dcr', array['https://app.example.net/cb']) returning id", [`recovery-grants-${Date.now()}`])).rows[0].id as string;
+    const t = mintToken("cli");
+    const grant = (await o.query(
+      `insert into bindings (user_id, kind, name, token_prefix, token_hash, scopes, expires_at, family_expires_at, oauth_client_id, audience, created_at, updated_at)
+       values ($1,'agent','Connected app',$2,$3,'[]',$4,$5,$6,$7,$4,$4) returning id`,
+      [p.userId, t.prefix, t.hash, now, new Date(now.getTime() + 30 * 86_400_000), client, `${app.ctx.config.origin}/mcp`])).rows[0].id as string;
+    const consent = async (status: "pending" | "approved") => (await o.query(
+      `insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, status, binding_id, code_hash, code_expires_at, created_at, expires_at)
+       values ($1,'https://app.example.net/cb',$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
+      [client, "A".repeat(43), p.userId, status, status === "approved" ? grant : null, status === "approved" ? bytes() : null, status === "approved" ? new Date(now.getTime() + 60_000) : null, now, new Date(now.getTime() + 600_000)])).rows[0].id as string;
+    const claimed = await consent("pending"), approved = await consent("approved");
+
+    await start(p.email, "codes_email");
+    const r = await redeemAndRegister(p, { recoveryCode: p.recoveryCodes[0] });
+    expect(r.reg!.status).toBe(201);
+
+    expect((await o.query("select state from device_requests where id = $1", [device])).rows[0].state).toBe("denied");
+    const st = (await o.query("select id, status from oauth_authorizations where id = any($1::uuid[])", [[claimed, approved]])).rows;
+    expect(Object.fromEntries(st.map((x) => [x.id, x.status]))).toEqual({ [claimed]: "denied", [approved]: "denied" });
+    // The device that asked before the recovery polls afterwards: no token, no binding.
+    const before = (await o.query("select count(*)::int n from bindings where user_id = $1", [p.userId])).rows[0].n as number;
+    const poll = tokenHandler({ ctx: app.ctx, body: { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: deviceCode, client_id: "mosshatch-cli" } } as never);
+    await expect(poll).rejects.toMatchObject({ status: 400, code: "access_denied" });
+    expect((await o.query("select count(*)::int n from bindings where user_id = $1", [p.userId])).rows[0].n).toBe(before);
+    expect((await o.query("select count(*)::int n from bindings where user_id = $1 and revoked_at is null", [p.userId])).rows[0].n).toBe(0);
   });
 });

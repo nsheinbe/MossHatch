@@ -146,7 +146,8 @@ export interface ZoneWriter {
   snapshotKind: "user" | "recipe" | "agent";
   actorKind: AuditEntry["actorKind"];
   actorId?: string;
-  notice: (n: { fqdn: string; sensitive: Sensitive[]; maybe: boolean }) => { subject: string; text: string };
+  /** Null sends nothing: a caller that sends its own notice in `after` (an approved agent change) returns null for the applied case. */
+  notice: (n: { fqdn: string; sensitive: Sensitive[]; maybe: boolean }) => { subject: string; text: string } | null;
 }
 
 /** The DNS tab: the signed-in person. Its audit rows are the same as `audit()` writes (actor `user`, the person's id). */
@@ -192,7 +193,8 @@ async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: Doma
       }
       await c.query("update dns_snapshots set write_state = 'unknown' where id = $1 and write_state = 'pending'", [snapId]);
       await zoneAudit(ctx, c, userId, w, "dns.write_outcome_unknown", d.id, { snapshot: snapId, sensitive: sensitive.length });
-      if (sensitive.length > 0) await notifyDomainEvent(ctx, c, userId, { kind: "dns.sensitive_changed", domainId: d.id, ...w.notice({ fqdn: d.fqdn_ascii, sensitive, maybe: true }) });
+      const maybe = sensitive.length > 0 ? w.notice({ fqdn: d.fqdn_ascii, sensitive, maybe: true }) : null;
+      if (maybe) await notifyDomainEvent(ctx, c, userId, { kind: "dns.sensitive_changed", domainId: d.id, ...maybe });
     }).catch(() => undefined);                               // the snapshot is already committed; the original error is the answer
     throw e;
   }
@@ -249,7 +251,8 @@ export async function writeZoneLocked<T = undefined>(
     const after = await s.step(async (c) => {
       await c.query("update dns_snapshots set after_hash = $2, write_state = 'applied' where id = $1 and write_state = 'pending'", [snapId, written.hash]);
       await zoneAudit(ctx, c, userId, w, "dns.write", d.id, { snapshot: snapId, added: change.diff.added.length, removed: change.diff.removed.length, sensitive: change.sensitive.length, ...opts.detail });
-      if (change.sensitive.length > 0) await notifyDomainEvent(ctx, c, userId, { kind: "dns.sensitive_changed", domainId: d.id, ...w.notice({ fqdn: d.fqdn_ascii, sensitive: change.sensitive, maybe: false }) });
+      const applied = change.sensitive.length > 0 ? w.notice({ fqdn: d.fqdn_ascii, sensitive: change.sensitive, maybe: false }) : null;
+      if (applied) await notifyDomainEvent(ctx, c, userId, { kind: "dns.sensitive_changed", domainId: d.id, ...applied });
       return opts.after ? opts.after(c, { domain: d, snapshotId: snapId, zoneHash: written.hash, change }) : undefined;
     });
     return { domain: d, live, change, snapshotId: snapId, zoneHash: written.hash, after };

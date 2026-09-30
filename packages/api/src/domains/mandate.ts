@@ -16,9 +16,19 @@ import { renewalQuote } from "./terms.ts";
  * domain, a price ceiling, the term, the charge day and the hash of the authorisation text; the same request writes a `consents` row
  * (kind auto_renew_mandate) so the record survives the mandate. It is kept for three years after the last renewal.
  * Turning it off is one click with no passkey (C-34), from the dashboard or from a protective email link.
+ *
+ * Retention (C-19, C-31, C-38): `retain_until` is three years from the signature when it is written, and every renewal charged for the
+ * domain moves the mandate's and its consent's `retain_until` to three years after that charge (COMPLIANCE C-31: "kept at least 3
+ * years after the last renewal"). That is done by the database (migration 0670, trigger on `payments`), so every payment path and
+ * every way a mandate is switched off are covered, and it outlasts the charge's card dispute window: PLAN and COMPLIANCE state no
+ * figure for that window, so the longest card-network window, 540 days, is the (unverified) own figure it is checked against.
  */
 export const AUTO_RENEW_DOC = "auto_renew_authorisation";
 export const MANDATE_RETAIN_MS = 3 * 365 * DAY_MS;
+/** The card dispute window of a charge (own, unverified figure: no figure in PLAN or COMPLIANCE). */
+export const DISPUTE_WINDOW_MS = 540 * DAY_MS;
+/** How long after the last renewal charge a mandate and its consent are kept (C-31); must stay at least DISPUTE_WINDOW_MS. Mirrors 0670. */
+export const MANDATE_KEEP_AFTER_CHARGE_MS = Math.max(MANDATE_RETAIN_MS, DISPUTE_WINDOW_MS);
 
 export interface MandateRow {
   id: string; domainId: string; userId: string; paymentMethodRef: string | null; customerRef: string | null; priceCeilingMinor: bigint;

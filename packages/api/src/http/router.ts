@@ -91,7 +91,7 @@ export class Router {
     let rawBody = "";
     let body: unknown = null;
     if (method !== "GET" && method !== "HEAD") {
-      rawBody = await request.text();
+      rawBody = route.maxBodyBytes === undefined ? await request.text() : await readCapped(request, route.maxBodyBytes);
       if (rawBody.length > 256_000) throw new HttpError(413, "too_large");
       if (route.principals.includes("webhook") && route.verify) {
         const v = await route.verify(request, rawBody, ctx);
@@ -137,6 +137,8 @@ export class Router {
       const row = (await withNoUser(ctx.runtime, (c) => c.query("select * from auth_binding_get($1, $2)", [parsed.prefix, parsed.hash]))).rows[0];
       const now = ctx.clock.now();
       if (!row || row.revoked_at || new Date(row.expires_at) <= now) { await countBearerFailure(ctx, _req, parsed.prefix); throw new HttpError(401, "unauthorized"); }
+      // Audience (RFC 8707): a token minted for one resource (an OAuth grant for /mcp) is not a token for any other route.
+      if (row.audience !== null && row.audience !== undefined && (!route.resource || route.resource(ctx) !== row.audience)) throw new HttpError(401, "invalid_token");
       if (row.paused_at) throw new HttpError(403, "binding_paused");
       // Idle limit and last-used, in the database on every request (ST-62): 30 days without use ends a token.
       const live = (await withNoUser(ctx.runtime, (c) => c.query("select auth_binding_touch($1, $2, '30 days'::interval) as ok", [row.id, now]))).rows[0];
@@ -173,6 +175,24 @@ async function countBearerFailure(ctx: AppContext, r: Request, tokenPrefix: stri
       }
     });
   } catch { /* counting is best effort; the 401 stands */ }
+}
+
+/** The body as text, refused with 413 once it passes `max` bytes: by a declared Content-Length, else while reading (never buffered whole). */
+async function readCapped(r: Request, max: number): Promise<string> {
+  const declared = Number(r.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > max) throw new HttpError(413, "too_large");
+  if (!r.body) return "";
+  const reader = r.body.getReader();
+  const parts: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) { await reader.cancel().catch(() => undefined); throw new HttpError(413, "too_large"); }
+    parts.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(parts));
 }
 
 /** Every non-GET request to a cookie route: same origin, JSON, and our own header. */

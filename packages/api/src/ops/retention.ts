@@ -29,7 +29,7 @@ export const RETENTION_RULES: PurgeRule[] = [
 const BATCH = 2_000;
 /**
  * The hold, read through the row's JSON so a table whose `legal_hold` column arrives in a later migration (transfer_log is
- * created in 0900, after this module's 0750) is still purged correctly: no column means no hold.
+ * created in 0900, after this module's 0750, and gets its column in 0946) is still purged correctly: no column means no hold.
  */
 const HOLD = "coalesce((to_jsonb(t)->>'legal_hold')::boolean, false)";
 

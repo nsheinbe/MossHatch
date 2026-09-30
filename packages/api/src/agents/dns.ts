@@ -1,16 +1,15 @@
 import { z } from "zod";
-import { withUser, type PoolClient } from "@mosshatch/db";
+import { withUser } from "@mosshatch/db";
 import { DNS_RECORD_TYPES, type DnsRecord, type DnsRecordType } from "@mosshatch/registrar/port";
 import { canonicalZone, normalizeRecord, validateZone, zoneHash } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
-import { appendAudit } from "../audit.ts";
 import { hashOf } from "../util/bytes.ts";
 import { allows } from "../bindings/scopes.ts";
-import { assertWritesOpen, mapRegistrarError, notifyDomainEvent, ownedDomain, registrarOf, type DomainRow } from "../domain-mgmt/common.ts";
+import { mapRegistrarError, ownedDomain, registrarOf, type DomainRow } from "../domain-mgmt/common.ts";
 import { classifyRecord, normalizeOwner } from "../domain-mgmt/classify.ts";
-import { assertSafeDiff, checkShape, diffZones, recordId, sensitiveOf, SNAPSHOT_TTL_MS } from "../domain-mgmt/dns.ts";
-import { createRequest, type Proposal, type RequestRow } from "./requests.ts";
+import { assertSafeDiff, checkShape, diffZones, recordId, sensitiveOf, writeZoneLocked, type Sensitive, type ZoneWriter } from "../domain-mgmt/dns.ts";
+import { createRequest, type Proposal } from "./requests.ts";
 import { notFound, untrusted, type Caller } from "./common.ts";
 
 /**
@@ -64,23 +63,20 @@ export async function agentDnsRead(ctx: AppContext, caller: Caller, fqdn: string
   return { domain: d.fqdn_ascii, zone_hash: zoneHash(recs), records: recs.slice(0, 500).map((r) => shown(d.fqdn_ascii, r)), truncated: recs.length > 500 };
 }
 
-const lockZone = (c: PoolClient, domainId: string) => c.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`mh.dns:${domainId}`]);
+const sensitiveLines = (sensitive: Sensitive[]) => sensitive.slice(0, 10).map((x) => `- ${x.type} ${x.name === "" ? "@ (the domain itself)" : x.name}`).join("\n");
 
-/** Write a zone under the domain lock with a 30-day snapshot (the same safety rules as the owner's own edits). */
-async function writeZone(ctx: AppContext, c: PoolClient, userId: string, d: DomainRow, live: DnsRecord[], desired: DnsRecord[], actor: { kind: "agent" | "cli" | "user"; id: string }, sensitive: number) {
-  const diff = diffZones(live, desired);
-  const now = ctx.clock.now();
-  const snap = (await c.query(
-    `insert into dns_snapshots (user_id, domain_id, reason, zone_hash, records, added_count, removed_count, sensitive_count, actor_kind, taken_at, expires_at)
-     values ($1,$2,'pre_write',$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
-    [userId, d.id, zoneHash(live), JSON.stringify(live), diff.added.length, diff.removed.length, sensitive, actor.kind === "cli" ? "agent" : actor.kind, now, new Date(now.getTime() + SNAPSHOT_TTL_MS)])).rows[0];
-  const written = await registrarOf(ctx).replaceZone(d.fqdn_ascii, desired);
-  await c.query("update dns_snapshots set after_hash = $2 where id = $1", [snap.id, written.hash]);
-  await appendAudit(ctx, c, { chainId: userId, actorKind: actor.kind, actorId: actor.id, action: "dns.write", resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, added: diff.added.length, removed: diff.removed.length, sensitive, actor: actor.kind } });
-  return { snapshot_id: snap.id as string, zone_hash: written.hash, added: diff.added.length, removed: diff.removed.length };
-}
+/**
+ * What the owner is told when a token's own write touched, or may have touched, a sensitive record. A direct agent write never does (a
+ * sensitive change becomes a request instead), so in practice this is the text for a write whose outcome is unknown.
+ */
+const notice: ZoneWriter["notice"] = ({ fqdn, sensitive, maybe }) => {
+  const n = `${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}`;
+  return maybe
+    ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `A change from one of your tokens to ${n} may have been applied: our registrar did not confirm it.\n${sensitiveLines(sensitive)}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.` }
+    : { subject: "A sensitive DNS record on your Mosshatch domain changed", text: `A change from one of your tokens touched ${n}:\n${sensitiveLines(sensitive)}\n\nYou can roll the change back from the DNS tab, under History.` };
+};
 
-export type DnsOutcome = ({ applied: true } & Awaited<ReturnType<typeof writeZone>>) | ({ applied: false; changed: false }) | (Proposal & { applied: false; sensitive_records: number });
+export type DnsOutcome = { applied: true; snapshot_id: string; zone_hash: string; added: number; removed: number } | ({ applied: false; changed: false }) | (Proposal & { applied: false; sensitive_records: number });
 
 /** `dns.write`: apply a non-sensitive change, or park a sensitive one as a pending request (nothing is written). */
 export async function agentDnsChange(ctx: AppContext, caller: Caller, fqdn: string, raw: unknown): Promise<DnsOutcome> {
@@ -115,41 +111,34 @@ export async function agentDnsChange(ctx: AppContext, caller: Caller, fqdn: stri
     });
     return { ...p, applied: false, sensitive_records: first.sensitive.length };
   }
+  // The DNS tab's write safety: under the domain lock, against a fresh read, with the pre-write snapshot and intent committed before
+  // the registrar is called, so a write whose outcome is unknown keeps its snapshot for rollback (plan 4.3b).
+  let w;
   try {
-    return await withUser(ctx.runtime, caller.userId, async (c) => {
-      await assertWritesOpen(c);
-      await lockZone(c, d.id);
-      const fresh = await liveZone(ctx, d);
-      const again = plan(fresh);
+    w = await writeZoneLocked(ctx, caller.userId, d.id, { snapshotKind: "agent", actorKind: caller.kind, actorId: caller.bindingId, notice }, (fresh) => {
+      const a = plan(fresh);
       // The zone moved between the reads and the change is now sensitive: refuse rather than write (the agent can propose again).
-      if (again.sensitive.length > 0) throw new HttpError(409, "zone_changed");
-      if (again.diff.added.length === 0 && again.diff.removed.length === 0) return { applied: false as const, changed: false as const };
-      return { applied: true as const, ...(await writeZone(ctx, c, caller.userId, d, fresh, again.desired, { kind: caller.kind, id: caller.bindingId }, 0)) };
-    });
+      if (a.sensitive.length) throw new HttpError(409, "zone_changed");
+      return a;
+    }, { detail: { actor: caller.kind } });
   } catch (e) { throw mapRegistrarError(e); }
+  if (!w.change || !w.snapshotId) return { applied: false, changed: false };
+  return { applied: true, snapshot_id: w.snapshotId, zone_hash: w.zoneHash, added: w.change.diff.added.length, removed: w.change.diff.removed.length };
 }
 
 /**
- * Apply an approved sensitive change exactly as proposed: the live zone must still hash to the value the person signed,
- * and the zone written is the one hashed into the request. A moved zone voids the request (409) and writes nothing.
+ * The zone an approved sensitive change writes, checked against the fresh read under the lock: the live zone must still hash to the
+ * value the person signed, and the zone written is the one hashed into the request. A moved zone is 409 `zone_changed` (nothing is
+ * written); a request whose stored zone does not match its signed hash is 409 `params_changed`.
  */
-export async function applyApprovedDns(ctx: AppContext, c: PoolClient, userId: string, r: RequestRow, actionId: string): Promise<{ zone_hash: string; snapshot_id: string }> {
-  const d = await ownedDomain(c, userId, String(r.params.fqdn));
-  if (d.id !== r.domain_id) throw notFound();
-  await assertWritesOpen(c);
-  await lockZone(c, d.id);
-  const live = await liveZone(ctx, d);
-  if (zoneHash(live) !== r.params.before_hash) throw new HttpError(409, "zone_changed");
-  const desired = canonicalZone(r.params.desired as DnsRecord[]);
-  if (zoneHash(desired) !== r.params.after_hash) throw new HttpError(409, "params_changed");
-  checkShape(desired);
-  validateZone(desired);
-  const sensitive = sensitiveOf(d.fqdn_ascii, diffZones(live, desired)).length;
-  const w = await writeZone(ctx, c, userId, d, live, desired, { kind: "user", id: userId }, sensitive);
-  await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "dns.sensitive_approved", resourceKind: "agent_request", resourceId: r.id, detail: { action_id: actionId, snapshot: w.snapshot_id } });
-  await notifyDomainEvent(ctx, c, userId, {
-    kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
-    text: `You approved a change from one of your tokens that touched ${sensitive} sensitive DNS record${sensitive === 1 ? "" : "s"} on ${d.fqdn_ascii}. You can roll it back from the DNS tab, under History.`,
-  });
-  return { zone_hash: w.zone_hash, snapshot_id: w.snapshot_id };
+export function approvedZonePlan(fqdn: string, p: { before_hash: string; after_hash: string; desired: unknown }) {
+  return (live: DnsRecord[]) => {
+    if (zoneHash(live) !== p.before_hash) throw new HttpError(409, "zone_changed");
+    const desired = canonicalZone(p.desired as DnsRecord[]);
+    if (zoneHash(desired) !== p.after_hash) throw new HttpError(409, "params_changed");
+    checkShape(desired);
+    validateZone(desired);
+    const diff = diffZones(live, desired);
+    return { desired, diff, sensitive: sensitiveOf(fqdn, diff) };
+  };
 }

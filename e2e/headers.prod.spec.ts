@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { test, expect } from "@playwright/test";
 
 /**
@@ -11,5 +12,37 @@ test("ST-14 consent, device and app pages refuse framing in both header forms an
     expect(h["content-security-policy"], url).toContain("frame-ancestors 'none'");
     expect(h["x-frame-options"], url).toBe("DENY");
     expect(h["cross-origin-resource-policy"], url).toBe("same-origin");
+  }
+});
+
+/** The value of one row of the PLAN 4.3a response-header table, read from the plan itself so the two cannot drift apart. */
+function planHeader(name: string): string {
+  const plan = fs.readFileSync("docs/PLAN.md", "utf8");
+  const row = new RegExp("^\\| `" + name + "` \\| `([^`]+)` \\|", "m").exec(plan);
+  if (!row) throw new Error(`PLAN 4.3a has no ${name} row`);
+  return row[1]!;
+}
+const ROUTE_CLASSES = ["/", "/device", "/boot.js", "/fees.html", "/fonts/young-serif-latin-400-normal.woff2", "/no-such-page"];
+
+test("ST-14 Permissions-Policy is exactly the PLAN 4.3a value on every route class (payment is off, passkeys are self only)", async ({ request }) => {
+  const want = planHeader("Permissions-Policy");
+  expect(want).toContain("payment=()");
+  for (const url of ROUTE_CLASSES) {
+    const h = (await request.get(url)).headers();
+    expect(h["permissions-policy"], url).toBe(want);
+    expect(h["permissions-policy"], url).not.toContain("payment=(self)");
+  }
+});
+
+test("ST-14 CSP violations are reported: report-uri and report-to name the PLAN 4.3a endpoint, and Reporting-Endpoints defines it", async ({ request }) => {
+  const endpoints = planHeader("Reporting-Endpoints");
+  const url = /^csp="([^"]+)"$/.exec(endpoints)?.[1];
+  expect(url, "PLAN names the csp endpoint").toBe("/api/csp-report");
+  for (const u of ROUTE_CLASSES) {
+    const h = (await request.get(u)).headers();
+    const csp = (h["content-security-policy"] ?? "").split(";").map((d) => d.trim());
+    expect(csp, u).toContain(`report-uri ${url}`);
+    expect(csp, u).toContain("report-to csp");
+    expect(h["reporting-endpoints"], u).toBe(endpoints);
   }
 });

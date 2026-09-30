@@ -15,6 +15,7 @@ import { assertApplyScopes, assertPlanScopes, checkVariableNames, computePlan, n
 import { RECIPES, type Service } from "./registry.ts";
 import { RecipeFail, registerRecipeJobs, writeRecipeZone } from "./apply.ts";
 import type { DnsRecord } from "@mosshatch/registrar/port";
+import { tldNotices } from "../closure/tld-https.ts";
 
 /**
  * Wire-it routes (PLAN 4.5 Recipes and Connections). A plan is a dry run that stores exactly what apply will do and its
@@ -71,7 +72,8 @@ async function plan(req: HandlerReq): Promise<HandlerResult> {
     await appendAudit(req.ctx, c, { chainId: actor.userId, actorKind: actor.kind, actorId: actor.id, action: "recipe.planned", resourceKind: "recipe_application", resourceId: r, detail: { recipe: recipe.id, version: recipe.version, needs_approval: needs, sensitive: p.sensitive.length } });
     return r;
   });
-  return json({ application_id: id, state: "planned", expires_at: new Date(now.getTime() + PLAN_TTL_MS).toISOString(), plan: planView(p, hash, needs) }, 201);
+  // C-58: before a recipe writes DNS for a .dev or .app name, the plan says that the name serves over HTTPS only.
+  return json({ application_id: id, state: "planned", expires_at: new Date(now.getTime() + PLAN_TTL_MS).toISOString(), plan: planView(p, hash, needs), notices: tldNotices(d.fqdn_ascii) }, 201);
 }
 
 const ApplyBody = z.strictObject({ application_id: z.string().regex(UUID), plan_hash: z.string().regex(/^[0-9a-f]{64}$/) });

@@ -10,6 +10,7 @@ import { LOGIN_CHALLENGE_TTL_S, SUSPENSION_MS, auditUser, newPre, preHashFrom, r
 import { asAssertion, challengeFrom, consumeChallenge, issueLoginOptions } from "./ceremony.ts";
 import { cancelOpenOnSignIn, undoRecovery } from "./recovery.ts";
 import { notifyUser } from "./mail.ts";
+import { cancelClosureOnSignIn, closureCancellable } from "../closure/closure.ts";
 
 /** Only issuing a challenge is limited here. Nothing in this file touches a cancel, revoke or freeze path. */
 export const LOGIN_OPTIONS_SOURCE: Limit = { bucket: "login.options.src", max: 300, windowSeconds: 3600 };
@@ -62,7 +63,9 @@ async function loginVerify(req: HandlerReq): Promise<HandlerResult> {
   if (!cred) return fail(ctx, null, "unknown_credential");
   const userId = cred.user_id as string;
   const passkeyId = cred.id as string;
-  if (cred.user_status !== "active") return fail(ctx, userId, "inactive_user", { passkeyId });
+  // A closing account inside its cooling-off may sign in: the sign-in cancels the closure (closure module, below).
+  const closing = cred.user_status === "closing" && await closureCancellable(ctx, userId);
+  if (cred.user_status !== "active" && !closing) return fail(ctx, userId, "inactive_user", { passkeyId });
   if (cred.revoked_at) return fail(ctx, userId, "revoked", { passkeyId });
 
   const now = ctx.clock.now();
@@ -105,6 +108,8 @@ async function loginVerify(req: HandlerReq): Promise<HandlerResult> {
     if (restoreRecoveryId) await undoRecovery(ctx, c, userId, restoreRecoveryId);
     // Every legitimate sign-in cancels a request still open, the undo sign-in included (ST-46).
     await cancelOpenOnSignIn(ctx, c, userId);
+    // Account closure: a verified sign-in inside the cooling-off cancels it and reopens the account (design section 1).
+    if (closing) await cancelClosureOnSignIn(ctx, c, userId);
     // Unfreezing happens only here, after a valid assertion. Paused tokens stay paused; each resumes through agent.token.widen.
     const un = await c.query("update users set frozen_at = null where id = $1 and frozen_at is not null returning id", [userId]);
     if (un.rowCount === 1) await auditUser(ctx, c, userId, "auth.unfreeze", { resourceKind: "user", resourceId: userId });

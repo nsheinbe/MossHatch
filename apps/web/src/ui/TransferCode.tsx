@@ -17,12 +17,19 @@ export function TransferCode({ fqdn, locked, onChanged }: { fqdn: string; locked
   const [req, setReq] = useState<StepUpRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const shown = useRef<HTMLElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const getBtn = useRef<HTMLButtonElement>(null);
+  const head = useRef<HTMLHeadingElement>(null);
+  const refocus = useRef(false);
 
-  const clear = () => { setCode(null); setLeft(0); setHidden(true); };
+  // Keyboard and screen-reader users inside the code box lose their place when it goes; it moves back to the button that revealed the code.
+  const markFocus = () => { if (box.current && box.current.contains(document.activeElement)) refocus.current = true; };
+  const clear = () => { markFocus(); setCode(null); setLeft(0); setHidden(true); };
+  useEffect(() => { if (code === null && refocus.current) { refocus.current = false; (getBtn.current ?? head.current)?.focus(); } }, [code]);
   useEffect(() => {
     if (code === null) return;
     shown.current?.focus();
-    const t = window.setInterval(() => setLeft((n) => { if (n <= 1) { window.clearInterval(t); setCode(null); setHidden(true); return 0; } return n - 1; }), 1000);
+    const t = window.setInterval(() => setLeft((n) => { if (n <= 1) { window.clearInterval(t); markFocus(); setCode(null); setHidden(true); return 0; } return n - 1; }), 1000);
     const vis = () => { if (document.hidden) clear(); };
     document.addEventListener("visibilitychange", vis);
     return () => { window.clearInterval(t); document.removeEventListener("visibilitychange", vis); };
@@ -51,12 +58,12 @@ export function TransferCode({ fqdn, locked, onChanged }: { fqdn: string; locked
 
   return (
     <div className="section" role="group" aria-labelledby="tc-h">
-      <h3 id="tc-h">Transfer to another registrar</h3>
+      <h3 id="tc-h" ref={head} tabIndex={-1}>Transfer to another registrar</h3>
       {locked
         ? <p>The name is locked, so it cannot be transferred. To move it, unlock it with your passkey, then ask for a transfer code.</p>
         : <p>The name is unlocked. Lock it again when you are done.</p>}
       {code !== null && (
-        <div className="code-box" role="group" aria-label="Transfer code">
+        <div ref={box} className="code-box" role="group" aria-label="Transfer code">
           <p>Your transfer code. It is shown once and hides in {left} {left === 1 ? "second" : "seconds"}.</p>
           <p><code ref={shown} tabIndex={-1} className="xfer-code">{code}</code></p>
           <div className="row-actions"><button type="button" className="btn secondary" onClick={clear}>Hide it now</button></div>
@@ -67,7 +74,7 @@ export function TransferCode({ fqdn, locked, onChanged }: { fqdn: string; locked
       {req ? <StepUp key={req.type} req={req} onDone={() => setReq(null)} /> : (
         <div className="row-actions">
           {locked && <button type="button" className="btn secondary" onClick={() => start("domain.unlock")}>Unlock for transfer</button>}
-          {!locked && <button type="button" className="btn secondary" onClick={() => start("domain.transfer_out")}>Get a transfer code</button>}
+          {!locked && <button ref={getBtn} type="button" className="btn secondary" onClick={() => start("domain.transfer_out")}>Get a transfer code</button>}
           {!locked && <button type="button" className="btn secondary" disabled={busy} onClick={() => void relock()}>Lock it again</button>}
         </div>
       )}

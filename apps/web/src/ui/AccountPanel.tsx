@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI } from "../lib/account";
 
 type Step = "choose" | "code" | "codes";
+// Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
+const AccountData = lazy(() => import("./AccountData"));
 
 /** Sign-up (emailed code, then a passkey), passkey sign-in, and the small account view. No passwords anywhere. */
 export function AccountPanel() {
@@ -13,6 +15,7 @@ export function AccountPanel() {
   const [codes, setCodes] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [data, setData] = useState<"export" | "close" | null>(null);
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
@@ -34,8 +37,11 @@ export function AccountPanel() {
           <p>Signed in as <strong>{account.user.email}</strong>.</p>
           <p className="notice">{account.credentials.length} {account.credentials.length === 1 ? "passkey" : "passkeys"}. {account.credentials.length < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
           {msg && <p role="alert" className="notice">{msg}</p>}
+          {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
           <div className="row-actions">
             <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Visitors</button>
+            <button type="button" className="btn secondary" aria-pressed={data === "export"} onClick={() => setData("export")}>Download my data</button>
+            <button type="button" className="btn secondary" aria-pressed={data === "close"} onClick={() => setData("close")}>Close my account</button>
             <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
             <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
             <button type="button" className="btn secondary" onClick={() => set({ accountOpen: false })}>Close</button>

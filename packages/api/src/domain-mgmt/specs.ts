@@ -76,12 +76,21 @@ export const nameserversSpec: ActionSpec<z.infer<typeof nsInput>> = {
     }
     if (!input.ds) throw new HttpError(422, "bad_ds");
     const ds = { ...input.ds, digest: input.ds.digest.toLowerCase() };
-    return { params: { op: input.kind, domain_id: d.id, fqdn: d.fqdn_ascii, ds }, resourceId: d.id };
+    // The record's identity goes into the signed params and the summary, so two different DS changes never read the same.
+    return { params: { op: input.kind, domain_id: d.id, fqdn: d.fqdn_ascii, ds, ds_label: dsLabel(ds) }, resourceId: d.id };
   },
   summary: (p) => p.op === "nameservers"
     ? `Change the nameservers of ${String(p.fqdn)} to ${(p.nameservers as string[]).join(", ")}.`
-    : `${p.op === "ds_add" ? "Add" : "Remove"} a DNSSEC record on ${String(p.fqdn)}.`,
+    : p.op === "ds_add"
+      ? `Add the DNSSEC record with ${labelOf(p)} to ${String(p.fqdn)}.`
+      : `Remove the DNSSEC record with ${labelOf(p)} from ${String(p.fqdn)}.`,
 };
+/** Params prepared before `ds_label` existed (a challenge lives 120 seconds) still render the record from `ds`. */
+const labelOf = (p: Record<string, unknown>) => typeof p.ds_label === "string" ? p.ds_label : dsLabel(p.ds as Parameters<typeof dsLabel>[0]);
+
+/** Key tag, algorithm, digest type and the first 16 hex characters of the digest (the same prefix the DNS tab shows). */
+export const dsLabel = (ds: { keyTag: number; algorithm: number; digestType: number; digest: string }) =>
+  `key tag ${ds.keyTag}, algorithm ${ds.algorithm}, digest type ${ds.digestType}, digest ${ds.digest.toLowerCase().slice(0, 16)}…`;
 
 const contactInput = z.object({}).strict();
 export const contactSpec: ActionSpec<z.infer<typeof contactInput>> = {

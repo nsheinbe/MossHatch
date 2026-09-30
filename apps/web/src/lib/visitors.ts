@@ -50,6 +50,27 @@ export const getConsent = (id: string) => api<Consent>("GET", `/api/v1/oauth/req
 export const approveConsent = (id: string, actionId: string) => api<{ redirect_to: string }>("POST", `/api/v1/oauth/requests/${encodeURIComponent(id)}/approve`, {}, gated(actionId));
 export const denyConsent = (id: string) => api<{ redirect_to: string }>("POST", `/api/v1/oauth/requests/${encodeURIComponent(id)}/deny`, {});
 
+export type ScopesToSign =
+  | { ok: true; card: Card; scopes: string[] }
+  | { ok: false; card: Card; reason: "changed" | "request_unavailable" | "binding_unavailable" };
+
+/**
+ * What approving a scope request signs (ST-72): the token's access as the server has it now, plus exactly the scopes the card shows.
+ * Both are fetched again right before the passkey step, so a list loaded earlier (a token narrowed since, in another tab) can never
+ * widen the token past what is shown. A request that no longer matches the shown scopes is refused, and its current version returned
+ * for the card to show instead. The server's step-up summary then names the whole resulting set before the passkey is touched.
+ */
+export async function scopesToSign(id: string, shown: readonly string[], io: { getCard: typeof getCard; listVisitors: typeof listVisitors } = { getCard, listVisitors }): Promise<ScopesToSign> {
+  const [card, list] = await Promise.all([io.getCard(id), io.listVisitors()]);
+  if (card.kind !== "scope" || card.state !== "pending") return { ok: false, card, reason: "request_unavailable" };
+  const asks = [...new Set(card.scopes ?? [])].sort();
+  const seen = [...new Set(shown)].sort();
+  if (asks.length !== seen.length || asks.some((s, i) => s !== seen[i])) return { ok: false, card, reason: "changed" };
+  const token = list.visitors.find((v) => v.id === card.requester.binding_id && !v.revoked_at);
+  if (!token) return { ok: false, card, reason: "binding_unavailable" };
+  return { ok: true, card, scopes: [...new Set([...token.scopes, ...asks])] };
+}
+
 /** PUT and PATCH are not in the shared helper; the same guard headers, the same error shape. */
 async function send<T>(method: "PUT" | "PATCH", path: string, body: unknown): Promise<T> {
   let res: Response;

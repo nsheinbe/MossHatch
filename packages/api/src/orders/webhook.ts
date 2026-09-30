@@ -183,6 +183,30 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
     });
     if (handled) return false;
   }
+  // C-43: a Dashboard refund of a renewal that already completed at the registry (`renewed`) is mirrored as money only: the payment's
+  // refunded total and a `refunds` row, which the sales ledger reads. The domain stays renewed, so neither the order nor its renewal term
+  // moves, and an operator is told: the money left outside our refund flow, which moves the order to `refund_pending` first. Cumulative
+  // and idempotent: an older or replayed event adds nothing.
+  if (ev.type === "charge.refunded" && order && typeof o.payment_intent === "string") {
+    const piRef = o.payment_intent as string;
+    const handled = await tx(ctx.cron, async (c) => {
+      const st = (await c.query("select state, stripe_payment_intent_id from orders where id = $1 for update", [order.id])).rows[0];
+      if (st?.state !== "renewed") return false;
+      if (piRef !== st.stripe_payment_intent_id) return true;
+      const p = (await c.query("select id, amount_minor, refunded_minor from payments where order_id = $1 and stripe_payment_intent_id = $2 for update", [order.id, piRef])).rows[0];
+      const total = BigInt(o.amount_refunded ?? 0);
+      if (!p || total <= BigInt(p.refunded_minor)) return true;
+      const delta = total - BigInt(p.refunded_minor);
+      await c.query("update payments set refunded_minor = $2 where id = $1", [p.id, total]);
+      await c.query("insert into refunds (order_id, payment_id, user_id, amount_minor, reason) values ($1,$2,$3,$4,'dashboard')", [order.id, p.id, order.userId, delta]);
+      await c.query("insert into order_events (order_id, from_state, to_state, cause, stripe_event_id, detail, at) values ($1,'renewed','renewed','webhook',$2,$3,$4)",
+        [order.id, ev.id, { overlay: "refund_outside_flow", source: "dashboard" }, ctx.clock.now()]);
+      await appendAudit(ctx, c, { chainId: order.userId, actorKind: "system", action: "order.refund_mirrored", resourceKind: "order", resourceId: order.id, detail: { source: "dashboard", state: "renewed", amount_minor: delta.toString() } });
+      await raiseAlert(ctx, c, { severity: "warn", kind: "order.refund_outside_flow", subject: order.id, detail: { order_id: order.id, state: "renewed", refunded_minor: total.toString(), amount_minor: String(p.amount_minor) } });
+      return true;
+    });
+    if (handled) return false;
+  }
   if (ev.type === "charge.refunded" && order) {
     const refunded = BigInt(o.amount_refunded ?? 0);
     const piId = typeof o.payment_intent === "string" ? o.payment_intent : null;

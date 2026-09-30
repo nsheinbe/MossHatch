@@ -11,10 +11,13 @@ import { sentHomeNotice } from "./notices.ts";
  * recovery (ST-48) runs the same path inside the sign-in transaction without importing the rest of the agent surface.
  */
 export async function sendAllHomeIn(ctx: AppContext, c: PoolClient, userId: string, cause: string, o: { notify?: boolean } = {}) {
-  const base = await revokeAllBindings(ctx, c, userId, cause);
   const now = ctx.clock.now();
-  const oauthRefresh = await c.query("update oauth_refresh_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
+  // Consents before bindings: a code exchange locks its consent and then its binding, so closing the consents after revoking the
+  // bindings could deadlock with one (the lock order is in `revokeAllBindings`).
   const consents = await c.query("update oauth_authorizations set status = 'denied', decided_at = $2 where user_id = $1 and status in ('pending','approved')", [userId, now]);
+  const base = await revokeAllBindings(ctx, c, userId, cause);
+  const oauthRefresh = await c.query("update oauth_refresh_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
+  // Revoke-all declined every pending request under the user's agent lock, which no proposal can pass, so this finds none left.
   const voided = await c.query("update agent_requests set state = 'void', decision_reason = 'send_home' where user_id = $1 and state = 'pending'", [userId]);
   await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "visitors.sent_home", resourceKind: "user", resourceId: userId, detail: { ...base, oauth_refresh: oauthRefresh.rowCount ?? 0, consents: consents.rowCount ?? 0, voided: voided.rowCount ?? 0 } });
   if (o.notify !== false) await sentHomeNotice(ctx, c, userId, { bindings: base.bindings });

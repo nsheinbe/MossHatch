@@ -18,7 +18,7 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const D_ID = `^/api/v1/domains/${esc(DOMAIN_ID)}`;
 const D_FQ = `^/api/v1/domains/${esc(FQDN)}`;
 
-interface Call { method: string; path: string; body: Record<string, unknown> | null; headers: Record<string, string> }
+interface Call { method: string; path: string; body: Record<string, unknown> | null; headers: Record<string, string>; search?: string }
 type Reply = { status?: number; json?: unknown } | undefined;
 type Handler = (c: Call) => Reply | Promise<Reply>;
 
@@ -72,7 +72,7 @@ async function harness(page: Page) {
     const u = new URL(r.url());
     let body: Record<string, unknown> | null = null;
     try { body = r.postDataJSON() as Record<string, unknown> | null; } catch { body = null; }
-    const c: Call = { method: r.method(), path: u.pathname, body, headers: r.headers() };
+    const c: Call = { method: r.method(), path: u.pathname, body, headers: r.headers(), search: u.search };
     calls.push(c);
     const hit = routes.find((x) => x.method === c.method && x.re.test(c.path));
     if (!hit) { unmatched.push(`${c.method} ${c.path}`); return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":{"code":"not_found"}}' }); }
@@ -303,6 +303,37 @@ test("transfer code: tampered preferences cannot keep the code up past 100 secon
   expect(await page.content()).not.toContain(CODE);
 });
 
+test("transfer code: when the code hides (Hide it now, or the timer), focus returns to the button that revealed it (keyboard)", async ({ page }) => {
+  await page.addInitScript(() => { localStorage.setItem("mosshatch.prefs", JSON.stringify({ state: { calm: false, sound: false, rehideSeconds: 5 }, version: 1 })); });
+  const api = await boot(page);
+  const CODE = `Fk7-${Date.now().toString(36)}-Rb2`;
+  api.on("POST", `${D_FQ}/transfer-out$`, { code: CODE });
+  const panel = await openDomain(page);
+  const xfer = panel.getByRole("group", { name: "Transfer to another registrar" });
+  const get = xfer.getByRole("button", { name: "Get a transfer code" });
+  const box = xfer.getByRole("group", { name: "Transfer code" });
+  const reveal = async () => {
+    await get.focus();
+    await page.keyboard.press("Enter");
+    await xfer.getByRole("group", { name: "Confirm with your passkey" }).getByRole("button", { name: "Approve with passkey" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(box).toBeVisible({ timeout: 20_000 });
+  };
+  await reveal();
+  await box.getByRole("button", { name: "Hide it now" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(box).toHaveCount(0);
+  await expect(get).toBeFocused();
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+  await clean(page, "transfer code hidden");
+  // The timer hides it while the person is still on the code: their place moves back the same way.
+  await reveal();
+  await expect(xfer.locator("code.xfer-code")).toBeFocused();
+  await expect(box).toHaveCount(0, { timeout: 10_000 });
+  await expect(get).toBeFocused();
+  expect(await page.content()).not.toContain(CODE);
+});
+
 test("step-up: an expired or refused challenge offers Try again with a new challenge (WCAG 2.2.1)", async ({ page }) => {
   const api = await boot(page);
   const CODE = `Tr7-${Date.now().toString(36)}-Ag2`;
@@ -404,4 +435,55 @@ test("visitors: a new token is shown once and never inside a live region", async
   await region.getByRole("button", { name: "I stored it" }).click();
   await expect(shown).toHaveCount(0);
   expect(await page.content()).not.toContain(TOKEN);
+});
+
+test("ST-72 approval card: more access signs the token's access as the server has it now plus exactly the scopes shown, never a stale list", async ({ page }) => {
+  const api = await boot(page);
+  const BID = "0190f0f0-0000-7000-8000-00000000b0b1";
+  const RID = "0190f0f0-0000-7000-8000-00000000a0a1";
+  const at = "2026-09-30T10:00:00.000Z", until = "2026-10-30T10:00:00.000Z";
+  // The list loads while the token can still change DNS; afterwards the person narrows it in another tab.
+  let held = ["domains.read:*", `dns.write:${FQDN}`];
+  let asks = [`secrets.read:${FQDN}:dev`];
+  api.on("GET", "^/api/v1/visitors$", () => ({ json: {
+    visitors: [{ id: BID, kind: "agent", name: "Build bot", prefix: "mh_live_b0b1", scopes: held, connected_app: null, created_at: at, last_used_at: null, expires_at: until, revoked_at: null, paused: false,
+      spend: { cap_minor: "0", spent_minor: "0", reserved_minor: "0" }, pending_requests: 1 }],
+    pending_requests: 1, confirm_threshold_minor: "5000", device_login_enabled: true,
+  } }));
+  const summary = { id: RID, kind: "scope", state: "pending", domain: null, years: null, max_total_minor: "0", requested_at: at, expires_at: until, requester: { binding_id: BID, name: "Build bot" } };
+  api.on("GET", "^/api/v1/approvals$", (c) => ({ json: { approvals: /state=pending/.test(c.search ?? "") ? [summary] : [] } }));
+  api.on("GET", `^/api/v1/approvals/${esc(RID)}$`, () => ({ json: {
+    id: RID, kind: "scope", state: "pending", agent_state: "pending", requested_at: at, age_seconds: 60, expires_at: until, new_network: false, decided_at: null, decision_reason: null, order_id: null,
+    requester: { binding_id: BID, name: "Build bot", kind: "agent", connected_app: false, token_expires_at: until, live: true }, scopes: asks,
+  } }));
+  api.on("POST", `^/api/v1/bindings/${esc(BID)}/widen$`, {});
+  api.on("POST", `^/api/v1/approvals/${esc(RID)}/resolve$`, { state: "completed" });
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("button", { name: "Visitors" }).click();
+  const region = page.getByRole("region", { name: "Visitors", exact: true });
+  await region.getByRole("button", { name: "Review" }).click();
+  const card = region.locator(".approval-card");
+  await expect(card.getByRole("heading", { name: "Give a token more access" })).toBeVisible({ timeout: 20_000 });
+  await expect(card.getByRole("listitem")).toHaveText(asks);
+  held = ["domains.read:*"];
+  const prepares = () => api.calls.filter((c) => c.path === "/api/v1/actions/prepare");
+
+  // The request on the server no longer matches the card: nothing is prepared, the card shows the server's version.
+  asks = [`secrets.read:${FQDN}:dev`, `secrets.read:${FQDN}:preview`];
+  await card.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(card.getByRole("alert")).toHaveText("This request changed. Check what it asks for now, then approve again.", { timeout: 20_000 });
+  await expect(card.getByRole("listitem")).toHaveText(asks);
+  expect(prepares()).toEqual([]);
+  await clean(page, "approval card changed");
+
+  // Approving now signs the token's current access plus exactly the shown scopes: the DNS access removed since the list loaded stays removed.
+  await card.getByRole("button", { name: "Approve", exact: true }).click();
+  const group = card.getByRole("group", { name: "Confirm with your passkey" });
+  await expect(group.getByRole("button", { name: "Approve with passkey" })).toBeVisible({ timeout: 20_000 });
+  const signed = prepares().at(-1)!.body!;
+  expect(signed).toMatchObject({ type: "agent.token.widen", target_id: BID });
+  expect([...((signed.user_input as { scopes: string[] }).scopes)].sort()).toEqual(["domains.read:*", ...asks].sort());
+  await group.getByRole("button", { name: "Approve with passkey" }).click();
+  await expect(region.getByText("Approved. The token can now do that.")).toBeVisible({ timeout: 20_000 });
+  expect(api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/widen")).map((c) => c.headers["x-mh-action-id"])).toEqual(api.actionIds());
 });

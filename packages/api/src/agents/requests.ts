@@ -103,13 +103,16 @@ export async function createRequest(ctx: AppContext, caller: Caller, r: NewReque
   const out = await withUser(ctx.runtime, caller.userId, async (c) => {
     await lockUser(c, caller.userId);
     const now = ctx.clock.now();
+    // This binding's requests past their expiry are expired here, whether or not the sweeper has run: an expired twin still
+    // holds the pending-once index (a repeat would fail on it) and its reservation. Lock order as everywhere (see
+    // `revokeAllBindings`): those requests first, by id, then the binding, which is read again when the trigger released a reservation.
+    const due = (await c.query("select id from agent_requests where binding_id = $1 and user_id = $2 and state = 'pending' and expires_at <= $3 order by id for update", [caller.bindingId, caller.userId, now])).rows.map((x) => x.id as string);
     let b = await liveBinding(c, caller.userId, caller.bindingId, now, true);
     if (!b) throw new HttpError(401, "unauthorized");
-    // This binding's requests past their expiry are expired here, whether or not the sweeper has run: an expired twin still
-    // holds the pending-once index (a repeat would fail on it) and its reservation. The binding row is locked first (the same
-    // order as revoke-all), and read again when the trigger released a reservation.
-    const due = await c.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $3 where binding_id = $1 and user_id = $2 and state = 'pending' and expires_at <= $3", [caller.bindingId, caller.userId, now]);
-    if (due.rowCount) b = (await liveBinding(c, caller.userId, caller.bindingId, now, true))!;
+    if (due.length) {
+      await c.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $2 where id = any($1::uuid[]) and state = 'pending'", [due, now]);
+      b = (await liveBinding(c, caller.userId, caller.bindingId, now, true))!;
+    }
     const twin = (await c.query("select id, expires_at from agent_requests where binding_id = $1 and request_hash = $2 and state = 'pending' and expires_at > $3", [caller.bindingId, r.requestHash, now])).rows[0];
     if (twin) return { ok: { approval_id: twin.id as string, status: "pending_human_approval" as const, created: false, expires_at: iso(twin.expires_at)! } };
     const counts = (await c.query(
@@ -376,14 +379,47 @@ export async function resolveScope(ctx: AppContext, userId: string, id: string) 
 
 // ---- sweeps ------------------------------------------------------------------------------------------------------------------
 
-/** Expire pending requests past their time (the release happens in the trigger). Cron role. */
+/**
+ * Expire pending requests past their time, void those of a revoked binding, and expire approvals nobody paid for (the release of a
+ * held reservation happens in the trigger). Cron role. One transaction in the lock order every path uses (see `revokeAllBindings`):
+ * the requests first, in id order, then their bindings, in id order, then the state changes.
+ */
 export async function expireDue(ctx: AppContext): Promise<number> {
-  const r = await ctx.cron.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $1 where state = 'pending' and expires_at <= $1", [ctx.clock.now()]);
-  // A binding revoked on its own (not through revoke-all) leaves its pending requests behind: they are void, never approvable.
-  const v = await ctx.cron.query("update agent_requests r set state = 'void', decision_reason = 'binding_revoked', decided_at = $1 from bindings b where b.id = r.binding_id and r.state = 'pending' and b.revoked_at is not null", [ctx.clock.now()]);
-  await ctx.cron.query("update oauth_authorizations set status = 'expired' where status = 'pending' and expires_at <= $1", [ctx.clock.now()]);
-  return (r.rowCount ?? 0) + (v.rowCount ?? 0);
+  const now = ctx.clock.now();
+  const stale = new Date(now.getTime() - APPROVAL_TTL_MS - APPROVAL_SWEEP_GRACE_MS);
+  const n = await tx(ctx.cron, async (c) => {
+    const ids = (await c.query(
+      `select r.id from agent_requests r join bindings b on b.id = r.binding_id
+        where (r.state = 'pending' and (r.expires_at <= $1 or b.revoked_at is not null))
+           or (r.state = 'approved' and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id))
+        order by r.id for update of r`, [now, stale])).rows.map((x) => x.id as string);
+    if (ids.length === 0) return 0;
+    await c.query("select id from bindings where id in (select binding_id from agent_requests where id = any($1::uuid[])) order by id for no key update", [ids]);
+    const r = await c.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $2 where id = any($1::uuid[]) and state = 'pending' and expires_at <= $2", [ids, now]);
+    // A binding revoked on its own (not through revoke-all) leaves its pending requests behind: they are void, never approvable.
+    const v = await c.query("update agent_requests r set state = 'void', decision_reason = 'binding_revoked', decided_at = $2 from bindings b where r.id = any($1::uuid[]) and b.id = r.binding_id and r.state = 'pending' and b.revoked_at is not null", [ids, now]);
+    // An approval whose order was never made (the order path failed after it, or nobody pressed Pay now) expires and gives its
+    // reservation back to the cap. `decided_at` keeps the time of the approval.
+    const a = await c.query(
+      "update agent_requests r set state = 'expired', decision_reason = 'approval_expired' where r.id = any($1::uuid[]) and r.state = 'approved' and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id)",
+      [ids, stale]);
+    return (r.rowCount ?? 0) + (v.rowCount ?? 0) + (a.rowCount ?? 0);
+  });
+  await ctx.cron.query("update oauth_authorizations set status = 'expired' where status = 'pending' and expires_at <= $1", [now]);
+  return n;
 }
+
+/**
+ * How long an approval waits for its order (ST-74). PLAN 4.5 gives a proposal 72 hours and names no separate expiry for an approved
+ * request, so the approval TTL already in code (REQUEST_TTL_MS) is used, counted from the approval: Pay now refuses from then on.
+ */
+export const APPROVAL_TTL_MS = REQUEST_TTL_MS;
+/** The sweeper waits this much longer, so an order that Pay now started just before the expiry has long committed when it looks. */
+export const APPROVAL_SWEEP_GRACE_MS = 10 * 60_000;
+
+/** An approved request with no order whose approval is older than APPROVAL_TTL_MS (checked again against `orders` by the caller). */
+export const approvalExpired = (r: Pick<RequestRow, "state" | "order_id" | "decided_at">, now: Date) =>
+  r.state === "approved" && !r.order_id && !!r.decided_at && new Date(r.decided_at).getTime() + APPROVAL_TTL_MS <= now.getTime();
 
 /** Nightly: every binding's `reserved_minor` equals the sum of its held reservations. A difference is corrected and alerted. */
 export async function reconcileReservations(ctx: AppContext): Promise<{ checked: number; corrected: number }> {

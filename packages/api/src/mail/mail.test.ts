@@ -143,6 +143,10 @@ const SAMPLE: { [K in MailKind]: Record<string, unknown> } = {
   transfer_failed: { fqdn: "example-name.com", reason: "nack", nackReason: "fraud", money: "refunding" },
   transfer_away_started: { fqdn: "example-name.com", requestedAt: "2026-10-01T12:00:00.000Z", declineBy: "2026-10-06T12:00:00.000Z", freezeToken: TOKEN },
   transfer_denied: { fqdn: "example-name.com", reason: "udrp" },
+  account_closing: { requestedAt: "2026-10-01T12:00:00.000Z", coolingOffUntil: "2026-10-15T12:00:00.000Z", domainCount: 2 },
+  account_closure_cancelled: { at: "2026-10-02T12:00:00.000Z" },
+  account_closed: { closedAt: "2026-10-15T12:00:00.000Z" },
+  account_export_ready: { readyAt: "2026-10-01T12:00:00.000Z", expiresAt: "2026-10-08T12:00:00.000Z" },
 };
 const ORIGIN = "https://mosshatch.com";
 const urls = (s: string) => s.match(/https?:\/\/[^\s)>"'<]+/g) ?? [];

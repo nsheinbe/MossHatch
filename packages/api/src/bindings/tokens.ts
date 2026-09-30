@@ -3,6 +3,7 @@ import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import { appendAudit } from "../audit.ts";
 import { mintToken, parseToken } from "../util/token.ts";
+import { lockUser } from "../agents/common.ts";
 import type { Scope } from "./scopes.ts";
 
 /**
@@ -49,21 +50,26 @@ export async function revokeBinding(ctx: AppContext, c: PoolClient, userId: stri
 /**
  * Revoke-all (ST-66): every binding, every refresh token, every approved-but-unclaimed device grant, and every pending agent
  * request of the user, in one transaction. Never rate limited (a revoke path must always work).
+ *
+ * Lock order, the same on every path that touches agent requests and bindings (ST-66, ST-74): the user's agent lock (`lockUser`),
+ * then agent requests in id order, then bindings in id order, then refresh tokens. Decline, approval, proposals, the sweeper and the
+ * reservation-release trigger (a request leaving `pending` updates its binding) all take a request before its binding; this path
+ * used to revoke the bindings first and could deadlock with them.
  */
 export async function revokeAllBindings(ctx: AppContext, c: PoolClient, userId: string, cause: string): Promise<{ bindings: number; refresh: number; devices: number; requests: number }> {
   const now = ctx.clock.now();
   // Device grants first: this waits for any poll that is consuming one right now (it holds that row), so the binding the
   // poll inserts is committed, and seen, before the bindings are revoked below. Each statement reads a fresh snapshot.
   const d = await c.query("update device_requests set state = 'denied', decided_at = $2 where user_id = $1 and state = 'approved'", [userId, now]);
+  // The agent lock also keeps a proposal from adding a pending request while this runs, so none is left behind on a revoked binding.
+  await lockUser(c, userId);
+  const pending = (await c.query("select id from agent_requests where user_id = $1 and state = 'pending' order by id for update", [userId])).rows.map((x) => x.id as string);
+  await c.query("select id from bindings where user_id = $1 and revoked_at is null order by id for no key update", [userId]);
+  // Declining releases each held reservation in the trigger, on a binding this transaction already holds.
+  const q = pending.length ? await c.query("update agent_requests set state = 'declined', decision_reason = 'revoke_all' where id = any($1::uuid[]) and state = 'pending'", [pending]) : null;
   const b = await c.query("update bindings set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
   const r = await c.query("update binding_refresh_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
-  let requests = 0;
-  // Agent approval requests arrive in Phase 5; when the table exists, pending ones are declined in this same transaction.
-  if ((await c.query("select to_regclass('public.agent_requests') is not null as present")).rows[0].present) {
-    const q = await c.query("update agent_requests set state = 'declined', decision_reason = 'revoke_all' where user_id = $1 and state = 'pending'", [userId]);
-    requests = q.rowCount ?? 0;
-  }
-  const out = { bindings: b.rowCount ?? 0, refresh: r.rowCount ?? 0, devices: d.rowCount ?? 0, requests };
+  const out = { bindings: b.rowCount ?? 0, refresh: r.rowCount ?? 0, devices: d.rowCount ?? 0, requests: q?.rowCount ?? 0 };
   await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "binding.revoke_all", resourceKind: "user", resourceId: userId, detail: { cause, ...out } });
   return out;
 }

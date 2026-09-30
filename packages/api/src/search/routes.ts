@@ -8,6 +8,7 @@ import type { Limit } from "../ratelimit.ts";
 import { buildQuote, PricingError, quoteToJson } from "../pricing/quote.ts";
 import { normalizeLabel, parseFqdn, parseTlds } from "./labels.ts";
 import { chipPrices, searchAvailability, SearchCache } from "./service.ts";
+import { tldNotices } from "../closure/tld-https.ts";
 
 /** Rate limits (PLAN.md 4.5 table row "Search and quote"; own targets, tuned after OpenSRS answers). */
 export const LIMIT_ANON_IP: Limit = { bucket: "search:ip", max: 30, windowSeconds: 600 };
@@ -99,7 +100,8 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
         const { items } = await searchAvailability(req.ctx, { registrar, cache }, fq.label, [fq.tld as never]);
         const a = items[0]!;
         const purchasable = a.kind === "available" || a.kind === "unknown";
-        return json({ availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null });
+        // C-58: the HTTPS notice for .dev and .app travels with the quote (closure/tld-https.ts), so every client shows it before checkout.
+        return json({ availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, notices: tldNotices(a.fqdn) });
       },
     },
   );

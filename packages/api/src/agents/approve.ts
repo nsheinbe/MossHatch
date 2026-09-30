@@ -15,8 +15,10 @@ import { rowToDomain } from "../domains/common.ts";
 import { ensureTerm } from "../domains/terms.ts";
 import { ensureRenewalOrder, startRenewalCheckout } from "../domains/renewals.ts";
 import { StripeError } from "../stripe/port.ts";
-import { applyApprovedDns } from "./dns.ts";
-import { confirmRule, expireIfDue, loadRequest, priceRegistration, priceRenewal, voidRequest, type RequestRow } from "./requests.ts";
+import { approvedZonePlan } from "./dns.ts";
+import { mapRegistrarError, notifyDomainEvent } from "../domain-mgmt/common.ts";
+import { writeZoneLocked, type ZoneWriter } from "../domain-mgmt/dns.ts";
+import { approvalExpired, confirmRule, expireIfDue, loadRequest, priceRegistration, priceRenewal, voidRequest, type RequestRow } from "./requests.ts";
 import { assertAgentPurchasesOpen, liveBinding, lockUser, notFound, sessionUserOf, UUID } from "./common.ts";
 import { approvedNotice } from "./notices.ts";
 import { registerRoutedSpec } from "./specs.ts";
@@ -249,6 +251,11 @@ export async function checkoutHandler(req: HandlerReq): Promise<HandlerResult> {
   const r = await withUser(ctx.runtime, userId, (c) => loadRequest(c, userId, req.params.id ?? ""));
   if (!r || (r.kind !== "register" && r.kind !== "renew")) throw notFound();
   if (r.state !== "approved" || !r.params) throw new HttpError(409, "request_unavailable", undefined, NO_STORE);
+  // An approval that waited too long for its order makes none now (ST-74): the sweeper expires it and releases the reservation.
+  // An order already made for it (even one not yet linked) is still reached, below.
+  if (approvalExpired(r, ctx.clock.now()) && !(await withUser(ctx.runtime, userId, (c) => c.query("select 1 from orders where user_id = $1 and agent_request_id = $2", [userId, r.id]))).rowCount) {
+    throw new HttpError(409, "request_expired", undefined, NO_STORE);
+  }
   const actionId = (await withUser(ctx.runtime, userId, (c) => c.query("select decided_by_action_id from agent_requests where id = $1", [r.id]))).rows[0]?.decided_by_action_id as string;
   if (r.order_id) {
     const o = await loadOrder(ctx.cron, r.order_id);
@@ -257,33 +264,60 @@ export async function checkoutHandler(req: HandlerReq): Promise<HandlerResult> {
   return json({ id: r.id, ...(await checkoutFor(req, userId, r, actionId, true)) }, 200, { headers: NO_STORE });
 }
 
-/** POST /approvals/:id/approve-dns (`dns.sensitive.approve`). Applies exactly the zone that was signed, or nothing. */
+/**
+ * The person approving an agent's sensitive DNS change: the snapshot and the audit name the person; the notice for an applied change is
+ * sent from `after` with the approval (null here), and the one for a write whose outcome is unknown says it may have landed.
+ */
+const approvalWriter = (userId: string): ZoneWriter => ({
+  snapshotKind: "user", actorKind: "user", actorId: userId,
+  notice: ({ fqdn, sensitive, maybe }) => maybe
+    ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `You approved a change from one of your tokens to ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}. It may have been applied: our registrar did not confirm it. You can roll it back from the DNS tab, under History.` }
+    : null,
+});
+
+/**
+ * POST /approvals/:id/approve-dns (`dns.sensitive.approve`). Applies exactly the zone that was signed, or nothing.
+ * 1. `settle` consumes the assertion and re-checks the request, and commits: one assertion is spent on one write, whatever happens next.
+ * 2. `writeZoneLocked` (the DNS tab's write safety): under the zone lock, a fresh read must still hash to the signed before-hash and the
+ *    zone written is the signed after-zone; the pre-write snapshot commits before the registrar is called, so a write whose outcome is
+ *    unknown keeps it for rollback; the request is marked done, audited and announced in `after`, with the snapshot marked applied.
+ */
 export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
   const userId = sessionUserOf(req);
   const action = requireAction(req, "dns.sensitive.approve");
   const p = action.params as { route?: string; request_id: string; before_hash: string; after_hash: string };
   if (p.route !== "agent_request" || !UUID.test(req.params.id ?? "") || p.request_id !== req.params.id) throw notFound();
-  const out = await withUser(ctx.runtime, userId, async (c): Promise<Settled | { done: Awaited<ReturnType<typeof applyApprovedDns>> }> => {
-    const s = await settle(ctx, c, userId, { id: action.id, type: "dns.sensitive.approve" }, p.request_id, ["dns_change"]);
-    if (!("ok" in s)) return s;
-    const r = s.ok;
-    if (r.params.before_hash !== p.before_hash || r.params.after_hash !== p.after_hash) return { refuse: "params_changed", status: 409 };
-    await c.query("savepoint dns_apply");
-    try {
-      await markApproved(ctx, c, userId, r, action.id, "completed");
-      return { done: await applyApprovedDns(ctx, c, userId, r, action.id) };
-    } catch (e) {
-      if (e instanceof HttpError && (e.code === "zone_changed" || e.code === "params_changed")) {
-        // The zone moved since the request: nothing is written, the request is void and the assertion is spent.
-        await c.query("rollback to savepoint dns_apply");
-        await c.query("update agent_requests set state = 'void', decision_reason = 'zone_changed', decided_at = $2 where id = $1 and state = 'pending'", [r.id, ctx.clock.now()]);
-        return { refuse: "zone_changed", status: 409 };
-      }
-      throw e;
-    }
+  const s = await withUser(ctx.runtime, userId, async (c): Promise<Settled> => {
+    const st = await settle(ctx, c, userId, { id: action.id, type: "dns.sensitive.approve" }, p.request_id, ["dns_change"]);
+    if (!("ok" in st)) return st;
+    if (st.ok.params.before_hash !== p.before_hash || st.ok.params.after_hash !== p.after_hash) return { refuse: "params_changed", status: 409 };
+    return st;
   });
-  if ("refuse" in out) throw new HttpError(out.status, out.refuse);
-  if (!("done" in out)) throw new HttpError(500, "internal");
-  return json({ id: p.request_id, state: "applied", ...out.done });
+  if (!("ok" in s)) throw new HttpError(s.status, s.refuse);
+  const r = s.ok;
+  if (!r.domain_id) throw notFound();
+  let w;
+  try {
+    w = await writeZoneLocked(ctx, userId, r.domain_id, approvalWriter(userId), (live, d) => approvedZonePlan(d.fqdn_ascii, { before_hash: p.before_hash, after_hash: p.after_hash, desired: r.params.desired })(live), {
+      detail: { actor: "user" },
+      after: async (c, done) => {
+        await markApproved(ctx, c, userId, r, action.id, "completed");
+        await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "dns.sensitive_approved", resourceKind: "agent_request", resourceId: r.id, detail: { action_id: action.id, snapshot: done.snapshotId } });
+        const n = done.change?.sensitive.length ?? 0;
+        await notifyDomainEvent(ctx, c, userId, {
+          kind: "dns.sensitive_changed", domainId: done.domain.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
+          text: `You approved a change from one of your tokens that touched ${n} sensitive DNS record${n === 1 ? "" : "s"} on ${done.domain.fqdn_ascii}. You can roll it back from the DNS tab, under History.`,
+        });
+      },
+    });
+  } catch (e) {
+    if (e instanceof HttpError && (e.code === "zone_changed" || e.code === "params_changed")) {
+      // The zone moved since the request: nothing is written, the request is void and the assertion is spent.
+      await voidRequest(ctx, userId, r.id, "zone_changed");
+      throw new HttpError(409, "zone_changed");
+    }
+    throw mapRegistrarError(e);
+  }
+  return json({ id: p.request_id, state: "applied", zone_hash: w.zoneHash, snapshot_id: w.snapshotId });
 }

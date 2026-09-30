@@ -76,7 +76,7 @@ export default function Visitors() {
           {!data && !msg && <p role="status">Loading.</p>}
           {open && openCard && (
             <Suspense fallback={<p role="status">Loading.</p>}>
-              <ApprovalCard id={open} currentScopes={data?.visitors.find((v) => v.id === openCard.requester.binding_id)?.scopes ?? []} onClose={() => setOpen(null)} onDone={done} />
+              <ApprovalCard id={open} onClose={() => setOpen(null)} onDone={done} />
             </Suspense>
           )}
           {!open && data && (

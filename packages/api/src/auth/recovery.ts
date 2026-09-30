@@ -183,8 +183,13 @@ export async function completeRecovery(ctx: AppContext, c: PoolClient, userId: s
   await c.query("insert into action_holds (user_id, scope, until, recovery_id, created_at) values ($1,'all_held',$2,$3,$4)", [userId, holdUntil, requestId, now]);
   const susp = await c.query("update passkeys set suspended_at = $2, suspended_by_recovery_id = $3 where user_id = $1 and revoked_at is null and suspended_at is null", [userId, now, requestId]);
   const sess = await c.query("update sessions set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
+  // Grants approved but not yet claimed would otherwise outlive the recovery: a device grant approved and not yet polled for mints a
+  // command-line token at the next poll, and an open consent issues a grant at its code exchange (ST-48). Both are denied before the
+  // bindings are revoked, in the lock order those claim paths use (grant first, then binding).
+  const devices = await c.query("update device_requests set state = 'denied', decided_at = $2 where user_id = $1 and state = 'approved'", [userId, now]);
+  const consents = await c.query("update oauth_authorizations set status = 'denied', decided_at = $2 where user_id = $1 and status in ('pending','approved')", [userId, now]);
   const bind = await c.query("update bindings set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
-  await auditUser(ctx, c, userId, "auth.recovery.completed", { resourceKind: "recovery_request", resourceId: requestId, detail: { path: cur.path, suspended: susp.rowCount, sessions: sess.rowCount, bindings: bind.rowCount } });
+  await auditUser(ctx, c, userId, "auth.recovery.completed", { resourceKind: "recovery_request", resourceId: requestId, detail: { path: cur.path, suspended: susp.rowCount, sessions: sess.rowCount, bindings: bind.rowCount, device_grants: devices.rowCount, consents: consents.rowCount } });
   await notifyUser(ctx, c, userId, {
     kind: "recovery.completed", immediate: true, dedupeKey: `recovery-done:${requestId}`, subject: "Your Mosshatch account was recovered",
     text: `Recovery finished and a new passkey was added. Sensitive actions stay on hold until ${holdUntil.toISOString()}. Your old passkeys are suspended for 30 days: if this was not you, sign in with an old passkey to undo it.`,
