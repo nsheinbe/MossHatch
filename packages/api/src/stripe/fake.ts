@@ -7,6 +7,7 @@ import {
   type CheckoutSession, type CreateOffSessionInput, type CreateSessionInput, type PaymentIntent, type Refund, type StripeEvent, type StripePort,
 } from "./port.ts";
 import { toStripeSessionParams } from "./params.ts";
+import { CATALOG, descriptorSuffix, type ProductSpec } from "./catalog.ts";
 
 /**
  * FakeStripe: a faithful in-memory model of the parts of Stripe the order machine touches. It is NOT Stripe. What it
@@ -18,10 +19,16 @@ import { toStripeSessionParams } from "./params.ts";
  * attaches the card to the session's customer when it is paid (and emits `payment_method.attached`); an off-session PaymentIntent with a
  * card that is not attached to that customer is refused; `detach` removes the attachment; the card updater emits
  * `payment_method.automatically_updated` with the PaymentMethod and `previous_attributes`, as documented.
+ * Catalog (C-44): Products with caller-chosen ids; a Session whose `price_data.product` names a missing or inactive Product is
+ * refused (`resource_missing`), so a deployment that skipped `ensureCatalog` fails closed. Descriptors (C-40): a card PaymentIntent
+ * takes `statement_descriptor_suffix` (at most 22 characters, no `< > \ ' " *`); the fake records it per PaymentIntent.
+ * Billing address (C-42): the address typed at Checkout lands on `customer_details.address` (mapped to `billing_address`).
+ * Disputes carry `payment_method_details.card.brand`; early fraud warnings do not.
  * What it cannot prove: any behaviour of the real API, wallets, Radar, Stripe Tax, or the exact error code Stripe returns for an
- * unattached card off-session (UNVERIFIED: the fake uses invalid_request / `payment_method_not_attached`).
+ * unattached card off-session (UNVERIFIED: the fake uses invalid_request / `payment_method_not_attached`), for a missing
+ * Product, or for an invalid descriptor suffix (UNVERIFIED: the fake uses `parameter_invalid_string`).
  */
-export type FaultMethod = "detachPaymentMethod" | "retrievePaymentMethod" | "createCheckoutSession" | "createCustomer" | "capturePaymentIntent" | "cancelPaymentIntent" | "expireSession" | "createRefund" | "retrievePaymentIntent" | "retrieveSession" | "createOffSessionPaymentIntent";
+export type FaultMethod = "detachPaymentMethod" | "retrievePaymentMethod" | "createCheckoutSession" | "createCustomer" | "capturePaymentIntent" | "cancelPaymentIntent" | "expireSession" | "createRefund" | "retrieveRefund" | "retrievePaymentIntent" | "retrieveSession" | "createOffSessionPaymentIntent" | "ensureProduct";
 export interface Fault {
   /** server: a 500 that Stripe caches under the idempotency key. timeout: applied, but the caller never sees the answer. lost: never applied, caller sees a timeout. */
   kind: "server" | "timeout" | "lost";
@@ -36,6 +43,8 @@ export interface PayOptions {
   metadataOrderId?: string;
   reviewOpen?: boolean;
   captureBefore?: number | null;
+  /** `customer_details.address` as typed at Checkout. Default: a California address (an enabled region). */
+  billingAddress?: { country: string | null; state: string | null } | null;
   /** Card that fails the authorization. */
   declined?: boolean;
   paymentMethod?: string;
@@ -53,6 +62,16 @@ export class FakeStripe implements StripePort {
   sessions = new Map<string, CheckoutSession & { _params?: unknown; _paymentMethod?: string }>();
   paymentIntents = new Map<string, PaymentIntent>();
   refunds = new Map<string, Refund>();
+  /**
+   * The status a new refund is created with. `pending` models a refund Stripe accepted but has not settled (the amount is reserved
+   * against the charge until it settles or fails); `finishPendingRefund` settles it. Which card refunds stay pending, and for how long,
+   * is UNVERIFIED.
+   */
+  refundStatus: "succeeded" | "pending" = "succeeded";
+  /** Products by id (C-44). Seeded with the catalog unless constructed with `catalog: "empty"`. */
+  products = new Map<string, { id: string; name: string; active: boolean; tax_code: string | null; metadata: Record<string, string> }>();
+  /** The statement-descriptor suffix sent for each PaymentIntent (C-40). */
+  descriptors = new Map<string, string | null>();
   customers = new Map<string, { id: string; userId: string }>();
   /** Every card seen, with the customer it is attached to (null: used once, never saved). */
   paymentMethods = new Map<string, { id: string; customer: string | null; brand: string; expYear: number; last4: string }>();
@@ -66,9 +85,10 @@ export class FakeStripe implements StripePort {
   private faults = new Map<FaultMethod, { fault: Fault; remaining: number }>();
   private seq = 0;
 
-  constructor(private clock: Clock, opts: { livemode?: boolean; taxBps?: number } = {}) {
+  constructor(private clock: Clock, opts: { livemode?: boolean; taxBps?: number; catalog?: "seeded" | "empty" } = {}) {
     this.livemode = opts.livemode ?? false;
     this.taxBps = opts.taxBps ?? 0;
+    if (opts.catalog !== "empty") for (const p of Object.values(CATALOG)) this.products.set(p.id, { id: p.id, name: p.name, active: true, tax_code: p.taxCode, metadata: {} });
   }
 
   // ---- controls -------------------------------------------------------------------------------------------------
@@ -140,12 +160,18 @@ export class FakeStripe implements StripePort {
     return this.run("createCheckoutSession", this.key(idem, "createCheckoutSession"), input, () => {
       const now = this.nowSec();
       if (input.expiresAt < now + 30 * 60 - 5 || input.expiresAt > now + 24 * 3600) throw new StripeError("invalid_request", 400, "parameter_invalid_integer", "expires_at must be 30 minutes to 24 hours from now");
+      const sp = toStripeSessionParams(input);
+      const pd = sp.line_items[0]!.price_data as { product?: string; product_data?: unknown };
+      if (pd.product && pd.product_data) throw new StripeError("invalid_request", 400, "parameter_unknown", "You may only specify one of these parameters: product, product_data.");
+      const prod = pd.product ? this.products.get(pd.product) : undefined;
+      if (pd.product && (!prod || !prod.active)) throw new StripeError("invalid_request", 400, "resource_missing", `No such product: '${pd.product}'`);
+      this.checkDescriptor(sp.payment_intent_data.statement_descriptor_suffix);
       const id = this.id("cs_test");
       const s: CheckoutSession & { _params?: unknown } = {
         id, url: `https://checkout.stripe.test/c/pay/${id}`, status: "open", payment_status: "unpaid", payment_intent: null, customer: input.customer,
         client_reference_id: input.clientReferenceId, metadata: { ...input.metadata }, expires_at: input.expiresAt, livemode: this.livemode,
         amount_subtotal: input.lineItem.unitAmount, amount_total: input.lineItem.unitAmount, amount_tax: 0, currency: input.lineItem.currency,
-        _params: { input, stripe: toStripeSessionParams(input) },
+        _params: { input, stripe: sp },
       };
       this.sessions.set(id, s); this.created.sessions++;
       return this.pubSession(s);
@@ -228,11 +254,15 @@ export class FakeStripe implements StripePort {
       // A card used once at Checkout without setup_future_usage is not attached to the customer and cannot be charged off-session.
       const pm = this.paymentMethods.get(input.paymentMethod);
       if (!pm || pm.customer !== input.customer) throw new StripeError("invalid_request", 400, "payment_method_not_attached", "The provided PaymentMethod is not attached to this Customer.");
+      const suffix = descriptorSuffix(input.operation ?? "renew");
+      this.checkDescriptor(suffix);
       const p: PaymentIntent = {
         id: this.id("pi"), status: "succeeded", amount: input.amount, amount_capturable: 0, amount_received: input.amount, currency: input.currency, metadata: { ...input.metadata },
         capture_before: null, livemode: this.livemode, review_open: false, payment_method: input.paymentMethod, customer: input.customer, capture_method: "automatic", cancellation_reason: null, created: now,
+        card_brand: pm.brand,
       };
       this.paymentIntents.set(p.id, p);
+      this.descriptors.set(p.id, suffix);
       this.emit("payment_intent.succeeded", p);
       return structuredClone(p);
     });
@@ -264,17 +294,55 @@ export class FakeStripe implements StripePort {
       const already = [...this.refunds.values()].filter((r) => r.payment_intent === p.id && r.status !== "failed").reduce((a, r) => a + r.amount, 0);
       const amount = input.amount ?? p.amount_received - already;
       if (amount <= 0 || amount + already > p.amount_received) throw new StripeError("invalid_request", 400, "charge_already_refunded", "Refund amount exceeds the charge.");
-      const r: Refund = { id: this.id("re"), status: "succeeded", amount, payment_intent: p.id, currency: p.currency };
+      const r: Refund = { id: this.id("re"), status: this.refundStatus, amount, payment_intent: p.id, currency: p.currency };
       this.refunds.set(r.id, r); this.created.refunds++;
       this.emit("charge.refunded", { id: "ch_" + p.id, object: "charge", payment_intent: p.id, amount: p.amount_received, amount_refunded: already + amount, currency: p.currency, refunded: already + amount >= p.amount_received, metadata: p.metadata });
       return structuredClone(r);
     });
   }
 
+  async retrieveRefund(id: string) {
+    return this.run("retrieveRefund", null, id, () => {
+      const r = this.refunds.get(id);
+      if (!r) throw new StripeError("invalid_request", 404, "resource_missing", "No such refund");
+      return structuredClone(r);
+    });
+  }
+
+  /** A pending refund settles or fails: `refund.updated` (and `refund.failed` on failure) with the Refund object. */
+  finishPendingRefund(id: string, status: "succeeded" | "failed"): StripeEvent[] {
+    const r = this.refunds.get(id);
+    if (!r || r.status !== "pending") throw new Error("no such pending refund");
+    const before = this.outbox.length;
+    r.status = status;
+    const obj = { ...r, object: "refund", metadata: this.paymentIntents.get(r.payment_intent)?.metadata ?? {} };
+    this.emit("refund.updated", obj);
+    if (status === "failed") this.emit("refund.failed", obj);
+    return this.outbox.slice(before);
+  }
+
   constructEvent(rawBody: string, header: string | null, secrets: string[], now: Date, tolerance = DEFAULT_TOLERANCE_SEC): StripeEvent {
     const v = verifySignature(rawBody, header, secrets, now, tolerance);
     if (!v.ok) throw new StripeError("signature", null, v.reason);
     return JSON.parse(rawBody) as StripeEvent;
+  }
+
+  /** Product create with a caller-chosen id; an existing id is `resource_already_exists` on create, so ensure reads it back instead. */
+  async ensureProduct(spec: ProductSpec, idem: string) {
+    return this.run("ensureProduct", this.key(idem, "ensureProduct"), spec, () => {
+      const have = this.products.get(spec.id);
+      if (have) {
+        if (!have.active) throw new StripeError("invalid_request", 400, "product_inactive", "This product is archived.");
+        return { id: have.id, created: false };
+      }
+      this.products.set(spec.id, { id: spec.id, name: spec.name, active: true, tax_code: spec.taxCode, metadata: { ...spec.metadata } });
+      return { id: spec.id, created: true };
+    });
+  }
+
+  private checkDescriptor(suffix: string | null | undefined) {
+    if (suffix == null) return;
+    if (suffix.length > 22 || /[<>\\'"*]/.test(suffix) || !/[A-Za-z]/.test(suffix)) throw new StripeError("invalid_request", 400, "parameter_invalid_string", "Invalid statement_descriptor_suffix.");
   }
 
   // ---- what the customer, Radar and the Dashboard do ------------------------------------------------------------
@@ -299,13 +367,17 @@ export class FakeStripe implements StripePort {
       pm.customer = s.customer;
       this.emit("payment_method.attached", { id: pm.id, object: "payment_method", customer: s.customer, card: { brand: pm.brand, last4: pm.last4, exp_year: pm.expYear } });
     }
+    const pmRow = this.paymentMethods.get(pmId)!;
     const p: PaymentIntent = {
+      card_brand: pmRow.brand,
       id: this.id("pi"), status: auto ? "succeeded" : "requires_capture", amount: o.amountCapturable ?? total, amount_capturable: auto ? 0 : (o.amountCapturable ?? total),
       amount_received: auto ? (o.amountCapturable ?? total) : 0, currency: o.currency ?? "usd",
       metadata: { order_id: o.metadataOrderId ?? s.metadata.order_id ?? "", attempt: s.metadata.attempt ?? "" }, capture_before: auto ? null : o.captureBefore !== undefined ? o.captureBefore : now + Math.floor(this.captureWindowMs / 1000),
       livemode: this.livemode, review_open: !!o.reviewOpen, payment_method: pmId, customer: s.customer, capture_method: auto ? "automatic" : "manual", cancellation_reason: null, created: now,
     };
     this.paymentIntents.set(p.id, p);
+    this.descriptors.set(p.id, ((s as { _params?: { stripe: ReturnType<typeof toStripeSessionParams> } })._params?.stripe.payment_intent_data.statement_descriptor_suffix) ?? null);
+    s.billing_address = o.billingAddress === undefined ? { country: "US", state: "CA" } : o.billingAddress;
     s.status = "complete"; s.payment_status = auto ? "paid" : "unpaid"; s.payment_intent = p.id; s.amount_tax = tax; s.amount_total = total; s.url = null;
     this.emit("checkout.session.completed", s);
     this.emit(auto ? "payment_intent.succeeded" : "payment_intent.amount_capturable_updated", p);
@@ -348,7 +420,7 @@ export class FakeStripe implements StripePort {
     const p = this.paymentIntents.get(piId);
     if (!p) throw new Error("no such payment intent");
     return kind === "dispute"
-      ? this.emit("charge.dispute.created", { id: this.id("dp"), object: "dispute", payment_intent: p.id, charge: "ch_" + p.id, status: "needs_response", amount: p.amount_received })
+      ? this.emit("charge.dispute.created", { id: this.id("dp"), object: "dispute", payment_intent: p.id, charge: "ch_" + p.id, status: "needs_response", amount: p.amount_received, payment_method_details: { type: "card", card: { brand: p.card_brand ?? "visa" } } })
       : this.emit("radar.early_fraud_warning.created", { id: this.id("issfr"), object: "radar.early_fraud_warning", payment_intent: p.id, charge: "ch_" + p.id, fraud_type: "unauthorized_use_of_card" });
   }
   closeDispute(piId: string, won: boolean): StripeEvent {

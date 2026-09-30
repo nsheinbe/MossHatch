@@ -10,6 +10,6 @@ export { readSecretsForBinding, parseScopes, allowsSecretsRead, holdsForbiddenPa
 export { secretRevealSpec, registerRevealSpec, REVEAL_LIMITS, REVEAL_WINDOW_MS } from "./reveal.ts";
 export { storeConnectionCredential, disconnect, withConnectionCredential, SERVICES as CONNECTION_SERVICES } from "./connections.ts";
 export { registerVaultJobs, rewrapAll, rewrapBatch, sendReadDigest } from "./jobs.ts";
-export { affectedFromTrail, customersUnderKek, sendCompromiseNotices, autoDenyOnUnauditedDecrypt, runCompromiseDrill } from "./drill.ts";
+export { affectedFromTrail, scopeTrail, customersUnderKek, sendCompromiseNotices, autoDenyOnUnauditedDecrypt, runCompromiseDrill } from "./drill.ts";
 export { vaultAlarms, trailAlarms } from "./alarms.ts";
 export { registerVaultRoutes, vaultRoutes } from "./routes.ts";

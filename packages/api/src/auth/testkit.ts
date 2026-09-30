@@ -1,5 +1,7 @@
-import crypto from "node:crypto";
+import { withUser } from "@mosshatch/db";
 import { Router } from "../http/router.ts";
+import { hashOf } from "../util/bytes.ts";
+import { passkeyAddOptionsHash } from "../stepup/specs.ts";
 import { cookieFrom, createTestApp, TEST_ORIGIN, TEST_RP_ID, type TestApp } from "../testing/app.ts";
 import { VirtualAuthenticator } from "../testing/authenticator.ts";
 import { authRoutes } from "./routes.ts";
@@ -7,10 +9,28 @@ import { PRE_AUTH_COOKIE, SESSION_COOKIE } from "../http/session.ts";
 import { hit } from "../ratelimit.ts";
 import { CLASS_A, CLASS_A_KINDS } from "./mail.ts";
 
-/** A router with only the auth routes and a stub step-up gate that hands the request body to the handler as the action params. */
+/**
+ * A router with only the auth routes and a stub step-up gate that stands in for a completed prepare and commit: it
+ * writes a committed action for this session with the params the real derive produces (for `passkey.add`, the label
+ * from the request body and the options hash from current server state), so the handler's single-use and options
+ * checks run for real. `flows.test.ts` also drives the real gate end to end.
+ */
 export function authRouter(): Router {
   const r = new Router().add(...authRoutes);
-  r.setStepUpGate(async (req, type) => ({ id: crypto.randomUUID(), type, params: req.body }));
+  r.setStepUpGate(async (req, type) => {
+    const { userId, sessionIdHash } = req.principal;
+    if (!userId || !sessionIdHash) throw new Error("stub gate needs a session");
+    const body = (req.body ?? {}) as { label?: unknown };
+    return withUser(req.ctx.runtime, userId, async (c) => {
+      const params = type === "passkey.add" ? { label: typeof body.label === "string" ? body.label : "Passkey", options_hash: await passkeyAddOptionsHash(req.ctx, c, userId) } : {};
+      const now = req.ctx.clock.now();
+      const id = (await c.query(
+        `insert into actions (user_id, session_id_hash, type, params, params_hash, state, expires_at, committed_at, credential_id, uv, be, bs, client_data_json, authenticator_data, signature, created_at)
+         values ($1,$2,$3,$4,$5,'committed',$6,$7,'stub-gate',true,false,false,'\\x00','\\x00','\\x00',$7) returning id`,
+        [userId, sessionIdHash, type, params, hashOf(params), new Date(now.getTime() + 120_000), now])).rows[0].id as string;
+      return { id, type, params };
+    });
+  });
   return r;
 }
 

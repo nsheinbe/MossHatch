@@ -15,7 +15,8 @@ export type OrderState = (typeof ORDER_STATES)[number];
 /** Why an order was voided. Enumerated codes only; each maps to a plain customer message. */
 export type VoidReason =
   | "name_taken" | "taken_by_other" | "auth_window" | "auth_lost" | "quote_increased" | "price_guard" | "registrar_unavailable" | "unknown_deadline" | "registration_rejected"
-  | "no_contact" | "review_refused" | "unpaid" | "customer_cancel" | "guard_low" | "guard_high" | "guard_currency" | "guard_wrong_order" | "guard_open_review" | "guard_livemode";
+  | "no_contact" | "review_refused" | "unpaid" | "customer_cancel" | "guard_low" | "guard_high" | "guard_currency" | "guard_wrong_order" | "guard_open_review" | "guard_livemode"
+  | "region_not_enabled";
 
 /** The quote frozen into `orders.quote`: the pricing module's JSON form (bigints as decimal strings). */
 export type FrozenQuote = QuoteJson;
@@ -104,6 +105,8 @@ export const SWEEP_UNKNOWN_AFTER_MS = 90_000;
 export const LATE_WATCH_MS = 14 * 24 * 3600_000;
 export const CAPTURE_RETRY_WINDOW_MS = 6 * 3600_000;
 export const PAY_LINK_MS = 7 * 24 * 3600_000;
+/** An open pay-link Checkout is handed out again while it has at least this long left; a shorter-lived one is expired and replaced. */
+export const PAY_LINK_REUSE_MIN_MS = 30 * 60_000;
 /** Deletion must happen inside the add-grace period (5 days); leave half a day of margin. */
 export const ADD_GRACE_DEADLINE_MS = 5 * 24 * 3600_000 - 12 * 3600_000;
 export const SESSION_TTL_MS = 31 * 60_000;

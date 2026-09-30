@@ -5,7 +5,10 @@ import { ACTION_HEADER } from "../stepup/gate.ts";
 import { mintToken } from "../util/token.ts";
 import { sha256 } from "../util/bytes.ts";
 import { RESERVED_NAMES, RESERVED_PREFIXES } from "../vault/names.ts";
-import { cli, login, resetCounters, web } from "./testkit.ts";
+import { KmsError } from "../vault/kms/types.ts";
+import { withUser } from "@mosshatch/db";
+import { issueCliGrant } from "./tokens.ts";
+import { approveDevice, cli, deviceCode, login, resetCounters, web } from "./testkit.ts";
 import { isNarrowing, lintScopes, parseScope, ScopeError, type Grant, type Scope } from "./scopes.ts";
 
 let k: VaultKit;
@@ -220,12 +223,9 @@ describe("ST-66: revoke-all", () => {
   it("declines pending agent requests in the same transaction, and a failure part-way revokes nothing", async () => {
     const p = await makePerson(k, "st66b");
     const t = await createToken(p, [`nest.names:${p.domain.fqdn}:dev`]);
-    // Phase 5 adds agent_requests; a stand-in table proves the same-transaction behaviour now.
-    await k.app.db.owner.query("create table if not exists agent_requests (id uuid primary key default uuidv7(), user_id uuid not null, state text not null, decision_reason text)");
-    await k.app.db.owner.query("alter table agent_requests enable row level security; alter table agent_requests force row level security");
-    await k.app.db.owner.query("drop policy if exists tenant on agent_requests; create policy tenant on agent_requests using (user_id = app_user_id()) with check (user_id = app_user_id())");
-    await k.app.db.owner.query("grant select, update on agent_requests to mh_runtime");
-    await k.app.db.owner.query("insert into agent_requests (user_id, state) values ($1,'pending'),($1,'pending')", [p.user.userId]);
+    // Phase 5's agent_requests (migration 0950): two real pending requests of this token.
+    await k.app.db.owner.query("insert into agent_requests (user_id, binding_id, kind, request_hash, params, created_at, expires_at) values ($1,$2,'scope',$3,'{}',now(),now() + interval '1 hour'),($1,$2,'scope',$4,'{}',now(),now() + interval '1 hour')",
+      [p.user.userId, t.json.id, sha256("st66-a"), sha256("st66-b")]);
     await k.app.db.owner.query("create or replace function st66_fail() returns trigger language plpgsql as $$ begin raise exception 'boom'; end $$; create trigger st66_fail before update on agent_requests for each row execute function st66_fail()");
     const failed = await web(k.app, p.user, "POST", "/api/v1/bindings/revoke-all", {});
     expect(failed.status).toBe(500);
@@ -235,7 +235,36 @@ describe("ST-66: revoke-all", () => {
     expect(ok.status).toBe(200); expect(ok.json.requests_declined).toBe(2);
     expect((await k.app.db.owner.query("select count(*)::int n from agent_requests where user_id = $1 and state = 'declined'", [p.user.userId])).rows[0].n).toBe(2);
     expect((await cli(k.app, "GET", "/api/v1/whoami", undefined, t.json.token)).status).toBe(401);
-    await k.app.db.owner.query("drop table agent_requests");
+  });
+
+  it("review: a device grant being consumed while revoke-all runs is revoked too", async () => {
+    const p = await makePerson(k, "st66race");
+    const dc = await deviceCode(k.app);
+    await approveDevice(k, p, dc.user_code);
+    const req = (await k.app.db.owner.query("select id, approved_scopes, approved_by_action_id from device_requests where device_code_hash = $1", [sha256(dc.device_code)])).rows[0];
+    let release!: () => void, ready!: () => void;
+    const gate = new Promise<void>((r) => { release = r; }), isReady = new Promise<void>((r) => { ready = r; });
+    let access = "";
+    // The poll's one-time consume, held open after its binding is inserted: the window revoke-all must not miss.
+    const pollTx = withUser(k.app.ctx.runtime, p.user.userId, async (c) => {
+      const won = await c.query("update device_requests set state = 'consumed' where id = $1 and state = 'approved' and user_id = $2", [req.id, p.user.userId]);
+      expect(won.rowCount).toBe(1);
+      access = (await issueCliGrant(k.app.ctx, c, { userId: p.user.userId, deviceRequestId: req.id, actionId: req.approved_by_action_id, scopes: req.approved_scopes })).accessToken;
+      ready();
+      await gate;
+    });
+    await isReady;
+    const revoking = web(k.app, p.user, "POST", "/api/v1/bindings/revoke-all", {});
+    // Let revoke-all run until it waits on the poll transaction's lock.
+    for (let i = 0; i < 200; i++) {
+      if ((await k.app.db.owner.query("select count(*)::int n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'")).rows[0].n > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    release();
+    await pollTx;
+    const r = await revoking;
+    expect(r.status, r.text).toBe(200);
+    expect((await cli(k.app, "GET", "/api/v1/whoami", undefined, access)).status).toBe(401);
   });
 });
 
@@ -263,6 +292,48 @@ describe("ST-88: reserved and malformed names on push", () => {
     expect(ok.status, ok.text).toBe(200);
     expect(ok.json.written.map((w: { name: string }) => w.name).sort()).toEqual(["GOOD_NAME", "OTHER_NAME"]);
     expect(ok.text).not.toContain('"v"');
+  });
+
+  it("review: push is atomic: a vault failure part-way writes nothing and leaves no versionless name", async () => {
+    const p = await makePerson(k, "st88atomic");
+    await putSecret(k, p, "dev", "B_TWO", "old-two");
+    const t = await makeBinding(k, p, [{ capability: "secrets.write", domain_id: p.domain.id, env: "dev" }, { capability: "nest.names", domain_id: p.domain.id, env: "dev" }], "cli");
+    const orig = k.kms.generateDataKey.bind(k.kms);
+    let n = 0;
+    k.kms.generateDataKey = (async (...a: Parameters<typeof orig>) => { if (++n === 3) throw new KmsError("Unavailable"); return orig(...a); }) as typeof orig;
+    let r;
+    try { r = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: { A_ONE: "1", B_TWO: "2", C_THREE: "3", D_FOUR: "4" } }, t.token); }
+    finally { k.kms.generateDataKey = orig; }
+    expect(r.status, r.text).toBe(503); expect(r.json.error.code).toBe("vault_unavailable");
+    const rows = (await k.app.db.owner.query("select name, current_version from secrets where domain_id = $1 order by name", [p.domain.id])).rows;
+    expect(rows).toEqual([{ name: "B_TWO", current_version: 1 }]);
+    expect((await k.app.db.owner.query("select count(*)::int n from secret_versions v join secrets s on s.id = v.secret_id where s.domain_id = $1", [p.domain.id])).rows[0].n).toBe(1);
+    // The same batch goes through whole once the vault answers.
+    const ok = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: { A_ONE: "1", B_TWO: "2", C_THREE: "3", D_FOUR: "4" } }, t.token);
+    expect(ok.status, ok.text).toBe(200);
+    expect(ok.json.written).toEqual([{ name: "A_ONE", version: 1 }, { name: "B_TWO", version: 2 }, { name: "C_THREE", version: 1 }, { name: "D_FOUR", version: 1 }]);
+  });
+
+  it("ST-35: an agent's push to prod emails every address at once and counts against the agent write limit", async () => {
+    const p = await makePerson(k, "st35push");
+    await putSecret(k, p, "prod", "DATABASE_URL", "postgres://good.example/db");
+    const t = await makeBinding(k, p, [{ capability: "secrets.write", domain_id: p.domain.id, env: "prod" }, { capability: "secrets.write", domain_id: p.domain.id, env: "dev" }], "agent");
+    k.app.email.clear();
+    const r = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/prod/write`, { secrets: { DATABASE_URL: "postgres://attacker.example/db" } }, t.token);
+    expect(r.status, r.text).toBe(200);
+    const mails = k.app.email.sent.filter((m) => m.kind === "agent.prod_write");
+    expect(mails.length).toBe(2);   // both notification addresses, without waiting for a job
+    expect(mails[0]!.text).toContain("DATABASE_URL"); expect(mails[0]!.text).not.toContain("attacker.example");
+    // A CLI grant (a person's own device) writing prod is not an agent write.
+    const c = await makeBinding(k, p, [{ capability: "secrets.write", domain_id: p.domain.id, env: "prod" }], "cli");
+    k.app.email.clear();
+    expect((await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/prod/write`, { secrets: { OTHER: "x" } }, c.token)).status).toBe(200);
+    expect(k.app.email.sent.filter((m) => m.kind === "agent.prod_write")).toEqual([]);
+    // An agent cannot write more values a minute through push than through its own write route.
+    const many = Object.fromEntries(Array.from({ length: 31 }, (_, i) => [`MANY_${i}`, "v"]));
+    const lim = await cli(k.app, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/dev/write`, { secrets: many }, t.token);
+    expect(lim.status).toBe(429);
+    expect((await k.app.db.owner.query("select count(*)::int n from secrets where domain_id = $1 and name like 'MANY_%'", [p.domain.id])).rows[0].n).toBe(0);
   });
 
   it("push needs secrets.write on that domain and env; prod needs an explicit :prod", async () => {

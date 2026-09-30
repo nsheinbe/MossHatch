@@ -62,3 +62,10 @@ export async function autoSafeMode(ctx: Pick<AppContext, "cron" | "clock" | "ser
   if (set.rowCount) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "auto_safe.engaged", subject: "registrar_writes_paused", detail: { unacked_pages: stale.rows[0].n, minutes } });
   return { engaged: (set.rowCount ?? 0) > 0 };
 }
+
+/** Raise an alert only if no alert with this kind and subject exists in any state: one alert per condition, even after it is closed. */
+export async function raiseAlertOnce(ctx: Pick<AppContext, "services">, q: Q, a: AlertInput): Promise<{ id: string | null; created: boolean }> {
+  const seen = await q.query("select 1 from alerts where kind = $1 and subject is not distinct from $2::text limit 1", [a.kind, a.subject ?? null]);
+  if (seen.rowCount) return { id: null, created: false };
+  return raiseAlert(ctx, q, a);
+}

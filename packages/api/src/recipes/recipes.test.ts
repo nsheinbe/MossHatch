@@ -155,6 +155,47 @@ describe("ST-86: billable or unknown-cost steps need the plan-hash approval for 
     expect((await zone(k, p.domain.fqdn)).map((x) => x.name)).toEqual(["sneaky"]);
   });
 
+  it("review: the plan binds the Neon project, so moving the connection to a new project voids an older plan", async () => {
+    const { p, credential, project } = await neonPerson("st86proj");
+    k.fakes.neon.setOrgCredential(credential);
+    const a = await plan(k, p, "postgres-neon", { envs: ["prod"] });
+    expect(a.status, a.text).toBe(201);
+    expect(a.json.plan.needs_approval).toBe(false);
+    const b = await plan(k, p, "postgres-neon", { envs: ["dev"], create_project: true });
+    const { summary } = await approvePlan(k, p, b.json.application_id);
+    expect((await applyReq(k, p, "postgres-neon", b.json.application_id, b.json.plan.plan_hash)).status).toBe(202);
+    await tick(k);
+    expect((await appRow(k, b.json.application_id)).state).toBe("applied");
+    const stale = await applyReq(k, p, "postgres-neon", a.json.application_id, a.json.plan.plan_hash);
+    expect(stale.status).toBe(409); expect(stale.json.error.code).toBe("plan_changed");
+    await tick(k);
+    expect(await secretOf(p, "prod", "DATABASE_URL")).toBeUndefined();
+    // The approval names the project the connection is moved away from.
+    expect(summary).toContain(project!);
+  });
+
+  it("ST-35: an agent's recipe that writes prod emails every address at once", async () => {
+    const { p } = await neonPerson("st35rec");
+    const agent = await makeBinding(k, p, [{ capability: "recipes.apply", domain_id: p.domain.id, env: "prod" }, { capability: "secrets.write", domain_id: p.domain.id, env: "prod" }], "agent");
+    const r = await bearer(k, agent.token, "POST", `/api/v1/domains/${p.domain.fqdn}/recipes/postgres-neon/plan`, { input: { envs: ["prod"] } });
+    expect(r.status, r.text).toBe(201);
+    expect(r.json.plan.needs_approval).toBe(false);
+    k.app.email.clear();
+    const go = await bearer(k, agent.token, "POST", `/api/v1/domains/${p.domain.fqdn}/recipes/postgres-neon/apply`, { application_id: r.json.application_id, plan_hash: r.json.plan.plan_hash });
+    expect(go.status, go.text).toBe(202);
+    await tick(k);
+    expect((await appRow(k, r.json.application_id)).state).toBe("applied");
+    const mails = k.app.email.sent.filter((m) => m.kind === "agent.prod_write");
+    expect(mails.map((m) => m.text.match(/wrote (\S+) \(prod\)/)?.[1]).sort()).toEqual(["DATABASE_URL", "DATABASE_URL", "DATABASE_URL_UNPOOLED", "DATABASE_URL_UNPOOLED"]);
+    expect(JSON.stringify(mails)).not.toContain("postgresql://");
+    // A plan a person applies from the app sends no agent notice.
+    const own = await plan(k, p, "postgres-neon", { envs: ["prod"] });
+    k.app.email.clear();
+    await applyReq(k, p, "postgres-neon", own.json.application_id, own.json.plan.plan_hash);
+    await tick(k);
+    expect(k.app.email.sent.filter((m) => m.kind === "agent.prod_write")).toEqual([]);
+  });
+
   it("the plan hash sent must be the stored one", async () => {
     const { p } = await neonPerson("st86h");
     const r = await plan(k, p, "postgres-neon");

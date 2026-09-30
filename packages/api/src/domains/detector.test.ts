@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { commit, prepare } from "../stepup/testkit.ts";
-import { deliverAll, drain, buyAndPay } from "../orders/testkit.ts";
+import { deliverAll, drain, buyAndPay, REGISTRANT } from "../orders/testkit.ts";
+import { ACTION_HEADER } from "../stepup/gate.ts";
 import { runReconcile } from "./reconcile.ts";
 import { syncDomain } from "./sync.ts";
-import { alertRows, at, autoRenewOn, buyDomain, domainRow, findings, makeDomainsHarness, makeOwner, relogin, renewOrders, settle, type DomainsHarness, type Owner } from "./testkit.ts";
+import { alertRows, at, autoRenewOn, buyDomain, domainRow, findings, hygiene, makeDomainsHarness, makeOwner, relogin, renewOrders, settle, type DomainsHarness, type Owner } from "./testkit.ts";
 
 let h: DomainsHarness; let ada: Owner;
 beforeAll(async () => { h = await makeDomainsHarness(); ada = await makeOwner(h, "detector@example.com"); }, 120_000);
@@ -160,6 +161,63 @@ describe("ST-60: crash recovery and ordering leave the detector quiet after reco
     expect(await fieldsOf(d.id)).toEqual(["nameservers"]);
     // The cache follows the registrar, so the domain row now holds what the registrar has.
     expect((await domainRow(h, d.id)).nameservers).toEqual(["ns1.somewhere-else.example", "ns2.somewhere-else.example"]);
+  });
+
+  it("review: a committed contact change explains only the registrant email it sets, and a DS change only the presence it sets", async () => {
+    ada = await relogin(h, ada);
+    const d = await buyDomain(h, ada, "free-contact60.dev");
+    await syncDomain(h.app.ctx, d.id);
+    const base = (await domainRow(h, d.id)).owner_email_hash as string;
+    expect(base).toBeTruthy();
+    const submit = async (fields: Record<string, string>) => {
+      await hygiene(h);                                          // the pages this test opens would otherwise pause registrar writes
+      const dr = await h.app.call("POST", `/api/v1/domains/${d.fqdn}/contact-drafts`, { cookie: ada.cookie, body: { ...REGISTRANT, email: ada.email, ...fields } });
+      expect(dr.status, JSON.stringify(dr.json)).toBe(201);
+      const prep = await prepare(h.app, ada.user, { type: "domain.contact.change", target_id: dr.json.id, user_input: {} });
+      expect(prep.status, JSON.stringify(prep.json)).toBe(200);
+      expect((await commit(h.app, ada.user, prep.json.action_id, ada.key.auth.get(prep.json.webauthn_options))).status).toBe(200);
+      const res = await h.app.call("POST", `/api/v1/domains/${d.fqdn}/contact`, { cookie: ada.cookie, body: {}, headers: { [ACTION_HEADER]: prep.json.action_id } });
+      expect([200, 202], JSON.stringify(res.json)).toContain(res.status);
+      return dr.json as { registrant_change: boolean };
+    };
+    // A phone-only change through the passkey flow: the registrant email stays as it was.
+    expect((await submit({ phone: "+1.5555550199" })).registrant_change).toBe(false);
+    await syncDomain(h.app.ctx, d.id);
+    expect(await fieldsOf(d.id)).toEqual([]);
+    // Days later the registrant email is changed at the registrar by someone else (end-user interface or support): a finding.
+    h.registrar.oob.changeOwnerEmail(d.fqdn, "thief@example.net");
+    await syncDomain(h.app.ctx, d.id);
+    expect(await fieldsOf(d.id)).toEqual(["contact_email_hash"]);
+
+    // A committed change of registrant email explains that email once the upstream applies it, and nothing else.
+    const e = await buyDomain(h, ada, "free-contact61.dev");
+    await syncDomain(h.app.ctx, e.id);
+    await hygiene(h);
+    const dr = await h.app.call("POST", `/api/v1/domains/${e.fqdn}/contact-drafts`, { cookie: ada.cookie, body: { ...REGISTRANT, email: "new-registrant@example.org" } });
+    expect(dr.json.registrant_change).toBe(true);
+    const prep = await prepare(h.app, ada.user, { type: "domain.contact.change", target_id: dr.json.id, user_input: {} });
+    expect((await commit(h.app, ada.user, prep.json.action_id, ada.key.auth.get(prep.json.webauthn_options))).status).toBe(200);
+    expect((await h.app.call("POST", `/api/v1/domains/${e.fqdn}/contact`, { cookie: ada.cookie, body: {}, headers: { [ACTION_HEADER]: prep.json.action_id } })).status).toBe(202);
+    h.registrar.approveContactChange(e.fqdn);
+    await syncDomain(h.app.ctx, e.id);
+    expect(await fieldsOf(e.id)).toEqual([]);
+    h.registrar.oob.changeOwnerEmail(e.fqdn, "thief2@example.net");
+    await syncDomain(h.app.ctx, e.id);
+    expect(await fieldsOf(e.id)).toEqual(["contact_email_hash"]);
+
+    // DS: an add explains a DS appearing, not one disappearing.
+    const f = await buyDomain(h, ada, "free-ds60.dev");
+    await syncDomain(h.app.ctx, f.id);
+    const ds = { keyTag: 4242, algorithm: 13, digestType: 2, digest: "ab".repeat(32) };
+    const dsPrep = await prepare(h.app, ada.user, { type: "domain.nameservers.change", target_id: f.fqdn, user_input: { kind: "ds_add", ds } });
+    expect(dsPrep.status, JSON.stringify(dsPrep.json)).toBe(200);
+    expect((await commit(h.app, ada.user, dsPrep.json.action_id, ada.key.auth.get(dsPrep.json.webauthn_options))).status).toBe(200);
+    h.registrar.oob.addDs(f.fqdn, ds);                           // what the action did at the registrar
+    await syncDomain(h.app.ctx, f.id);
+    expect(await fieldsOf(f.id)).toEqual([]);
+    await h.registrar.removeDs(f.fqdn, ds);                      // nobody asked for this
+    await syncDomain(h.app.ctx, f.id);
+    expect(await fieldsOf(f.id)).toEqual(["ds"]);
   });
 
   it("an unlock we committed explains the lock change and its re-lock; a lock change with no action does not", async () => {

@@ -30,6 +30,8 @@ export async function setDisputeLock(ctx: AppContext, o: { domainId: string; sta
   return tx(ctx.cron, async (c) => {
     await c.query("update domains set dispute_lock_state = $2, locked = locked or $3 where id = $1", [d.id, o.state, locked]);
     await ensureSecurityRow(c, d);
+    // A dispute lock ends the owner's unlock: the posture job keeps the name locked from now on.
+    await c.query("update domain_security set unlocked_at = null where domain_id = $1", [d.id]);
     const t = await c.query(
       "insert into domain_tickets (user_id, domain_id, kind, detail, sla_due_at, opened_at) values ($1,$2,'dispute_lock',$3,$4,$5) on conflict do nothing returning id",
       [d.user_id, d.id, { state: o.state, supply_data_by_business_days: DISPUTE_SUPPLY_DATA_BUSINESS_DAYS, registrar_locked: locked }, due, now]);

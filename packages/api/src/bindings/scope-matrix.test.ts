@@ -4,6 +4,7 @@ import type { Route } from "../http/types.ts";
 import { makeBinding, putSecret, type Person } from "../vault/testkit.ts";
 import { bearer, connect, makePerson, makeRecipeKit, plan, type RecipeKit } from "../recipes/testkit.ts";
 import { lintScopes } from "./scopes.ts";
+import { sha256 } from "../util/bytes.ts";
 
 /**
  * ST-65: the scope matrix (token x route x env), generated from the route table: every route that accepts a bearer must
@@ -49,6 +50,24 @@ const ENTRIES: Record<string, Entry> = {
   "GET /api/v1/search": { cap: null, env: false, call: (_p, _e, t) => bearer(k, t, "GET", "/api/v1/search?name=mossmatrix") },
   "GET /api/v1/quote": { cap: null, env: false, call: (_p, _e, t) => bearer(k, t, "GET", "/api/v1/quote?domain=mossmatrix.com&years=1") },
   "POST /api/v1/oauth/revoke": { cap: null, env: false, call: (_p, _e, t) => bearer(k, t, "POST", "/api/v1/oauth/revoke", { token: "mh_cli_not_a_token" }) },
+  // Agent surface (Phase 5): the REST equivalents of the MCP tools, the MCP endpoint, and the approval state for the binding that asked.
+  "GET /api/v1/approvals/:id": { cap: null, env: false, call: (_p, _e, t) => bearer(k, t, "GET", "/api/v1/approvals/018f0000-0000-7000-8000-000000000000") },
+  "POST /mcp": { cap: null, env: false, call: (_p, _e, t) => k.app.call("POST", "/mcp", { authorization: `Bearer ${t}`, browser: false, body: { jsonrpc: "2.0", id: 1, method: "tools/list" } }) },
+  "POST /api/v1/agent/scope-requests": { cap: null, env: false, call: (p, _e, t) => bearer(k, t, "POST", "/api/v1/agent/scope-requests", { scopes: [`dns.read:${p.domain.fqdn}`] }) },
+  // A list answers for A's domain only when a scope covers it: "not listed" is the list's form of a refusal.
+  "GET /api/v1/agent/domains": { cap: "domains.read", env: false, call: async (p, _e, t) => { const r = await bearer(k, t, "GET", "/api/v1/agent/domains"); return r.status === 200 && !r.text.includes(`"${p.domain.fqdn}"`) ? { status: 403, text: "not listed" } : r; } },
+  "GET /api/v1/agent/domains/:fqdn": { cap: "domains.read", env: false, call: (p, _e, t) => bearer(k, t, "GET", `/api/v1/agent/domains/${p.domain.fqdn}`) },
+  "GET /api/v1/agent/domains/:fqdn/dns": { cap: "dns.read", env: false, call: (p, _e, t) => bearer(k, t, "GET", `/api/v1/agent/domains/${p.domain.fqdn}/dns`) },
+  "POST /api/v1/agent/domains/:fqdn/dns": { cap: "dns.write", env: false, call: (p, _e, t) => bearer(k, t, "POST", `/api/v1/agent/domains/${p.domain.fqdn}/dns`, { records: [{ type: "A", name: "matrix", value: "203.0.113.7" }] }) },
+  "GET /api/v1/agent/domains/:fqdn/nest/:env": { cap: "nest.names", env: true, call: (p, env, t) => bearer(k, t, "GET", `/api/v1/agent/domains/${p.domain.fqdn}/nest/${env}`) },
+  "POST /api/v1/agent/domains/:fqdn/secrets/:env/:name/read": { cap: "secrets.read", env: true, call: (p, env, t) => bearer(k, t, "POST", `/api/v1/agent/domains/${p.domain.fqdn}/secrets/${env}/MATRIX_SEED/read`, {}) },
+  "PUT /api/v1/agent/domains/:fqdn/secrets/:env/:name": { cap: "secrets.write", env: true, call: (p, env, t) => bearer(k, t, "PUT", `/api/v1/agent/domains/${p.domain.fqdn}/secrets/${env}/MATRIX_AGENT`, { value: "v" }) },
+  "GET /api/v1/agent/domains/:fqdn/transfer": { cap: "transfer.status", env: false, call: (p, _e, t) => bearer(k, t, "GET", `/api/v1/agent/domains/${p.domain.fqdn}/transfer`) },
+  "POST /api/v1/agent/proposals": {
+    // A renewal proposal needs room under the token's cap; the matrix tokens are made with none, so the call gives it some.
+    cap: "renew.propose", env: false,
+    call: async (p, _e, t) => { await k.app.db.owner.query("update bindings set spend_cap_minor = 10000000 where token_hash = $1", [sha256(t)]); return bearer(k, t, "POST", "/api/v1/agent/proposals", { kind: "renew", domain: p.domain.fqdn }); },
+  },
 };
 
 beforeAll(async () => {
@@ -141,6 +160,8 @@ describe("ST-91 (bearer half): user B's widest token never reaches user A's reso
     ];
     const t = await makeBinding(k, b, wide, "cli");
     const aPlan = await plan(k, a, "postgres-neon");
+    const aBinding = await makeBinding(k, a, [{ capability: "register.propose", domain_id: "*", env: null }], "agent");
+    const aRequest = (await k.app.db.owner.query("insert into agent_requests (user_id, binding_id, kind, request_hash, params, created_at, expires_at) values ($1,$2,'scope',$3,'{}', now(), now() + interval '1 hour') returning id", [a.user.userId, aBinding.id, sha256("matrix-a-request")])).rows[0].id as string;
     const shape = (x: { status: number; text: string }) => JSON.stringify([x.status, x.text]);
     const probes: [string, string, string, unknown?][] = [
       ["POST", `/api/v1/domains/${a.domain.fqdn}/secrets/dev/read`, `/api/v1/domains/nobody-here-matrix.com/secrets/dev/read`, {}],
@@ -150,6 +171,14 @@ describe("ST-91 (bearer half): user B's widest token never reaches user A's reso
       ["POST", `/api/v1/domains/${a.domain.fqdn}/recipes/postgres-neon/apply`, `/api/v1/domains/nobody-here-matrix.com/recipes/postgres-neon/apply`, { application_id: aPlan.json.application_id, plan_hash: aPlan.json.plan.plan_hash }],
       ["GET", `/api/v1/recipe-applications/${aPlan.json.application_id}`, `/api/v1/recipe-applications/018f0000-0000-7000-8000-000000000000`],
       ["DELETE", `/api/v1/domains/${a.domain.id}/auto-renew`, `/api/v1/domains/018f0000-0000-7000-8000-000000000000/auto-renew`],
+      ["GET", `/api/v1/approvals/${aRequest}`, "/api/v1/approvals/018f0000-0000-7000-8000-000000000000"],
+      ["GET", `/api/v1/agent/domains/${a.domain.fqdn}`, "/api/v1/agent/domains/nobody-here-matrix.com"],
+      ["GET", `/api/v1/agent/domains/${a.domain.fqdn}/dns`, "/api/v1/agent/domains/nobody-here-matrix.com/dns"],
+      ["POST", `/api/v1/agent/domains/${a.domain.fqdn}/dns`, "/api/v1/agent/domains/nobody-here-matrix.com/dns", { records: [{ type: "A", name: "x", value: "203.0.113.8" }] }],
+      ["GET", `/api/v1/agent/domains/${a.domain.fqdn}/nest/dev`, "/api/v1/agent/domains/nobody-here-matrix.com/nest/dev"],
+      ["POST", `/api/v1/agent/domains/${a.domain.fqdn}/secrets/dev/MATRIX_SEED/read`, "/api/v1/agent/domains/nobody-here-matrix.com/secrets/dev/MATRIX_SEED/read", {}],
+      ["PUT", `/api/v1/agent/domains/${a.domain.fqdn}/secrets/dev/MATRIX_SEED`, "/api/v1/agent/domains/nobody-here-matrix.com/secrets/dev/MATRIX_SEED", { value: "x" }],
+      ["GET", `/api/v1/agent/domains/${a.domain.fqdn}/transfer`, "/api/v1/agent/domains/nobody-here-matrix.com/transfer"],
     ];
     const covered = new Set(probes.map(([m, p]) => `${m} ${p}`));
     for (const r of bearerRoutes.filter((x) => x.path.includes(":"))) {

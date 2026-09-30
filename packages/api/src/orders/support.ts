@@ -71,6 +71,7 @@ const VOID_TEXT: Record<VoidReason, string> = {
   guard_wrong_order: "The payment did not match this order, so we cancelled it. Nothing was charged.",
   guard_open_review: "This payment is under review, so we cancelled it. Nothing was charged.",
   guard_livemode: "The payment did not match this order, so we cancelled it. Nothing was charged.",
+  region_not_enabled: "We sell only to billing addresses in the United States for now, so we cancelled this order and released the hold on your card. Nothing was charged.",
 };
 export const voidMessage = (r: VoidReason | null) => (r ? VOID_TEXT[r] : "This order was cancelled. Nothing was charged.");
 

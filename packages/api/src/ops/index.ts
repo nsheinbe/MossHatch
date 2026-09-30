@@ -8,3 +8,4 @@ export * from "./monitor.ts";
 export * from "./restore.ts";
 export * from "./routes.ts";
 export * from "./services.ts";
+export * from "./retention.ts";

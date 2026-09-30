@@ -80,6 +80,8 @@ async function approve(page: Page, scope: import("@playwright/test").Locator, wh
   await expect(group).toHaveCount(0, { timeout: 20_000 });
 }
 const quiet = (m: string) => /GPU stall|GL Driver|Download the React DevTools/.test(m);
+// The export answers only the cards build's key (scripts/e2e-server.mjs sets the same value).
+test.use({ extraHTTPHeaders: { "x-mh-cards-key": process.env.CARDS_EXPORT_KEY ?? "e2e-cards-export-key-0123456789abcdef0123" } });
 
 test("ST-145 publish a card with a passkey, see it in the export, and take it down", async ({ page, request, baseURL }) => {
   test.setTimeout(600_000);

@@ -7,7 +7,7 @@ import { LeaseLostError } from "../jobs/engine.ts";
 import { hashOf } from "../util/bytes.ts";
 import { buildQuote, PricingError } from "../pricing/index.ts";
 import { StripeError } from "../stripe/port.ts";
-import { advance, machine, move, type M, type OrderStep } from "../orders/machine.ts";
+import { advance, closeOrderSession, closePayLinks, machine, move, type M, type OrderStep } from "../orders/machine.ts";
 import { alert, backoffMs, loadOrder } from "../orders/support.ts";
 import { FALLBACK_AUTH_WINDOW_MS, MIN_AUTH_WINDOW_MS, type OrderRow, type OrderState } from "../orders/types.ts";
 import {
@@ -60,6 +60,8 @@ const captureBeforeOf = (o: OrderRow) => o.captureBefore ?? new Date((o.authoriz
 
 /** Order states in which the transfer request may still be sent or is out with the registrar (not yet paid in full). */
 const PRE_CAPTURE: OrderState[] = ["authorized", "registrar_unavailable", "registering", "outcome_unknown", "paid_before_registration", "review_hold"];
+/** Transfer states in which the request is out with the registrar and only its status can move it. */
+const UPSTREAM_STATES = ["submitted", "pending_owner_approval", "pending_registry"] as const;
 
 // -------------------------------------------------------------------------------------------------------------------------------
 // The order-machine hook
@@ -71,6 +73,15 @@ export async function transferDriver(m: M, o: OrderRow): Promise<OrderStep | nul
     case "registering": case "outcome_unknown": case "paid_before_registration": return driveTransfer(m, o);
     case "canceling": return cancelOrder(m, o);
     case "capture_failed": {
+      // The capture failed while the transfer may still be pending upstream: keep reading it, so a NACK ends the transfer (and the
+      // demand for payment) and a completion writes the domain row, lock and mail, whatever the payment does.
+      const t = await transferOfOrder(cron(m), o.id);
+      if (t && t.sentAt && (UPSTREAM_STATES as readonly string[]).includes(t.state)) {
+        await pollTransfer(m, o, t, await latestOp(cron(m), o.id));
+        const after = await loadOrder(cron(m), o.id);
+        if (!after || after.state !== "capture_failed") return "progressed";
+        o = after;
+      }
       // Never delete a name the customer brought with them (the register ladder deletes in the add-grace period): page and wait.
       if (o.captureDeadline && now(m) >= o.captureDeadline) {
         await ltx(m, async (c) => {
@@ -406,7 +417,7 @@ const stateFor = (f: TransferFailure) => (f === "nack" ? "nacked" : f === "cance
 
 /** The registrar reported the transfer over without completing. */
 async function failUpstream(m: M, o: OrderRow, t: TransferRow, failure: TransferFailure, nack: TransferDenialReason | null): Promise<OrderStep> {
-  return fail(m, o, t, [...PRE_CAPTURE, "capturing", "captured"], failure, { nack });
+  return fail(m, o, t, [...PRE_CAPTURE, "capturing", "capture_failed", "captured"], failure, { nack });
 }
 
 /**
@@ -453,10 +464,10 @@ export async function fail(m: M, o: OrderRow, t: TransferRow, from: OrderState[]
 async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
   const svc = m.svc;
   const t = await transferOfOrder(cron(m), o.id);
-  if (o.sessionId) {
-    try { const s = await svc.stripe.retrieveSession(o.sessionId); if (s.status === "open") await svc.stripe.expireSession(s.id, `expire:${o.id}:${o.attempt}`); }
-    catch (e) { if (!(e instanceof StripeError) || e.kind !== "invalid_request") throw e; }
-  }
+  // The Checkout is closed; a PaymentIntent the customer authorized on it just before the cancel (never recorded on the order) is
+  // released below like the order's own. Pay links of a transfer whose capture failed are expired, and one already paid is refunded.
+  const sessionPi = await closeOrderSession(m, o);
+  await closePayLinks(m, o);
   // 1. A request that is out with the registrar is cancelled and confirmed before the money moves.
   if (t && t.sentAt) {
     let st = ours(t, await svc.registrar.getTransferInStatus(o.fqdn));
@@ -469,7 +480,7 @@ async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
     if (st?.status === "completed") return completeTransfer(m, o, { ...t, state: t.state === "completed" ? "completed" : "pending_registry" }, st);
   }
   // 2. Re-fetch the PaymentIntent, then cancel it (or refund it if it was captured).
-  const piId = o.cancelPiId ?? o.paymentIntentId;
+  const piId = o.cancelPiId ?? o.paymentIntentId ?? sessionPi;
   if (piId) {
     const pi = await svc.stripe.retrievePaymentIntent(piId);
     if (pi.status === "succeeded") {

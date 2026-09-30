@@ -1,16 +1,20 @@
 import { tx } from "@mosshatch/db";
 import { RegistrarError, type DomainStatus } from "@mosshatch/registrar/port";
 import type { AppContext } from "../ports.ts";
+import { appendAudit } from "../audit.ts";
 import { closeAlerts, raiseAlert } from "../ops/alerts.ts";
-import { domainsServices, registrarOf, rowToDomain, type DomainRow } from "./common.ts";
-import { finishRun, loadExplanation, openFinding, startRun } from "./detector.ts";
+import { notifyDomainEvent } from "../domain-mgmt/common.ts";
+import { domainsServices, registrarOf, rowToDomain, type DomainRow, type Q } from "./common.ts";
+import { EXPLAIN_WINDOW_MS, finishRun, openFinding, startRun } from "./detector.ts";
 
 /**
  * `registrar.posture` (nightly; ST-113, PLAN threat row 32). For every live domain the registrar must show what we set, not what we
- * hope: registrar-side auto-renew off (renewal is ours, D-008) and `let_expire` off, the lock on unless an unlock we committed explains it,
- * privacy as the extension offers it (no paid privacy service; `.ai` and `.io` show contacts), and, once per run, that a Horizon test
- * profile's login to the registrar's end-user interface redirects. Auto-renew and the lock are put right at once, because both are the
- * safe direction; the rest is a finding for a person. Every mismatch is a `reconciliation_findings` row of kind `mismatch`.
+ * hope: registrar-side auto-renew off (renewal is ours, D-008) and `let_expire` off, the lock as the owner last set it with us (see
+ * `ownerUnlocked`: an unlock stands until the owner or a safety path locks again, never until a timer runs out), privacy as the extension
+ * offers it (no paid privacy service; `.ai` and `.io` show contacts), and, once per run, that a Horizon test profile's login to the
+ * registrar's end-user interface redirects. Auto-renew and the lock are put right at once, because both are the safe direction; the rest
+ * is a finding for a person. Every mismatch is a `reconciliation_findings` row of kind `mismatch`. A re-lock is recorded like any other
+ * (our row, the audit chain, a new code, a notice), so the next sync does not see it as a change nobody made.
  */
 export interface PostureResult { checked: number; mismatches: number; fixed: number; errors: number; endUser: "redirects" | "reachable" | "unreachable" | "not_configured" }
 
@@ -30,11 +34,7 @@ export async function runPosture(ctx: AppContext): Promise<PostureResult> {
     const bad: string[] = [];
     const fixes: (() => Promise<void>)[] = [];
     if (up.autoRenew || up.letExpire) { bad.push(up.autoRenew ? "auto_renew" : "let_expire"); if (up.autoRenew && up.letExpire) bad.push("let_expire"); fixes.push(() => reg.setAutoRenew(d.fqdn, false)); }
-    if (!up.locked) {
-      const ex = await loadExplanation(ctx.cron, d, ctx.clock.now());
-      const explained = ex.locked === "any" || ex.locked?.has(false);
-      if (!explained) { bad.push("lock"); fixes.push(() => reg.setLock(d.fqdn, true)); }
-    }
+    if (!up.locked && !(await ownerUnlocked(ctx.cron, d, ctx.clock.now()))) { bad.push("lock"); fixes.push(() => relock(ctx, d)); }
     if (up.privacyStatus !== expectedPrivacy(d.tld) || up.privacyServiceEnabled) bad.push("privacy");
     if (bad.length === 0) continue;
     res.mismatches++;
@@ -60,6 +60,38 @@ export async function runPosture(ctx: AppContext): Promise<PostureResult> {
   }
   await finishRun(ctx.cron, runId, ctx.clock.now(), res.checked, res.mismatches);
   return res;
+}
+
+/**
+ * Whether the owner wants the name unlocked: the gated unlock handler recorded `unlocked_at` (every re-lock path clears it again), or an
+ * unlock action committed in the last 7 days has not finished yet (the registrar can be unlocked a moment before our row says so).
+ */
+export async function ownerUnlocked(q: Q, d: DomainRow, now: Date): Promise<boolean> {
+  const s = (await q.query("select unlocked_at from domain_security where domain_id = $1", [d.id])).rows[0];
+  if (s?.unlocked_at) return true;
+  const a = await q.query(
+    `select 1 from actions where user_id = $1 and type = 'domain.unlock' and state in ('committed','dispatching','outcome_unknown') and committed_at >= $2
+        and (resource_id = $3 or target_id = $3 or target_id = $4) limit 1`, [d.userId, new Date(now.getTime() - EXPLAIN_WINDOW_MS), d.id, d.fqdn]);
+  return (a.rowCount ?? 0) > 0;
+}
+
+/** Lock again a name nobody unlocked through us: at the registrar, in our row (so the detector sees our own change), with a new code and a notice. */
+async function relock(ctx: AppContext, d: DomainRow): Promise<void> {
+  const reg = registrarOf(ctx);
+  await reg.setLock(d.fqdn, true);
+  await tx(ctx.cron, async (c) => {
+    await c.query("update domains set locked = true where id = $1 and released_at is null", [d.id]);
+    await c.query("insert into domain_security (domain_id, user_id) values ($1,$2) on conflict (domain_id) do nothing", [d.id, d.userId]);
+    await appendAudit(ctx, c, { chainId: d.userId, actorKind: "system", action: "domain.relocked", resourceKind: "domain", resourceId: d.id, detail: { reason: "posture" } });
+    await notifyDomainEvent(ctx, c, d.userId, {
+      kind: "domain.relocked", domainId: d.id, subject: "A domain on your Mosshatch account was locked again",
+      text: `${d.fqdn} was unlocked at our registrar without your passkey, so we locked it again and replaced its transfer code. To move it to another registrar, unlock it from your Mosshatch account.`,
+    });
+  });
+  // The code could have been read while the name was unlocked: replace it, as at every re-lock (ST-120). `.io` codes are set by support.
+  try { await reg.rerandomizeAuthCode(d.fqdn); }
+  catch (e) { if (e instanceof RegistrarError && e.code === "code_by_support") return; throw e; }
+  await ctx.cron.query("update domain_security set code_rerandomized_at = $2, code_rerandomize_at = null where domain_id = $1", [d.id, ctx.clock.now()]);
 }
 
 export type { DomainRow };

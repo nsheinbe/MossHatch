@@ -19,8 +19,9 @@ import { DAY_MS, type DomainRow, type Q } from "./common.ts";
  * updated" leaves the detector quiet once the job (or the sync) catches up, and a state that no prefix produces is a finding.
  *
  * `expected_post_state` on the action row (the domain-management module writes it) uses the DomainStatus field names:
- * `{ locked?, nameservers?, owner_email_hash?, ds_present?, transfer_away? }`. Without it the action type explains its own field:
- * unlock -> lock, nameservers.change -> nameservers, contact.change -> contact email hash, transfer_out -> transfer and lock.
+ * `{ locked?, nameservers?, owner_email_hash?, ds_present?, transfer_away? }`. Without it the action type explains its own field, with the
+ * value its params name: unlock -> lock, nameservers.change -> nameservers (or DS presence), contact.change -> the `owner_email_hash` it
+ * sets, transfer_out -> transfer and lock. An action whose resulting value is unknown explains nothing.
  */
 export type Field = "lock" | "nameservers" | "ds" | "contact_email_hash" | "auto_renew" | "let_expire" | "privacy" | "transfer";
 export const DETECTOR_FIELDS: readonly Field[] = ["lock", "nameservers", "ds", "contact_email_hash", "auto_renew", "let_expire", "privacy", "transfer"];
@@ -48,10 +49,12 @@ export function diffFields(cached: DomainRow, up: DomainStatus): Field[] {
 interface Explain {
   locked?: Set<boolean> | "any"; nameservers?: Set<string> | "any"; owner_email_hash?: Set<string> | "any"; ds_present?: Set<boolean> | "any"; transfer?: boolean;
 }
+/** Add the value an action leaves behind. An action whose resulting value is not known explains nothing (never "any value"). */
 function add<T>(cur: Set<T> | "any" | undefined, v: T | undefined): Set<T> | "any" {
   if (cur === "any") return cur;
-  if (v === undefined) return "any";
-  const s = cur ?? new Set<T>(); s.add(v); return s;
+  const s = cur ?? new Set<T>();
+  if (v !== undefined) s.add(v);
+  return s;
 }
 
 export async function loadExplanation(q: Q, d: DomainRow, now: Date): Promise<Explain> {
@@ -74,7 +77,8 @@ export async function loadExplanation(q: Q, d: DomainRow, now: Date): Promise<Ex
     if (a.type === "domain.nameservers.change") {
       // The action carries either a nameserver change or a DS add/remove (`params.op`); each explains only its own field.
       const op = typeof p.op === "string" ? p.op : "nameservers";
-      if (op === "ds_add" || op === "ds_remove") ex.ds_present = add(ex.ds_present, typeof post.ds_present === "boolean" ? post.ds_present : undefined);
+      // An add leaves a DS record in place; removing the last one leaves none (removing one of several changes no presence, so there is nothing to explain).
+      if (op === "ds_add" || op === "ds_remove") ex.ds_present = add(ex.ds_present, typeof post.ds_present === "boolean" ? post.ds_present : op === "ds_add");
       else {
         const ns = Array.isArray(post.nameservers) ? post.nameservers : Array.isArray(p.nameservers) ? p.nameservers : undefined;
         ex.nameservers = add(ex.nameservers, ns ? sortedNs(ns as string[]) : undefined);

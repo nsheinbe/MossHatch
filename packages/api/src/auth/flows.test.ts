@@ -4,6 +4,12 @@ import { PRE_AUTH_COOKIE, SESSION_COOKIE, createSession } from "../http/session.
 import { auditActions, authenticator, codeFrom, lastMail, me, newApp, nextIp, signIn, signUp, xff } from "./testkit.ts";
 import { withUser } from "@mosshatch/db";
 import { verifyChain } from "../audit.ts";
+import { Router } from "../http/router.ts";
+import { createTestApp } from "../testing/app.ts";
+import { registerStepUp } from "../stepup/routes.ts";
+import { ACTION_HEADER } from "../stepup/gate.ts";
+import { authRoutes } from "./routes.ts";
+import type { Person } from "./testkit.ts";
 
 let app: TestApp;
 beforeAll(async () => { app = await newApp(); }, 60_000);
@@ -444,6 +450,81 @@ describe("passkeys", () => {
     expect((await app.call("POST", "/api/v1/passkeys", { body: {} })).status).toBe(401);
     const r = await app.call("POST", "/api/v1/passkeys", { body: {}, cookie: p.cookie });
     expect(r.status).toBe(400);   // stub gate passes; the handler rejects a body that is no registration
+  });
+});
+
+describe("passkey.add through the real step-up gate", () => {
+  let real: TestApp;
+  beforeAll(async () => { real = await createTestApp(registerStepUp(new Router().add(...authRoutes))); }, 60_000);
+  afterAll(async () => { await real?.drop(); });
+
+  const registerOptions = async (cookie: string) => {
+    const o = await real.call("POST", "/api/v1/auth/register/options", { body: {}, cookie });
+    expect(o.status, o.text).toBe(200);
+    return o.json.options;
+  };
+  /** prepare + commit with the person's own passkey; returns the committed action id. */
+  const stepUp = async (p: Person, label: string) => {
+    const prep = await real.call("POST", "/api/v1/actions/prepare", { cookie: p.cookie, body: { type: "passkey.add", target_id: p.userId, user_input: { label } } });
+    expect(prep.status, prep.text).toBe(200);
+    const com = await real.call("POST", `/api/v1/actions/${prep.json.action_id}/commit`, { cookie: p.cookie, body: { assertion: p.auth.get(prep.json.webauthn_options) } });
+    expect(com.status, com.text).toBe(200);
+    expect(com.json.state).toBe("committed");
+    return prep.json.action_id as string;
+  };
+  const add = (cookie: string, actionId: string, body: Record<string, unknown>) =>
+    real.call("POST", "/api/v1/passkeys", { cookie, headers: { [ACTION_HEADER]: actionId }, body });
+  const actionState = async (id: string) => (await real.db.owner.query("select state from actions where id = $1", [id])).rows[0].state as string;
+  const livePasskeys = async (userId: string) => (await real.db.owner.query("select count(*)::int as n from passkeys where user_id = $1 and revoked_at is null", [userId])).rows[0].n as number;
+  const fakePasskey = (userId: string, credentialId: string, revoked: boolean) => real.db.owner.query(
+    "insert into passkeys (user_id, credential_id, public_key, alg, backup_eligible, backup_state, label, revoked_at) values ($1,$2,'\\x00',-7,false,false,'Old',$3)",
+    [userId, credentialId, revoked ? real.clock.now() : null]);
+
+  it("review: passkey.add works under the real gate, takes the label from the signed params, and spends the action in the same transaction", async () => {
+    const p = await signUp(real, "gate-add@example.com");
+    // A revoked credential row: the registration options and the signed options hash come from one exclude list.
+    await fakePasskey(p.userId, "revoked-credential-gate-add", true);
+    const options = await registerOptions(p.cookie);
+    const actionId = await stepUp(p, "Laptop");
+    const second = authenticator();
+    const r = await add(p.cookie, actionId, { registration: second.create(options), label: "Not signed" });
+    expect(r.status, r.text).toBe(201);
+    expect(r.json.credential.label).toBe("Laptop");
+    expect(await actionState(actionId)).toBe("executed");
+    expect(await livePasskeys(p.userId)).toBe(2);
+    expect((await signIn(real, second)).res.status).toBe(200);
+  });
+
+  it("review: one committed passkey.add adds one passkey, even when two adds race with the same action id", async () => {
+    const p = await signUp(real, "gate-race@example.com");
+    const o1 = await registerOptions(p.cookie);
+    const o2 = await registerOptions(p.cookie);
+    const actionId = await stepUp(p, "Race");
+    const [a, b] = await Promise.all([
+      add(p.cookie, actionId, { registration: authenticator().create(o1) }),
+      add(p.cookie, actionId, { registration: authenticator().create(o2) }),
+    ]);
+    expect([a.status, b.status].filter((s) => s === 201), `${a.text} ${b.text}`).toHaveLength(1);
+    expect(await livePasskeys(p.userId)).toBe(2);
+    expect(await actionState(actionId)).toBe("executed");
+  });
+
+  it("review: the registration ceremony must use the options the passkey signed for (options_hash)", async () => {
+    const p = await signUp(real, "gate-opts@example.com");
+    const stale = await registerOptions(p.cookie);                      // excludes only the first passkey
+    await fakePasskey(p.userId, "appeared-after-options", false);       // a credential appears after those options were issued
+    const actionId = await stepUp(p, "Tablet");                         // the signed hash covers both credentials
+    const r = await add(p.cookie, actionId, { registration: authenticator().create(stale) });
+    expect(r.status, r.text).toBe(409);
+    expect(r.json.error.code).toBe("params_changed");
+    expect(await livePasskeys(p.userId)).toBe(2);
+    expect(await actionState(actionId)).toBe("committed");
+    // Options issued from the same state as the signed hash go through, once.
+    const fresh = await registerOptions(p.cookie);
+    const ok = await add(p.cookie, actionId, { registration: authenticator().create(fresh) });
+    expect(ok.status, ok.text).toBe(201);
+    expect(await actionState(actionId)).toBe("executed");
+    expect(await livePasskeys(p.userId)).toBe(3);
   });
 });
 

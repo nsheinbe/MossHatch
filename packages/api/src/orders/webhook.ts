@@ -5,8 +5,9 @@ import type { AppContext } from "../ports.ts";
 import { appendAudit } from "../audit.ts";
 import { enqueue } from "../jobs/registry.ts";
 import { raiseAlert } from "../ops/alerts.ts";
+import { recordRiskEvent } from "../stripe/disputes.ts";
 import type { StripeEvent } from "../stripe/port.ts";
-import { machine, markPaidViaLink, move } from "./machine.ts";
+import { applyPayLinkSession, machine, markPaidViaLink, move, refundExtraPayment } from "./machine.ts";
 import { loadOrder, ordersSvc, rowToOrder } from "./support.ts";
 import type { OrderRow } from "./types.ts";
 
@@ -26,6 +27,8 @@ const FULFIL_TYPES = new Set([
   "checkout.session.completed", "checkout.session.expired", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed",
   "payment_intent.succeeded", "payment_intent.canceled", "payment_intent.payment_failed", "payment_intent.amount_capturable_updated", "payment_intent.requires_action",
   "review.opened", "review.closed",
+  // A refund Stripe accepted as pending settles or fails later: the machine reads it back by id.
+  "refund.updated", "refund.failed",
 ]);
 
 async function findOrder(ctx: AppContext, ev: StripeEvent): Promise<OrderRow | null> {
@@ -104,10 +107,17 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
   const m = machine(ctx);
 
   if (ev.type === "checkout.session.completed" && o.metadata?.purpose === "pay_link" && order) {
-    if (o.payment_status !== "paid" || typeof o.payment_intent !== "string") return false;
-    const pi = await svc.stripe.retrievePaymentIntent(o.payment_intent);
-    const ok = await markPaidViaLink(m, order.id, pi);
-    if (!ok) await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "pay_link_unexpected", subject: order.id, detail: { order_id: order.id, state: order.state } }));
+    if (o.payment_status !== "paid" || typeof o.payment_intent !== "string" || typeof o.id !== "string") return false;
+    // Completes a capture_failed order; a payment the order no longer needs (it was paid another way, or voided) is refunded, never kept.
+    const r = await applyPayLinkSession(m, order.id, o.id);
+    if (r === "kept" || r === "unpaid") await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "pay_link_unexpected", subject: order.id, detail: { order_id: order.id, state: order.state } }));
+    return false;
+  }
+  // The ladder's off-session charge: recorded while the order still waits for it (its worker may have lost the answer), refunded when
+  // the order was already paid another way.
+  if (ev.type === "payment_intent.succeeded" && o.metadata?.purpose === "capture_failed" && order && typeof o.id === "string") {
+    const pi = await svc.stripe.retrievePaymentIntent(o.id);
+    if (!(await markPaidViaLink(m, order.id, pi))) await refundExtraPayment(m, order.id, pi);
     return false;
   }
 
@@ -132,9 +142,11 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
   }
 
   if (ev.type === "charge.dispute.created" || ev.type === "radar.early_fraud_warning.created") {
-    if (!order) { await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "dispute_unknown_order", subject: ev.id })); return false; }
+    if (!order) { await tx(ctx.cron, async (c) => { await recordRiskEvent(c, ev, null); await raiseAlert(ctx, c, { severity: "warn", kind: "dispute_unknown_order", subject: ev.id }); }); return false; }
     // Overlay, not a state change: the order stays captured; the account goes to review; a person looks at the evidence.
     await tx(ctx.cron, async (c) => {
+      // C-40: the durable input of the dispute-rate alarm (webhook payloads are purged after 30 days).
+      await recordRiskEvent(c, ev, order.id);
       await c.query("update users set risk_state = 'review' where id = $1 and risk_state <> 'review'", [order.userId]);
       await c.query("update payments set dispute_state = 'open' where order_id = $1", [order.id]);
       await c.query("insert into order_events (order_id, from_state, to_state, cause, stripe_event_id, detail, at) values ($1,$2,$2,'webhook',$3,$4,$5)", [order.id, order.state, ev.id, { overlay: "dispute_open", source: ev.type }, ctx.clock.now()]);
@@ -154,10 +166,14 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
 
   if (ev.type === "charge.refunded" && order) {
     const refunded = BigInt(o.amount_refunded ?? 0);
+    const piId = typeof o.payment_intent === "string" ? o.payment_intent : null;
     await tx(ctx.cron, async (c) => {
-      const st = (await c.query("select state from orders where id = $1 for update", [order.id])).rows[0];
+      const st = (await c.query("select state, stripe_payment_intent_id from orders where id = $1 for update", [order.id])).rows[0];
       if (st?.state !== "captured") return;         // our own refund flow keeps the ledger itself
-      const p = (await c.query("select id, amount_minor, refunded_minor from payments where order_id = $1 for update", [order.id])).rows[0];
+      // Only a refund of the order's own payment moves the order and its ledger. A refund of any other PaymentIntent that names the
+      // order (a stray or duplicate payment, the lost authorization) leaves both alone.
+      if (!piId || piId !== st.stripe_payment_intent_id) return;
+      const p = (await c.query("select id, amount_minor, refunded_minor from payments where order_id = $1 and stripe_payment_intent_id = $2 for update", [order.id, piId])).rows[0];
       if (!p || refunded <= BigInt(p.refunded_minor)) return;
       // A refund made outside our flow (Dashboard): mirror it. Our own refunds already updated the ledger before this event.
       const delta = refunded - BigInt(p.refunded_minor);

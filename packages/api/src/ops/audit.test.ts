@@ -10,7 +10,7 @@ import { clearJobRegistry } from "../jobs/registry.ts";
 import { clearRecurringJobs, runTick } from "../jobs/engine.ts";
 import { anchorAudit, auditVerifyJob, FileAnchorSink, MemoryAnchorSink, S3ObjectLockAnchorSink, verifyAnchors, verifyAllChains, type AnchorRecord } from "./anchor.ts";
 import { erasureHash, eraseUser, FileErasureLedger, MemoryErasureLedger, purgeFromLedger, recordErasure } from "./erasure.ts";
-import { FakeCloudTrail, kmsReconcile } from "./kms-reconcile.ts";
+import { FakeCloudTrail } from "./kms-reconcile.ts";
 import { registerOpsJobs } from "./jobs.ts";
 import { FakeDns } from "../mail/dns.ts";
 
@@ -144,7 +144,7 @@ describe("audit anchors", () => {
     app.ctx.services = { anchorSink: sink, cloudTrail: ct, erasureLedger: new MemoryErasureLedger(), dnsResolver: new FakeDns() };
     try {
       const r1 = await runTick(app.ctx, { budgetMs: 10_000 });
-      expect(r1.scheduled).toBe(5); expect(r1.done).toBe(5);
+      expect(r1.scheduled).toBe(8); expect(r1.done).toBe(8);
       expect(sink.items).toHaveLength(1);
       const r2 = await runTick(app.ctx, { budgetMs: 10_000 });
       expect(r2.scheduled).toBe(0); expect(sink.items).toHaveLength(1);
@@ -158,31 +158,7 @@ describe("audit anchors", () => {
     registerOpsJobs();
     await runTick(app.ctx, { budgetMs: 5_000 });                                       // no services wired
     expect((await q("select count(*)::int as n from jobs where state = 'queued' and attempts = 1"))[0].n).toBe(5);
-    expect((await q("select distinct last_error from jobs"))[0].last_error).toBe("MissingServiceError");
-  });
-});
-
-describe("kms reconcile", () => {
-  it("matches CloudTrail Decrypt events to audit rows by nonce; an unmatched event pages, an audit row without an event warns", async () => {
-    const u = await mkUser("k1@example.com"); const ct = new FakeCloudTrail();
-    const t = app.clock.now().getTime();
-    const ev = (id: string, nonce: string | null, minsAgo: number) => ({ eventId: id, at: new Date(t - minsAgo * 60_000), keyId: "pii", nonce });
-    app.clock.set(new Date(t - 35 * 60_000));
-    await append(u, "pii.decrypt", { decrypt_nonce: "n-ok" });
-    ct.events = [ev("e1", "n-ok", 40), ev("e2", "n-rogue", 30), ev("e3", null, 25), ev("e-late", "n-late", 5)];   // e-late is inside the delivery lag
-    await append(u, "pii.decrypt", { decrypt_nonce: "n-missing-event" });
-    app.clock.set(new Date(t));
-    const r = await kmsReconcile(app.ctx, ct);
-    expect(r.events).toBe(3);
-    expect(r.unaudited).toEqual(["e2", "e3"]);
-    expect(r.auditWithoutEvent).toBe(1);
-    const page = (await q("select severity, detail from alerts where kind = 'kms.decrypt_unaudited'"))[0];
-    expect(page.severity).toBe("page"); expect(page.detail.count).toBe(2);
-    expect((await q("select severity from alerts where kind = 'kms.audit_without_event'"))[0].severity).toBe("warn");
-    // The cursor moved: the same events are not judged twice, and the late event is judged once it leaves the lag window.
-    app.clock.advance(20 * 60_000);
-    const again = await kmsReconcile(app.ctx, ct);
-    expect(again.events).toBe(1); expect(again.unaudited).toEqual(["e-late"]);
+    expect((await q("select distinct last_error from jobs where last_error is not null"))[0].last_error).toBe("MissingServiceError");
   });
 });
 

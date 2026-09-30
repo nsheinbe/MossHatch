@@ -4,7 +4,7 @@ import type { HandlerReq } from "../http/types.ts";
 import type { AppContext } from "../ports.ts";
 import { StripeError } from "../stripe/port.ts";
 import { createOrder, ensureCustomer } from "./create.ts";
-import { advance, machine } from "./machine.ts";
+import { advance, applyPayLinkSession, machine, openPayLink } from "./machine.ts";
 import { loadOrder, ordersSvc, rowToOrder, voidMessage } from "./support.ts";
 import { PAY_LINK_MS, type OrderRow } from "./types.ts";
 import { stripeWebhook, verifyStripeRequest } from "./webhook.ts";
@@ -65,9 +65,12 @@ export function registerOrderRoutes(router: Router): Router {
         const o = await owned(r.ctx, userId, r.params.id ?? "");
         const sid = r.url.searchParams.get("session_id") ?? "";
         const known = sid && (o.sessionId === sid || (await r.ctx.cron.query("select 1 from order_operations where order_id = $1 and kind = 'checkout_session' and detail->>'session_id' = $2", [o.id, sid])).rowCount);
-        if (!known) throw new HttpError(404, "not_found");
+        const payLink = !known && sid && (await r.ctx.cron.query("select 1 from order_operations where order_id = $1 and kind = 'pay_link' and detail->>'session_id' = $2", [o.id, sid])).rowCount;
+        if (!known && !payLink) throw new HttpError(404, "not_found");
         try {
-          if (o.kind === "renew" && o.state === "draft" && o.sessionId === sid) {
+          // A pay link's success page reconciles exactly as its webhook would.
+          if (payLink) await applyPayLinkSession(machine(r.ctx), o.id, sid);
+          else if (o.kind === "renew" && o.state === "draft" && o.sessionId === sid) {
             // A renewal paid on Checkout: the return page reconciles exactly as the webhook would (read the Session, then the PaymentIntent).
             const sess = await ordersSvc(r.ctx).stripe.retrieveSession(sid);
             if (sess.status === "complete" && sess.payment_status === "paid" && sess.payment_intent) {
@@ -82,7 +85,8 @@ export function registerOrderRoutes(router: Router): Router {
       },
     },
     {
-      // capture_failed only: mints a fresh payment Checkout while the emailed pay window is open (valid up to 7 days).
+      // capture_failed only: the order's one payable pay-link Checkout while the emailed pay window is open (valid up to 7 days).
+      // An open one is handed out again; the machine records each one as an operation and never leaves two payable.
       method: "POST", path: "/api/v1/orders/:id/pay-link", principals: ["session"], tag: "orders",
       async handler(r) {
         const userId = uid(r);
@@ -91,15 +95,11 @@ export function registerOrderRoutes(router: Router): Router {
         const now = r.ctx.clock.now();
         if (o.state !== "capture_failed" || !o.payLinkExpiresAt || o.payLinkExpiresAt <= now) throw new HttpError(409, "not_payable");
         const customer = o.stripeCustomerId ?? await ensureCustomer(r.ctx, svc, userId);
-        const expiresAt = Math.floor((Math.min(now.getTime() + 23 * 3600_000, o.payLinkExpiresAt.getTime())) / 1000);
-        try {
-          const s = await svc.stripe.createCheckoutSession({
-            customer, clientReferenceId: o.id, successUrl: `${r.ctx.config.origin}/checkout/return?order=${o.id}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${r.ctx.config.origin}/orders`,
-            expiresAt: Math.max(expiresAt, Math.floor(now.getTime() / 1000) + 30 * 60 + 10), metadata: { order_id: o.id, purpose: "pay_link" },
-            lineItem: { name: `${o.fqdn} (registered, payment due)`, unitAmount: Number(o.subtotalMinor), currency: "usd" }, captureMethod: "automatic", requestThreeDSecure: "automatic",
-          }, `pay:${o.id}:${Math.floor(now.getTime() / 3600_000)}`);
-          return json({ checkout_url: s.url });
-        } catch (e) { if (e instanceof StripeError) throw new HttpError(503, "payment_unavailable"); throw e; }
+        let link;
+        try { link = await openPayLink(machine(r.ctx), o.id, customer); }
+        catch (e) { if (e instanceof StripeError) throw new HttpError(503, "payment_unavailable"); throw e; }
+        if (!link) throw new HttpError(409, "not_payable");
+        return json({ checkout_url: link.url });
       },
     },
     {

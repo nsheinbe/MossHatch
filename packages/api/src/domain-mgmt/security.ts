@@ -78,6 +78,8 @@ export async function lockHandler(req: HandlerReq): Promise<HandlerResult> {
       if (await codeOutstanding(c, d.id)) { await rerandomize(ctx, d.fqdn_ascii); replaced = true; }
       await c.query("update domains set locked = true where id = $1", [d.id]);
       await ensureSecurityRow(c, d);
+      // The owner's unlock has ended: the posture job expects the lock on again (posture.ts `ownerUnlocked`).
+      await c.query("update domain_security set unlocked_at = null where domain_id = $1", [d.id]);
       if (replaced) await c.query("update domain_security set code_rerandomized_at = $2, code_rerandomize_at = null where domain_id = $1", [d.id, ctx.clock.now()]);
       await audit(ctx, c, userId, "domain.locked", { resourceKind: "domain", resourceId: d.id, detail: { code_replaced: replaced } });
       return json({ domain: d.fqdn_ascii, locked: true, code_replaced: replaced });

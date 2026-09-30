@@ -193,19 +193,31 @@ export async function completeRecovery(ctx: AppContext, c: PoolClient, userId: s
 
 /**
  * An assertion from a credential that a recovery suspended: restore what it suspended, revoke what it created, and apply the hold again.
- * Also revokes every session (the caller issues a fresh one afterwards).
+ * "What it created" is every passkey created since that recovery completed: the recovery's own credential, passkeys that
+ * credential's sessions added, and the credentials of any later recovery (all of which hang off it). Later recoveries are
+ * cancelled too. Also revokes every session (the caller issues a fresh one afterwards and cancels any request still open).
  */
 export async function undoRecovery(ctx: AppContext, c: PoolClient, userId: string, requestId: string): Promise<void> {
   const now = ctx.clock.now();
   const req = (await c.query("select * from recovery_requests where id = $1 and user_id = $2 for update", [requestId, userId])).rows[0] as RequestRow | undefined;
+  const since = req?.completed_at ? new Date(req.completed_at) : null;
+  // The credentials this recovery suspended predate it; everything else created since it completed is revoked.
+  const revoked = await c.query(
+    `update passkeys set revoked_at = $3 where user_id = $1 and revoked_at is null and suspended_by_recovery_id is distinct from $2
+       and (created_by_recovery_id = $2 or ($4::timestamptz is not null and created_at >= $4::timestamptz))`,
+    [userId, requestId, now, since]);
   const restored = await c.query("update passkeys set suspended_at = null, suspended_by_recovery_id = null where user_id = $1 and suspended_by_recovery_id = $2 and suspended_at is not null", [userId, requestId]);
-  const revoked = await c.query("update passkeys set revoked_at = $3 where user_id = $1 and created_by_recovery_id = $2 and revoked_at is null", [userId, requestId, now]);
   await c.query("update sessions set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
+  let later = 0;
+  if (since) {
+    const l = await c.query("update recovery_requests set status = 'cancelled', cancelled_by = 'credential_restore', updated_at = $3 where user_id = $1 and id <> $2 and status in ('holding','completed') and completed_at >= $4", [userId, requestId, now, since]);
+    later = l.rowCount ?? 0;
+  }
   if (req) {
     await c.query("update recovery_requests set status = 'cancelled', cancelled_by = 'credential_restore', updated_at = $3 where id = $1 and user_id = $2 and status in ('pending','cooling_off','holding','completed')", [requestId, userId, now]);
     await c.query("insert into action_holds (user_id, scope, until, recovery_id, created_at) values ($1,'all_held',$2,$3,$4)", [userId, new Date(now.getTime() + HOLD_MS[req.path]), requestId, now]);
   }
-  await auditUser(ctx, c, userId, "auth.recovery.undone", { resourceKind: "recovery_request", resourceId: requestId, detail: { restored: restored.rowCount, revoked: revoked.rowCount } });
+  await auditUser(ctx, c, userId, "auth.recovery.undone", { resourceKind: "recovery_request", resourceId: requestId, detail: { restored: restored.rowCount, revoked: revoked.rowCount, later_recoveries: later } });
   await notifyUser(ctx, c, userId, {
     kind: "recovery.undone", immediate: true, dedupeKey: `recovery-undo:${crypto.randomUUID()}`, subject: "Account recovery was undone",
     text: "An old passkey was used to sign in, so the recovery was undone. The passkeys the recovery added are revoked, every session was signed out, and sensitive actions are on hold again.",

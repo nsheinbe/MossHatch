@@ -13,6 +13,8 @@ import { loadOrder, ordersSvc, rowToOrder } from "./support.ts";
 import { modeProblem } from "./wiring.ts";
 import { reservedRenewalsMinor } from "../domains/gate.ts";
 import { ModeError, refuseSampleAtLiveCheckout } from "../config/modeguard.ts";
+import { operationForOrderKind } from "../stripe/catalog.ts";
+import { preCheckoutRegionGate } from "./tax.ts";
 
 export const RESERVING_STATES = ["review_hold", "authorized", "registering", "outcome_unknown", "registrar_unavailable", "paid_before_registration"];
 export const PAUSED_MESSAGE = "Registration is paused for a short while. Nothing was charged.";
@@ -86,6 +88,8 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
     const perUser = await hit(ctx, c, `orders:user:${input.userId}`, { bucket: "orders_create_user", max: 20, windowSeconds: 3600 });
     const perIp = await hit(ctx, c, `orders:ip:${input.ipPrefix}`, { bucket: "orders_create_ip", max: 60, windowSeconds: 3600 });
     if (!perUser.allowed || !perIp.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(Math.max(perUser.retryAfterSeconds, perIp.retryAfterSeconds)) });
+    // C-42: the tax-region gate, before any Stripe call (the authoritative check on the Checkout address runs at authorization).
+    await preCheckoutRegionGate(c, input.userId);
   });
 
   let priced;
@@ -199,7 +203,7 @@ export function sessionInputFor(ctx: AppContext, o: OrderRow, customer: string, 
     cancelUrl: `${ctx.config.origin}/checkout/cancelled?order=${o.id}`,
     expiresAt,
     metadata: { order_id: o.id, attempt: String(o.attempt) },
-    lineItem: { name: `${o.fqdn} for ${o.years} ${o.years === 1 ? "year" : "years"}`, unitAmount: Number(o.subtotalMinor), currency: "usd" },
+    lineItem: { name: `${o.fqdn} for ${o.years} ${o.years === 1 ? "year" : "years"}`, unitAmount: Number(o.subtotalMinor), currency: "usd", operation: operationForOrderKind(o.kind) },
     captureMethod: "manual",
     // 3-D Secure for an account's first two orders and any order over USD 100 (own targets).
     requestThreeDSecure: priorOrders < 2 || o.totalMinor > 10_000n ? "any" : "automatic",

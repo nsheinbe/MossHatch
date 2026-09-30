@@ -28,7 +28,8 @@ What to know:
   - Names that change how programs start (PATH, LD_PRELOAD, NODE_OPTIONS, the rest of the list the API serves) are
     refused. The list cannot cover every variable every program reads.
   - Never put a token on the command line. For scripts, set MOSSHATCH_TOKEN in the environment instead of signing in.
-  - Your sign-in is kept in the system keychain when one is available, otherwise in a file only you can read.
+  - Your sign-in is kept in a file only you can read. The system keychain is used instead only when the optional
+    @napi-rs/keyring module is installed beside mosshatch and a keychain answers; login says which one it used.
 
 Exit codes: 0 done, 1 failed, 2 usage, 3 refused a reserved name, 4 not signed in, 75 the vault is unavailable (try
 again later), 77 this sign-in does not allow that. "run" returns the command's own exit code.

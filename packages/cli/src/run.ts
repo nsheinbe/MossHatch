@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import { Transform, type Writable } from "node:stream";
 
 /**
@@ -13,23 +14,35 @@ export interface RunIo { stdout: Writable & { isTTY?: boolean }; stderr: Writabl
 
 const MASK = "********";
 
-/** Replace any secret value (4+ characters) in a stream, carrying a tail across chunk boundaries. */
+/**
+ * The length of the longest tail of `s` that is the start of some value (and not a whole one): only that much can be the
+ * first part of a value split across chunks, so only that much waits. Ordinary output passes at once.
+ */
+export function pendingTail(s: string, values: readonly string[]): number {
+  let best = 0;
+  for (const v of values) {
+    for (let pos = Math.max(0, s.length - (v.length - 1)); pos < s.length - best; pos++) {
+      if (s.charCodeAt(pos) === v.charCodeAt(0) && v.startsWith(s.slice(pos))) { best = s.length - pos; break; }
+    }
+  }
+  return best;
+}
+
+/** Replace any secret value (4+ characters) in a stream, carrying across chunk boundaries only a tail that could start one. */
 export function masker(values: readonly string[]): Transform {
   const vs = [...new Set(values.filter((v) => v.length >= 4))].sort((a, b) => b.length - a.length);
-  const keep = Math.max(0, ...vs.map((v) => v.length)) - 1;
   let carry = "";
+  // A chunk can end inside a multi-byte character: decode across chunks, never chunk by chunk.
+  const decoder = new StringDecoder("utf8");
   const scrub = (s: string) => { for (const v of vs) s = s.split(v).join(MASK); return s; };
   return new Transform({
     transform(chunk, _enc, cb) {
-      const text = carry + chunk.toString("utf8");
-      if (keep <= 0) { cb(null, scrub(text)); return; }
-      const cleaned = scrub(text);
-      // Hold back a tail that could be the start of a value split across chunks.
-      const cut = Math.max(0, cleaned.length - keep);
+      const cleaned = scrub(carry + decoder.write(chunk as Buffer));
+      const cut = cleaned.length - pendingTail(cleaned, vs);
       carry = cleaned.slice(cut);
       cb(null, cleaned.slice(0, cut));
     },
-    flush(cb) { cb(null, scrub(carry)); },
+    flush(cb) { cb(null, scrub(carry + decoder.end())); },
   });
 }
 

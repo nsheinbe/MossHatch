@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { commit, prepare } from "../stepup/testkit.ts";
 import { expectedPrivacy, runPosture } from "./posture.ts";
 import { installDomains } from "./wiring.ts";
-import { alertRows, at, buyDomain, findings, makeDomainsHarness, makeOwner, relogin, settle, type DomainsHarness, type Owner } from "./testkit.ts";
+import { alertRows, at, buyDomain, domainRow, findings, hygiene, makeDomainsHarness, makeOwner, relogin, settle, type DomainsHarness, type Owner } from "./testkit.ts";
+import { ACTION_HEADER } from "../stepup/gate.ts";
+import { syncDomain } from "./sync.ts";
 
 let h: DomainsHarness; let ada: Owner;
 beforeAll(async () => { h = await makeDomainsHarness(); ada = await makeOwner(h, "posture@example.com"); }, 120_000);
@@ -80,6 +82,58 @@ describe("ST-113: the nightly posture job", () => {
     expect(none.endUser).toBe("not_configured");
     expect((await alertRows(h, "posture_probe_not_configured")).map((a) => a.severity)).toEqual(["warn"]);
     installDomains(h.app.ctx, { endUserProbe: h.probe, probeProfile: "horizon-test-profile" });
+  });
+
+  it("review: the owner's passkey unlock is the expected lock state however long it lasts; a re-lock by posture is recorded, replaces the code and is not paged as unattributed", async () => {
+    const h2 = await makeDomainsHarness();
+    try {
+      let o = await makeOwner(h2, "posture-review@example.com");
+      const moving = await buyDomain(h2, o, "free-posture7.dev");
+      const stray = await buyDomain(h2, o, "free-posture8.dev");
+      const back = await buyDomain(h2, o, "free-posture9.dev");
+      for (const d of [moving, stray, back]) await syncDomain(h2.app.ctx, d.id);
+      const unlock = async (fqdn: string) => {
+        await hygiene(h2);
+        const prep = await prepare(h2.app, o.user, { type: "domain.unlock", target_id: fqdn, user_input: {} });
+        expect((await commit(h2.app, o.user, prep.json.action_id, o.key.auth.get(prep.json.webauthn_options))).status).toBe(200);
+        const r = await h2.app.call("POST", `/api/v1/domains/${fqdn}/unlock`, { cookie: o.cookie, body: {}, headers: { [ACTION_HEADER]: prep.json.action_id } });
+        expect(r.status, JSON.stringify(r.json)).toBe(200);
+      };
+      // The owner unlocks one name and takes its code to move it (the gaining registrar starts the transfer), and unlocks then locks another again.
+      await unlock(moving.fqdn);
+      const prep = await prepare(h2.app, o.user, { type: "domain.transfer_out", target_id: moving.fqdn, user_input: {} });
+      expect((await commit(h2.app, o.user, prep.json.action_id, o.key.auth.get(prep.json.webauthn_options))).status).toBe(200);
+      expect((await h2.app.call("POST", `/api/v1/domains/${moving.fqdn}/transfer-out`, { cookie: o.cookie, body: {}, headers: { [ACTION_HEADER]: prep.json.action_id } })).status).toBe(200);
+      h2.registrar.oob.startTransferAway(moving.fqdn, { gainingRegistrar: "Gaining Registrar Inc" });
+      await syncDomain(h2.app.ctx, moving.id);
+      await unlock(back.fqdn);
+      expect((await h2.app.call("POST", `/api/v1/domains/${back.fqdn}/lock`, { cookie: o.cookie, body: {} })).status).toBe(200);
+      // Eight days later the transfer is still pending; someone unlocks the other two names without a passkey.
+      at(h2, new Date(h2.app.clock.now().getTime() + 8 * 86_400_000));
+      o = await relogin(h2, o);
+      h2.registrar.oob.setLock(stray.fqdn, false);
+      h2.registrar.oob.setLock(back.fqdn, false);
+      for (const d of [moving, stray, back]) await syncDomain(h2.app.ctx, d.id);
+      const rr = h2.registrar.calls.rerandomizeAuthCode;
+      const r = await runPosture(h2.app.ctx);
+      expect(r.mismatches).toBe(2);
+      // The owner's unlock stands: not re-locked, no finding.
+      expect((await h2.registrar.getDomain(moving.fqdn))!.locked).toBe(false);
+      const fieldsIn = async (id: string, kind: string) => (await findings(h2, kind)).filter((f) => f.domain_id === id).flatMap((f) => f.fields as string[]).sort();
+      expect(await fieldsIn(moving.id, "mismatch")).toEqual([]);
+      // The two unlocks nobody asked for are locked again at the registrar and in our row, and each code is replaced.
+      for (const d of [stray, back]) {
+        expect((await h2.registrar.getDomain(d.fqdn))!.locked, d.fqdn).toBe(true);
+        expect((await domainRow(h2, d.id)).locked, d.fqdn).toBe(true);
+        expect(await fieldsIn(d.id, "mismatch")).toEqual(["lock"]);
+      }
+      expect(h2.registrar.calls.rerandomizeAuthCode - rr).toBe(2);
+      // The next sync does not page posture's own re-lock as an unattributed change (only the unlocks themselves were).
+      const before = await findings(h2, "unexplained_change");
+      for (const d of [moving, stray, back]) await syncDomain(h2.app.ctx, d.id);
+      expect((await findings(h2, "unexplained_change")).length).toBe(before.length);
+      expect(await fieldsIn(moving.id, "unexplained_change")).toEqual([]);
+    } finally { await h2.app.drop(); }
   });
 
   it("registrar.posture runs nightly from the jobs table", async () => {

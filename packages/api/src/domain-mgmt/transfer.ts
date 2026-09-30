@@ -110,6 +110,7 @@ export async function stopHandler(req: HandlerReq): Promise<HandlerResult> {
       catch (e) { if (e instanceof RegistrarError && e.code === "code_by_support") res = { pendingTransferRemains: true }; else throw e; }
       await c.query("update domains set locked = true where id = $1", [d.id]);
       await ensureSecurityRow(c, d);
+      await c.query("update domain_security set unlocked_at = null where domain_id = $1", [d.id]);   // the expected lock state is on again
       await c.query("update domain_security set code_rerandomized_at = $2, code_rerandomize_at = null where domain_id = $1 and code_issued_at is not null", [d.id, now]);
       const stopped = (await c.query("update domain_transfers_away set state = 'stopped', stopped_at = $2 where domain_id = $1 and state = 'open' returning id", [d.id, now])).rows.map((r) => r.id as string);
       const known = stopped.length > 0 || (await c.query("select 1 from domain_transfers_away where domain_id = $1 and state = 'stopped'", [d.id])).rowCount! > 0;
@@ -175,6 +176,7 @@ export async function freezeApplyJob(ctx: AppContext, job: JobRow): Promise<void
       await tx(ctx.cron, async (c) => {
         const now = ctx.clock.now();
         await c.query("update domains set locked = true where id = $1", [d.id]);
+        await c.query("update domain_security set unlocked_at = null where domain_id = $1", [d.id]);   // the expected lock state is on again
         if (outstanding) await c.query("update domain_security set code_rerandomized_at = $2, code_rerandomize_at = null where domain_id = $1", [d.id, now]);
         const t = (await c.query("select id from domain_transfers_away where domain_id = $1 and state = 'open'", [d.id])).rows;
         if (t.length) {

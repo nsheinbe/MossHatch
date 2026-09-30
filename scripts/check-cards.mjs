@@ -2,7 +2,8 @@
 //   - no JavaScript at all: no .js file, no <script>, no inline event handler, and a CSP without script-src;
 //   - links: only site-relative paths or the Mosshatch origin; images and styles from the site itself; nothing sets a cookie;
 //   - search: a noindex card is in neither the gallery nor the sitemap; every card page has a report link;
-//   - budgets (own targets): each page at most 6 kB gzip, the stylesheet at most 4 kB, fonts at most 60 kB.
+//   - budgets (own targets): each page at most 6 kB gzip, the stylesheet at most 4 kB, fonts at most 60 kB;
+//   - portraits: only computed SVGs under /img, never an uploaded raster image.
 import fs from "node:fs"; import path from "node:path"; import zlib from "node:zlib";
 const dist = path.resolve(process.argv[2] ?? "apps/cards/dist");
 const webOrigin = (process.env.WEB_ORIGIN ?? "https://mosshatch.com").replace(/\/$/, "");
@@ -42,6 +43,8 @@ for (const f of html) {
   }
 }
 for (const f of files.filter((f) => f.endsWith(".css"))) if (gz(f) > 4000) fail(`${rel(f)}: ${gz(f)} bytes gzip, budget 4000`);
+// Portraits are computed from the name at build time (SVG); an uploaded image never ships (threat row 42, review fix).
+for (const f of files.filter((f) => rel(f).startsWith(`img${path.sep}`))) if (!f.endsWith(".svg") || /<script|<foreignObject|<text|href=/i.test(fs.readFileSync(f, "utf8"))) fail(`${rel(f)}: a portrait must be a computed SVG with no script, text or link`);
 const fonts = files.filter((f) => f.includes(`${path.sep}fonts${path.sep}`)).reduce((a, f) => a + fs.statSync(f).size, 0);
 if (fonts > 60_000) fail(`fonts ${fonts} bytes, budget 60000`);
 const headers = cfg.headers.flatMap((h) => h.headers);

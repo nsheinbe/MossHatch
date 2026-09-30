@@ -84,6 +84,27 @@ function devApi(): Plugin {
             res.setHeader("content-type", "application/json");
             return res.end(JSON.stringify(out));
           }
+          if (url.startsWith("/__dev/transfer-in")) {
+            // The mock registrar's transfer-in simulator. `do=seed` puts a name at "another registrar" with the code its owner holds (the
+            // losing registrar then acks). `do=complete` lets the registry's review time pass at once and runs the poll that production
+            // runs every 5 minutes, then the job ticks, so the server itself records the outcome it reads from the adapter.
+            const q = new URL(url, origin).searchParams;
+            const fqdn = (q.get("fqdn") ?? "").toLowerCase();
+            const reg: any = app.ctx.services.orders.registrar;
+            if (!/^[a-z0-9-]+\.[a-z]+$/.test(fqdn) || !reg.transferIn) { res.statusCode = 400; return res.end("{}"); }
+            if (q.get("do") === "seed") reg.transferIn.seedForeign(fqdn, { authCode: q.get("code") ?? "", losing: "ack" });
+            else {
+              for (const t of reg.transferIn.list()) if (t.fqdn === fqdn && t.status === "pending_registry" && !t.registrySentAt) t.reviewAt = new Date(Date.now() - 1000);
+              await app.ctx.cron.query("update transfers_in set next_check_at = null where fqdn_ascii = $1", [fqdn]);
+              const tj: any = await server.ssrLoadModule(root + "../../packages/api/src/transfers/jobs.ts");
+              await tj.pollTransfersIn(app.ctx);
+              const eng: any = await server.ssrLoadModule(root + "../../packages/api/src/jobs/engine.ts");
+              for (let i = 0; i < 6; i++) { const r = await eng.runTick(app.ctx, { heartbeat: false, budgetMs: 5000 }); if (r.claimed === 0) break; }
+            }
+            const row = (await app.ctx.cron.query("select state from transfers_in where fqdn_ascii = $1 order by created_at desc limit 1", [fqdn])).rows[0];
+            res.setHeader("content-type", "application/json");
+            return res.end(JSON.stringify({ state: row?.state ?? null }));
+          }
           if (url.startsWith("/__dev/pay")) {
             // Pay the fake Checkout, deliver the signed webhooks, run the jobs, and send the person back to the app.
             const q = new URL(url, origin).searchParams;

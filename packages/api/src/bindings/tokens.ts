@@ -52,9 +52,11 @@ export async function revokeBinding(ctx: AppContext, c: PoolClient, userId: stri
  */
 export async function revokeAllBindings(ctx: AppContext, c: PoolClient, userId: string, cause: string): Promise<{ bindings: number; refresh: number; devices: number; requests: number }> {
   const now = ctx.clock.now();
+  // Device grants first: this waits for any poll that is consuming one right now (it holds that row), so the binding the
+  // poll inserts is committed, and seen, before the bindings are revoked below. Each statement reads a fresh snapshot.
+  const d = await c.query("update device_requests set state = 'denied', decided_at = $2 where user_id = $1 and state = 'approved'", [userId, now]);
   const b = await c.query("update bindings set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
   const r = await c.query("update binding_refresh_tokens set revoked_at = $2 where user_id = $1 and revoked_at is null", [userId, now]);
-  const d = await c.query("update device_requests set state = 'denied', decided_at = $2 where user_id = $1 and state = 'approved'", [userId, now]);
   let requests = 0;
   // Agent approval requests arrive in Phase 5; when the table exists, pending ones are declined in this same transaction.
   if ((await c.query("select to_regclass('public.agent_requests') is not null as present")).rows[0].present) {

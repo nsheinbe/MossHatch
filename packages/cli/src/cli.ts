@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import type { Writable } from "node:stream";
 import { Api, ApiFailure, CLIENT_ID, type Fetch } from "./api.ts";
-import { encodeDotenv, encodeShell, parseDotenv, DotenvError, ShellNulError } from "./dotenv.ts";
+import { encodeDotenv, encodeShell, parseDotenv, unportableNames, DotenvError, ShellNulError } from "./dotenv.ts";
 import { OutRefused, writeSecretFile } from "./files.ts";
 import { HELP, VERSION } from "./help.ts";
 import { runChild } from "./run.ts";
@@ -138,7 +138,11 @@ async function login(api: Api, io: Io): Promise<number> {
     if (r.status === 200) {
       await api.save(r.json);
       const where = io.store.where();
-      if (io.store.kind === "file") say(io.stderr, `Warning: no system keychain is available, so your sign-in is saved in ${where}, readable only by you. Anyone who can read that file can use it until it expires or you run mosshatch logout.`);
+      if (io.store.kind === "file") {
+        // Say which: a plain npm install has no keychain module at all, which is not the same as a keychain that did not answer.
+        const why = (io.store as { fallbackReason?: string }).fallbackReason === "module_missing" ? "no system keychain is in use (this install does not include the keychain module)" : "no system keychain is available";
+        say(io.stderr, `Warning: ${why}, so your sign-in is saved in ${where}, readable only by you. Anyone who can read that file can use it until it expires or you run mosshatch logout.`);
+      }
       say(io.stderr, `Signed in. This computer can: ${String(r.json.scope).split(" ").join(", ")}.`);
       return EXIT.ok;
     }
@@ -187,6 +191,8 @@ async function pull(api: Api, io: Io, a: Args): Promise<number> {
   let text: string;
   try { text = format === "shell" ? encodeShell(keep) : encodeDotenv(keep); } catch (e) { if (e instanceof ShellNulError) { say(io.stderr, e.message); return EXIT.failed; } throw e; }
   if (omitted.length) say(io.stderr, `Left out ${omitted.length} reserved name${omitted.length === 1 ? "" : "s"}: ${omitted.join(", ")}. Rename ${omitted.length === 1 ? "it" : "them"} in your Nest.`);
+  const unportable = format === "dotenv" ? unportableNames(keep) : [];
+  if (unportable.length) say(io.stderr, `Note: ${unportable.join(", ")} ${unportable.length === 1 ? "holds" : "hold"} a carriage return, a NUL byte or every kind of quote, which other dotenv readers (node --env-file, the dotenv package) do not read back unchanged. mosshatch push reads this file as written; to give ${unportable.length === 1 ? "it" : "them"} to a program, use mosshatch run or --format shell.`);
   if (toStdout) { io.stdout.write(text); return EXIT.ok; }
   try {
     const file = writeSecretFile(String(out), text);

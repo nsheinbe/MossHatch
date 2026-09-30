@@ -69,4 +69,8 @@ export interface Route {
   csrf?: "guard" | "none";
   /** Free-form tag for the route walk (module name). */
   tag?: string;
+  /** Request body format. `form` accepts `application/x-www-form-urlencoded` (OAuth token and revocation endpoints, RFC 6749/7009). */
+  body?: "json" | "form";
+  /** `WWW-Authenticate` value sent with a 401 from this route (RFC 9728 `resource_metadata` for /mcp). */
+  challenge?: (ctx: AppContext) => string;
 }

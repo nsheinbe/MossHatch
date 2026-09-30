@@ -50,6 +50,8 @@ export interface UiState {
   apiReady: boolean | null;
   account: Me | null;
   accountOpen: boolean;
+  /** The Visitors view (tokens, connected apps, requests waiting for a decision). Never persisted. */
+  visitorsOpen: boolean;
   orderId: string | null;
   /** Stripe Checkout Session id from the return URL; the server checks it belongs to the order. */
   orderSession: string | null;
@@ -57,6 +59,8 @@ export interface UiState {
   domainPanel: { id: string; fqdn: string } | null;
   /** Bumped when a change in the panel means the grove should re-read the domains. */
   groveRev: number;
+  /** The Rescue (transfer in) panel: the name typed in Find and, once started, the transfer's opaque ids. Never a code. */
+  rescue: { fqdn: string; transferId: string | null; orderId?: string } | null;
   calm: boolean;
   sound: boolean;
   rehideSeconds: number;
@@ -71,8 +75,9 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, account: null, accountOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
+      rescue: null,
       set: (p) => set(p),
     }),
     {

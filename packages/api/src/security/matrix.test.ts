@@ -36,6 +36,10 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/bindings\/:id/, param: "id", id: () => ids.binding! },
   { match: /^\/api\/v1\/recipe-applications\/:id/, param: "id", id: () => ids.recipeApplication! },
   { match: /^\/api\/v1\/connections\/:id/, param: "id", id: () => ids.connection! },
+  // Agents (Phase 5): A's approval request, A's OAuth consent request, and the bearer-only agent routes by name.
+  { match: /^\/api\/v1\/approvals\/:id/, param: "id", id: () => ids.approval! },
+  { match: /^\/api\/v1\/oauth\/requests\/:id/, param: "id", id: () => ids.oauthRequest! },
+  { match: /^\/api\/v1\/agent\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
@@ -66,6 +70,9 @@ beforeAll(async () => {
   ids.binding = (await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, scopes, expires_at) values ($1,'cli','a',$2,$3,$4, now() + interval '30 days') returning id", [a.userId, ma.prefix, ma.hash, JSON.stringify([{ capability: "secrets.read", domain_id: ids.domain, env: "dev" }])])).rows[0].id;
   ids.recipeApplication = (await h.app.db.owner.query("insert into recipe_applications (user_id, domain_id, recipe_id, recipe_version, plan, plan_hash, needs_approval, created_by_kind, expires_at, created_at) values ($1,$2,'postgres-neon',1,'{}',$3,false,'user', now() + interval '1 hour', now()) returning id", [a.userId, ids.domain, sha256("matrix-plan")])).rows[0].id;
   ids.connection = (await h.app.db.owner.query("insert into connections (user_id, domain_id, service) values ($1,$2,'neon') returning id", [a.userId, ids.domain])).rows[0].id;
+  ids.approval = (await h.app.db.owner.query("insert into agent_requests (user_id, binding_id, kind, request_hash, params, created_at, expires_at) values ($1,$2,'scope',$3,'{}', now(), now() + interval '1 hour') returning id", [a.userId, ids.binding, sha256("matrix-request")])).rows[0].id;
+  const oc = (await h.app.db.owner.query("insert into oauth_clients (client_id, registration, redirect_uris) values ('mhc_matrixclient00000000000000000000','dcr','{https://matrix.example/cb}') returning id")).rows[0].id;
+  ids.oauthRequest = (await h.app.db.owner.query("insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, created_at, expires_at) values ($1,'https://matrix.example/cb',$2,$3, now(), now() + interval '1 hour') returning id", [oc, "a".repeat(43), a.userId])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;

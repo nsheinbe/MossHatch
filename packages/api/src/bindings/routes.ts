@@ -10,7 +10,10 @@ import { ownedDomain } from "../domain-mgmt/common.ts";
 import { NO_STORE } from "../vault/context.ts";
 import { MAX_VALUE_BYTES } from "../vault/envelope.ts";
 import { normalizeSecretName } from "../vault/names.ts";
-import { listSecrets, parseEnv, writeSecret } from "../vault/secrets.ts";
+import { listSecrets, parseEnv } from "../vault/secrets.ts";
+import { AGENT_WRITE_LIMIT } from "../agents/capabilities.ts";
+import { prodWriteNotice } from "../agents/notices.ts";
+import { writeSecretsAtomically } from "./push.ts";
 import { isNarrowing, requireScope, scopeString, storedScopes, type Env, type Scope } from "./scopes.ts";
 import { AGENT_MAX_MS, createAgentBinding, DAY, revokeAllBindings, revokeBinding } from "./tokens.ts";
 import { bindingState, canonical, parseForUser, registerBindingSpecs } from "./specs.ts";
@@ -202,7 +205,7 @@ const PushBody = z.strictObject({ secrets: z.record(z.string().max(256), z.strin
 /**
  * POST /domains/:fqdn/secrets/:env/write (bearer, `secrets.write`): the CLI's `push`. Every name and value is checked
  * before anything is written, so one reserved or malformed name refuses the whole batch (422, one audit row, nothing
- * written). Values never appear in the response.
+ * written). The batch is then written all or nothing (`writeSecretsAtomically`). Values never appear in the response.
  */
 async function push(req: HandlerReq): Promise<HandlerResult> {
   const b = bindingOf(req);
@@ -228,13 +231,27 @@ async function push(req: HandlerReq): Promise<HandlerResult> {
   if (new Set(clean.map(([n]) => n)).size !== clean.length) throw new HttpError(422, "duplicate_name", undefined, NO_STORE);
   const rl = await withUser(req.ctx.runtime, b.userId, (c) => hit(req.ctx, c, b.bindingId, PUSH_LIMIT));
   if (!rl.allowed) throw new HttpError(429, "rate_limited", undefined, { ...NO_STORE, "Retry-After": String(rl.retryAfterSeconds) });
-  const written: { name: string; version: number }[] = [];
-  for (const [name, value] of clean) {
-    const buf = Buffer.from(value, "utf8");
-    try { const r = await writeSecret(req.ctx, b.userId, { kind: b.kind, id: b.bindingId }, d.id, d.env, name, buf); written.push({ name, version: r.version }); }
-    finally { buf.fill(0); }
+  if (b.kind === "agent") {
+    // An agent token writes no faster through push than through its own write route: every value counts (ST-35).
+    const over = await withUser(req.ctx.runtime, b.userId, async (c) => {
+      for (let i = 0; i < clean.length; i++) { const r = await hit(req.ctx, c, b.bindingId, AGENT_WRITE_LIMIT); if (!r.allowed) return r; }
+      return null;
+    });
+    if (over) throw new HttpError(429, "rate_limited", undefined, { ...NO_STORE, "Retry-After": String(over.retryAfterSeconds) });
   }
-  return json({ domain: d.fqdn, env: d.env, written }, 200, { headers: NO_STORE });
+  const bufs = clean.map(([name, value]) => ({ name, value: Buffer.from(value, "utf8") }));
+  let written;
+  try { written = await writeSecretsAtomically(req.ctx, b.userId, { kind: b.kind, id: b.bindingId }, d.id, d.env, bufs); }
+  finally { for (const x of bufs) x.value.fill(0); }
+  if (d.env === "prod" && b.kind === "agent") {
+    // ST-35: an agent's write to prod emails every address at once, as the agent's own write route does. The database also
+    // queues the same notice (same dedupe key), so a failure here still ends in a mail.
+    await withUser(req.ctx.runtime, b.userId, async (c) => {
+      const bindingName = (await c.query("select name from bindings where id = $1", [b.bindingId])).rows[0]?.name ?? "token";
+      for (const w of written) await prodWriteNotice(req.ctx, c, b.userId, { secretId: w.id, version: w.version, name: w.name, fqdn: d.fqdn, bindingName });
+    }).catch(() => undefined);
+  }
+  return json({ domain: d.fqdn, env: d.env, written: written.map((w) => ({ name: w.name, version: w.version })) }, 200, { headers: NO_STORE });
 }
 
 export const bindingRoutes: Route[] = [

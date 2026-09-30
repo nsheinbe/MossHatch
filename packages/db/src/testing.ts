@@ -50,7 +50,14 @@ export async function createTestDb(): Promise<TestDb> {
     if (!exists) {
       await admin.query(`create database ${template}`);
       const p = connect(withDb(ADMIN, template), { max: 2 });
-      try { await migrate(p); } finally { await p.end(); }
+      try { await migrate(p); }
+      catch (e) {
+        // A failed migration must not leave a half-migrated template behind: the next run would reuse it under the same hash.
+        await p.end().catch(() => undefined);
+        await admin.query(`drop database if exists ${template}`).catch(() => undefined);
+        throw e;
+      }
+      await p.end();
     }
     await ensureLoginRoles(admin);
     await admin.query("select pg_advisory_unlock(727002)");

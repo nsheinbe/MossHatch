@@ -89,14 +89,16 @@ export const contactSpec: ActionSpec<z.infer<typeof contactInput>> = {
   async derive(ctx, c, userId, targetId) {
     // The target is a draft created by POST /domains/:fqdn/contact-drafts; the draft holds the encrypted values.
     if (!/^[0-9a-f-]{36}$/i.test(targetId)) throw new HttpError(404, "not_found");
-    const ch = (await c.query("select id, domain_id, fields_hash, registrant_change, email_matches_login, state from contact_changes where id = $1 and user_id = $2", [targetId, userId])).rows[0];
+    const ch = (await c.query("select id, domain_id, fields_hash, new_email_hash, registrant_change, email_matches_login, state from contact_changes where id = $1 and user_id = $2", [targetId, userId])).rows[0];
     if (!ch || ch.state !== "draft") throw new HttpError(404, "not_found");
     const d = (await c.query("select * from domains where id = $1 and user_id = $2 and released_at is null", [ch.domain_id, userId])).rows[0] as DomainRow | undefined;
     if (!d) throw new HttpError(404, "not_found");
     if (d.dispute_lock_state) throw new HttpError(423, "dispute_lock");   // C-23: contact edits are frozen
     void ctx;
     return {
-      params: { op: "contact", change_id: ch.id, domain_id: d.id, fqdn: d.fqdn_ascii, fields_hash: ch.fields_hash, registrant_change: ch.registrant_change, email_matches_login: ch.email_matches_login },
+      // `owner_email_hash` is the registrant email this change leaves at the registrar: the unattributed-change detector accepts that
+      // value, and only that value, as explained by this action (the hash is the one the registrar status reports).
+      params: { op: "contact", change_id: ch.id, domain_id: d.id, fqdn: d.fqdn_ascii, fields_hash: ch.fields_hash, owner_email_hash: ch.new_email_hash, registrant_change: ch.registrant_change, email_matches_login: ch.email_matches_login },
       resourceId: d.id,
     };
   },

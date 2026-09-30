@@ -35,6 +35,7 @@ export function AccountPanel() {
           <p className="notice">{account.credentials.length} {account.credentials.length === 1 ? "passkey" : "passkeys"}. {account.credentials.length < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
           {msg && <p role="alert" className="notice">{msg}</p>}
           <div className="row-actions">
+            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Visitors</button>
             <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
             <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
             <button type="button" className="btn secondary" onClick={() => set({ accountOpen: false })}>Close</button>

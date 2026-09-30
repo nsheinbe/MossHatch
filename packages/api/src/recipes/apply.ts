@@ -12,6 +12,7 @@ import { assertWritesOpen, mapRegistrarError, notifyDomainEvent, registrarOf } f
 import { checkShape, diffZones, sensitiveOf, SNAPSHOT_TTL_MS as SNAPSHOT_TTL } from "../domain-mgmt/dns.ts";
 import { withConnectionCredential } from "../vault/connections.ts";
 import { writeSecret } from "../vault/secrets.ts";
+import { prodWriteNotice } from "../agents/notices.ts";
 import { checkVariableNames, computePlan, planHash, type Plan } from "./plan.ts";
 import { recipeById, type Service } from "./registry.ts";
 import { isProviderNotFound, providersOf } from "./providers.ts";
@@ -24,6 +25,7 @@ import { isProviderNotFound, providersOf } from "./providers.ts";
  */
 
 export class RecipeFail extends Error { constructor(public code: string) { super(code); } }
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function credentialOf(ctx: AppContext, connectionId: string): Promise<string> {
   const r = (await ctx.cron.query("select id from connection_credentials where connection_id = $1 and revoked_at is null", [connectionId])).rows[0];
@@ -103,7 +105,10 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
     const plan = await withUser(ctx.runtime, userId, (c) => computePlan(ctx, c, userId, d, recipe, app.input));
     if (!safeEqual(planHash(plan), Buffer.from(app.plan_hash))) throw new RecipeFail("plan_changed");
     if (!checkVariableNames(plan).ok) throw new RecipeFail("invalid_name");
-    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan);
+    // ST-35: when an agent token planned or applied this, its writes to prod are mailed at once, as its own writes are.
+    const byKind = String(job.payload.by_kind ?? ""), byId = String(job.payload.by_id ?? "");
+    const agent = byKind === "agent" && UUID.test(byId) ? byId : app.created_by_kind === "agent" && UUID.test(String(app.created_by_id ?? "")) ? String(app.created_by_id) : null;
+    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan, agent);
     await withUser(ctx.runtime, userId, async (c) => {
       const r = await c.query("update recipe_applications set state = 'applied', applied_records = $3, applied_at = $4 where id = $1 and user_id = $2 and state = 'applying'", [appId, userId, JSON.stringify(plan.dns.add), ctx.clock.now()]);
       if (r.rowCount !== 1) throw new RecipeFail("state_changed");
@@ -115,23 +120,27 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
   }
 }
 
-async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan): Promise<void> {
+async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan, agent: string | null): Promise<void> {
   const pv = providersOf(ctx);
   const conn = (s: Service) => { const c = plan.connections.find((x) => x.service === s); if (!c) throw new RecipeFail("connection_missing"); return c.id; };
   const refOf = async (s: Service) => (await ctx.cron.query("select external_ref, provider_facts from connections where id = $1 and ended_at is null", [conn(s)])).rows[0] as { external_ref: string | null; provider_facts: Record<string, unknown> } | undefined;
+  // The provider objects are the ones the hash-checked plan names, never re-read: only this plan's own project.create moves one.
+  const refs = new Map<Service, string | null>(plan.connections.map((c) => [c.service, c.external_ref ?? null]));
+  const prodWrites: { id: string; version: number; name: string }[] = [];
   // Values fetched for variables live only in this map, and only until they are written.
   const held = new Map<string, Buffer>();
   try {
     for (const step of plan.steps) {
       if (step.service === "vercel" && step.op === "project.domain.add") {
-        const ref = (await refOf("vercel"))?.external_ref;
+        const ref = refs.get("vercel");
         if (!ref) throw new RecipeFail("connection_unchecked");
         await withCred(ctx, conn("vercel"), "recipe.apply", (cred) => pv.vercel.addProjectDomain(cred, ref, step.target));
       } else if (step.service === "neon" && step.op === "project.create") {
         const f = await refOf("neon");
-        if (f?.provider_facts?.created_by_application === appId) continue;   // a retried job never creates twice
+        if (f?.provider_facts?.created_by_application === appId) { refs.set("neon", f.external_ref); continue; }   // a retried job never creates twice
         const p = await withCred(ctx, conn("neon"), "recipe.apply", (cred) => pv.neon.createProject(cred, d.fqdn));
         await mergeFacts(ctx, conn("neon"), { project_id: p.id, branch: p.branch, database: p.database, role: p.role, host: p.host, pooler_host: p.poolerHost, created_by_application: appId }, p.id);
+        refs.set("neon", p.id);
       } else if (step.service === "resend" && step.op === "domain.create") {
         const dom = await withCred(ctx, conn("resend"), "recipe.apply", (cred) => pv.resend.createDomain(cred, d.fqdn, String((plan.input as { region?: string }).region ?? "us-east-1")));
         await mergeFacts(ctx, conn("resend"), { domain_id: dom.id, region: dom.region, records: dom.records });
@@ -146,16 +155,18 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
     for (const v of plan.variables) {
       let value = held.get(v.source);
       if (!value && (v.source === "neon.pooled" || v.source === "neon.direct")) {
-        const ref = (await refOf("neon"))?.external_ref;
+        const ref = refs.get("neon");
         if (!ref) throw new RecipeFail("connection_unchecked");
         value = Buffer.from(await withCred(ctx, conn("neon"), "recipe.apply", (cred) => pv.neon.connectionUri(cred, ref, { pooled: v.source === "neon.pooled" })), "utf8");
         held.set(v.source, value);
       }
       if (!value) throw new RecipeFail("value_unavailable");
       for (const t of v.targets) {
-        if (t.kind === "nest") await writeSecret(ctx, userId, { kind: "system", id: appId }, d.id, t.env, v.name, value);
-        else {
-          const ref = (await refOf("vercel"))?.external_ref;
+        if (t.kind === "nest") {
+          const w = await writeSecret(ctx, userId, { kind: "system", id: appId }, d.id, t.env, v.name, value);
+          if (t.env === "prod") prodWrites.push({ id: w.id, version: w.version, name: v.name });
+        } else {
+          const ref = refs.get("vercel");
           if (!ref) throw new RecipeFail("connection_unchecked");
           const plain = value.toString("utf8");
           // Sensitive variables are write-only at Vercel, but cannot target development (documented).
@@ -165,10 +176,19 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
     }
   } finally {
     for (const b of held.values()) b.fill(0);
+    if (agent && prodWrites.length) await prodNotices(ctx, userId, agent, d.fqdn, prodWrites).catch(() => undefined);
   }
   if (plan.dns.add.length || plan.dns.remove.length) {
     await withUser(ctx.runtime, userId, (c) => writeRecipeZone(ctx, c, userId, d, plan.dns, plan.zone_before, { application: appId, cause: "recipe.apply" }));
   }
+}
+
+/** ST-35 for recipes: one notice per prod value an agent's recipe wrote, sent at once, even when a later step failed. */
+async function prodNotices(ctx: AppContext, userId: string, bindingId: string, fqdn: string, writes: { id: string; version: number; name: string }[]): Promise<void> {
+  await withUser(ctx.runtime, userId, async (c) => {
+    const bindingName = (await c.query("select name from bindings where id = $1 and user_id = $2", [bindingId, userId])).rows[0]?.name ?? "token";
+    for (const w of writes) await prodWriteNotice(ctx, c, userId, { secretId: w.id, version: w.version, name: w.name, fqdn, bindingName });
+  });
 }
 
 // ---- connection.check ------------------------------------------------------------------------------------------------------

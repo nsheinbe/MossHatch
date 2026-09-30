@@ -10,7 +10,7 @@ import { writeSecret } from "../../api/src/vault/secrets.ts";
 import { commit, prepare } from "../../api/src/stepup/testkit.ts";
 import { ACTION_HEADER } from "../../api/src/stepup/gate.ts";
 import { runCli, EXIT, type Io } from "./cli.ts";
-import { FileStore } from "./store.ts";
+import { FileStore, KeychainStore } from "./store.ts";
 import { encodeDotenv, encodeShell, parseDotenv } from "./dotenv.ts";
 import { masker } from "./run.ts";
 
@@ -126,6 +126,50 @@ describe("login, whoami, logout", () => {
     expect(fs.existsSync(e.store.where())).toBe(false);
   });
 
+  it("review: two commands refreshing at once share one refresh; both succeed and the sign-in survives", async () => {
+    const p = await makePerson(k, "cli-race");
+    const h = await signedIn(p);
+    k.app.clock.advance(61 * 60_000);
+    const a = again(h), b = again(h);
+    const codes = await Promise.all([runCli(["whoami"], a.io), runCli(["whoami"], b.io)]);
+    expect(codes, a.err.text + b.err.text).toEqual([EXIT.ok, EXIT.ok]);
+    const bad = (await k.app.db.owner.query("select count(*)::int n from audit_log where chain_id = $1 and action in ('binding.refresh_reuse', 'binding.revoked')", [p.user.userId])).rows[0].n;
+    expect(bad).toBe(0);
+    expect(await runCli(["whoami"], again(h).io)).toBe(EXIT.ok);
+  });
+
+  it("review: a refresh refused for a server reason (503, 429) keeps the saved sign-in; only invalid_grant forgets it", async () => {
+    const p = await makePerson(k, "cli-503");
+    const h = await signedIn(p);
+    k.app.clock.advance(61 * 60_000);
+    for (const status of [503, 429, 500]) {
+      const x = again(h);
+      const real = x.io.fetch;
+      x.io.fetch = async (url, init) => url.endsWith("/api/v1/oauth/token") ? new Response(JSON.stringify({ error: { code: status === 429 ? "rate_limited" : "unavailable" } }), { status }) : real(url, init);
+      expect(await runCli(["whoami"], x.io)).not.toBe(EXIT.ok);
+      expect(x.err.text).not.toContain("not signed in");
+      expect(fs.existsSync(h.store.where()), String(status)).toBe(true);
+    }
+    expect(await runCli(["whoami"], again(h).io)).toBe(EXIT.ok);
+    // A revoked sign-in answers invalid_grant: that one is forgotten.
+    const saved = JSON.parse(fs.readFileSync(h.store.where(), "utf8"));
+    expect((await k.app.call("POST", "/api/v1/oauth/revoke", { body: { token: saved.refresh_token }, browser: false })).status).toBe(200);
+    expect(await runCli(["whoami"], again(h).io)).toBe(EXIT.auth);
+    expect(fs.existsSync(h.store.where())).toBe(false);
+  });
+
+  it("review: logout also removes a sign-in file left from an earlier fallback when the keychain is in use", async () => {
+    const h = harness();
+    const file = new FileStore(path.join(h.dir, "state", "mosshatch"));
+    await file.save({ api: k.app.ctx.config.origin, access_token: "mh_cli_leftover" });
+    let stored: string | null = JSON.stringify({ api: k.app.ctx.config.origin, access_token: "mh_cli_inkeychain" });
+    const entry = { getPassword: () => stored, setPassword: (v: string) => { stored = v; }, deletePassword: () => { stored = null; return true; } };
+    h.io.store = new KeychainStore(entry, file);
+    expect(await runCli(["logout", "--local-only"], h.io)).toBe(EXIT.ok);
+    expect(stored).toBeNull();
+    expect(fs.existsSync(file.where())).toBe(false);
+  });
+
   it("help is plain and states the honest limits", async () => {
     const h = harness();
     expect(await runCli(["help"], h.io)).toBe(EXIT.ok);
@@ -193,6 +237,33 @@ describe("ST-89: reserved names in run and pull; hostile values round-trip", () 
     }
     expect(fs.existsSync(path.join(dir, "pwned"))).toBe(false);
     expect(() => encodeShell([{ name: "X", value: "a\0b" }])).toThrow();
+  });
+
+  it("review: pull's dotenv file reads back unchanged through node --env-file", () => {
+    // Everything Node can hold: it drops a carriage return, and no environment can hold NUL.
+    const portable = [...hostile.filter((v) => !v.includes("\r")), `it's $HOME and "quoted" \\`, 'multi\nline with $ and \\ and "', "ends with a backslash\\", "back`tick and 'quote'"];
+    const entries = portable.map((value, i) => ({ name: `N${i}`, value }));
+    const dir = fs.mkdtempSync(path.join(tmp, "envfile-"));
+    const file = path.join(dir, ".env");
+    fs.writeFileSync(file, encodeDotenv(entries));
+    const out = execFileSync(process.execPath, [`--env-file=${file}`, "-e", "process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k]) => /^N\\d+$/.test(k)))))"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } });
+    const got = JSON.parse(out) as Record<string, string>;
+    for (const e of entries) expect(got[e.name], JSON.stringify(e.value)).toBe(e.value);
+    expect(parseDotenv(encodeDotenv(entries))).toEqual(entries);
+  });
+
+  it("review: pull names the values other dotenv readers cannot load, and points to run", async () => {
+    const p = await makePerson(k, "st89cr");
+    await putSecret(k, p, "dev", "PLAIN", "fine");
+    await putSecret(k, p, "dev", "WITH_CR", "cr\rhere");
+    const h = await signedIn(p);
+    const out = path.join(h.dir, "cr.env");
+    const x = again(h);
+    expect(await runCli(["pull", p.domain.fqdn, "--env", "dev", "--out", out], x.io), x.err.text).toBe(EXIT.ok);
+    expect(x.err.text).toContain("WITH_CR"); expect(x.err.text).not.toContain("PLAIN");
+    expect(x.err.text).toContain("mosshatch run");
+    expect(x.err.text).not.toContain("cr\rhere");
+    expect(parseDotenv(fs.readFileSync(out, "utf8"))).toEqual([{ name: "PLAIN", value: "fine" }, { name: "WITH_CR", value: "cr\rhere" }]);
   });
 
   it("push then pull through the API returns every hostile value unchanged", async () => {
@@ -266,6 +337,25 @@ describe("run: environment only, exit codes, signals and masking", () => {
     for (const part of ["xx abc", "defg", "h yy"]) m.write(part);
     m.end(); await new Promise((r) => m.on("end", r));
     expect(got).toBe("xx ******** yy");
+  });
+
+  it("review: the masker passes ordinary output through at once and holds back only a possible start of a value", async () => {
+    const secret = `s3cr3t_${"Q".repeat(40)}${crypto.randomBytes(8).toString("hex")}`;
+    const m = masker([secret, "-----BEGIN PRIVATE KEY-----\n" + "A".repeat(1700)]);
+    let got = "";
+    m.on("data", (c) => { got += c.toString(); });
+    const settle = () => new Promise((r) => setImmediate(r));
+    m.write("Ready on http://localhost:3000\n"); await settle();
+    expect(got).toBe("Ready on http://localhost:3000\n");
+    m.write("Password? "); await settle();
+    expect(got).toBe("Ready on http://localhost:3000\nPassword? ");
+    // A value split across writes is still masked: only the part that could start it waits.
+    m.write(`key=${secret.slice(0, 12)}`); await settle();
+    expect(got.endsWith("key=")).toBe(true);
+    m.write(`${secret.slice(12)} done\n`); await settle();
+    expect(got).toBe("Ready on http://localhost:3000\nPassword? key=******** done\n");
+    m.end(); await new Promise((r) => m.on("end", r));
+    expect(got).not.toContain(secret.slice(0, 12));
   });
 
   it("a prod run with a dev and preview grant is refused (77), and an unavailable vault exits 75", async () => {

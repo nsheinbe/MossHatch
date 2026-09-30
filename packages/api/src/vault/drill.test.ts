@@ -136,3 +136,99 @@ describe("the KMS compromise drill (fake KMS, timed)", () => {
     expect(audit).toMatchObject({ customers: 3, rewrapped: 14, notices: 3 });
   });
 });
+
+describe("review: exposure scoping and the drill under hostile input", () => {
+  it("review: an attacker's extra Decrypt of a record that was also read legitimately is counted as unaudited", async () => {
+    await k.app.db.owner.query("delete from rate_counters");
+    const p = await makePerson(k, "extra");
+    await putSecret(k, p, "dev", "SHARED", canary());
+    await putSecret(k, p, "dev", "ONLY_AUDITED", canary());
+    k.app.clock.advance(1000);
+    const from = k.app.clock.now();
+    const [only, shared] = await rowsOf(p);   // ONLY_AUDITED, SHARED by name
+    // One legitimate reveal of each (one audit row and one Decrypt each) ...
+    for (const r of [only!, shared!]) expect((await reveal(k, p, r.id, await activateReveal(k, p, r.id))).status).toBe(200);
+    // ... then the attacker decrypts SHARED's wrapped key again with the role, with no audit row.
+    await k.kms.decrypt("vault-nonprod", shared!.kek_ref, Buffer.from(shared!.wrapped_dek), kmsContext("dev", p.user.userId, shared!.id));
+    const to = new Date(k.app.clock.now().getTime() + 1000);
+    const mine = (await affectedFromTrail(k.app.ctx, await k.kms.trail(), { from, to })).find((a) => a.user_id === p.user.userId)!;
+    const byId = new Map(mine.records.map((r) => [r.record_id, r]));
+    expect(byId.get(shared!.id)).toMatchObject({ decrypts: 2, audited: false });
+    expect(byId.get(only!.id)).toMatchObject({ decrypts: 1, audited: true });
+    expect(mine.unaudited).toBe(1);
+  });
+
+  it("review: a non-UUID owner_id or secret_id in the trail is reported as unattributable and never aborts the drill after the keys are disabled", async () => {
+    await k.app.db.owner.query("delete from rate_counters");
+    const p = await makePerson(k, "junkctx");
+    await putSecret(k, p, "dev", "JUNK_CTX", canary());
+    const row = (await rowsOf(p))[0]!;
+    k.app.clock.advance(1000);
+    const from = k.app.clock.now();
+    // The attacker holds vault-nonprod and picks a context the key policy accepts (app, env and the key set only).
+    const kek = k.kms.currentKek("vault-nonprod");
+    for (const ctx of [{ owner_id: "x", secret_id: "y" }, { owner_id: p.user.userId, secret_id: "-".repeat(36) }, { owner_id: "x", secret_id: row.id }]) {
+      const c = { app: "mosshatch-nest", env: "dev", ...ctx } as unknown as ReturnType<typeof kmsContext>;
+      const dk = await k.kms.generateDataKey("vault-nonprod", kek, c);
+      await k.kms.decrypt("vault-nonprod", kek, dk.ciphertextBlob, c);
+    }
+    // And a real, unaudited Decrypt of the person's record.
+    await k.kms.decrypt("vault-nonprod", row.kek_ref, Buffer.from(row.wrapped_dek), kmsContext("dev", p.user.userId, row.id));
+    const to = new Date(k.app.clock.now().getTime() + 1000);
+
+    const affected = await affectedFromTrail(k.app.ctx, await k.kms.trail(), { from, to });
+    expect(affected.map((a) => a.user_id)).toEqual([p.user.userId]);
+    expect(affected[0]!.records).toEqual([expect.objectContaining({ record_id: row.id, decrypts: 1, audited: false })]);
+
+    const incidentId = "01900000-0000-7000-8000-00000000d7d2";
+    const d = await runCompromiseDrill(k.app.ctx, { incidentId, window: { from, to } });
+    expect(d.steps.map((s) => s.step)).toContain("lift_role_deny");
+    expect(d.unattributable).toBe(3);
+    expect(d.affected.map((x) => x.user_id)).toEqual([p.user.userId]);
+    for (const cls of ["vault-prod", "vault-nonprod"] as const) expect(k.kms.keyState(k.kms.currentKek(cls))).toBe("Enabled");
+    const audit = (await k.app.db.owner.query("select detail from audit_log where action = 'vault.compromise_drill' and resource_id = $1", [incidentId])).rows[0].detail;
+    expect(audit).toMatchObject({ customers: 1, unattributable: 3 });
+  });
+});
+
+describe("review: connection writes race a disconnect", () => {
+  it("review: a disconnect that lands while a connection PUT is inside KMS leaves no live credential; concurrent PUTs never 500", async () => {
+    const p = await makePerson(k, "connrace");
+    const put = (cred: string) => call(k, p, "PUT", `/api/v1/domains/${p.domain.fqdn}/connections/vercel`, { kind: "pasted_token", credential: cred });
+    expect((await put(`vercel_${canary()}`)).status).toBe(201);
+    const liveCreds = async () => (await k.app.db.owner.query(
+      "select k.id from connection_credentials k join connections n on n.id = k.connection_id where n.domain_id = $1 and (k.revoked_at is null or k.ciphertext is not null)", [p.domain.id])).rows;
+
+    const orig = k.kms.generateDataKey;
+    let entered = 0, release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let inside!: () => void;
+    const reached = new Promise<void>((r) => { inside = r; });
+    k.kms.generateDataKey = async function (this: typeof k.kms, ...a: Parameters<typeof orig>) { entered++; inside(); await gate; return orig.apply(this, a); };
+    try {
+      const second = put(`vercel_${canary()}`);
+      await reached;
+      const del = await call(k, p, "DELETE", `/api/v1/domains/${p.domain.fqdn}/connections/vercel`);
+      expect(del.status).toBe(200);
+      release();
+      const r2 = await second;
+      expect(r2.status, r2.text).toBe(409);
+      expect(r2.json.error.code).toBe("write_conflict");
+    } finally { k.kms.generateDataKey = orig; }
+    expect(entered).toBe(1);
+    expect(await liveCreds()).toEqual([]);
+    const conns = (await k.app.db.owner.query("select status, ended_at from connections where domain_id = $1", [p.domain.id])).rows;
+    for (const c of conns) { expect(c.status).toBe("ended"); expect(c.ended_at).not.toBeNull(); }
+    expect((await call(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/nest`)).json.connections).toEqual([]);
+
+    // Two PUTs released from KMS together: each is 201 or 409 (never a raw unique violation), and one credential stays live.
+    let both!: () => void, n = 0;
+    const together = new Promise<void>((r) => { both = r; });
+    k.kms.generateDataKey = async function (this: typeof k.kms, ...a: Parameters<typeof orig>) { if (++n === 2) both(); await together; return orig.apply(this, a); };
+    try {
+      const rs = await Promise.all([put(`vercel_${canary()}`), put(`vercel_${canary()}`)]);
+      for (const r of rs) expect([201, 409], r.text).toContain(r.status);
+    } finally { k.kms.generateDataKey = orig; }
+    expect(await liveCreds()).toHaveLength(1);
+  });
+});

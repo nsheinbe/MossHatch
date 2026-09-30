@@ -18,6 +18,11 @@ const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
 // The CLI device-approval page (/device). The code is typed by the person; the URL is never read for it.
 const DeviceApprove = lazy(() => import("./DeviceApprove"));
+// Visitors (tokens, connected apps, approvals) and the OAuth consent screen for MCP connectors: lazy chunks.
+const Visitors = lazy(() => import("./Visitors"));
+const OAuthConsent = lazy(() => import("./OAuthConsent"));
+// Rescue (transfer in), opened from Find or from the Checkout return of a transfer. Lazy: nothing of it is in the first load.
+const Rescue = lazy(() => import("./Rescue"));
 
 function hasWebGL2(): boolean {
   try { return !!document.createElement("canvas").getContext("webgl2"); } catch { return false; }
@@ -28,7 +33,9 @@ export function App() {
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
-  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, set } = useUi();
+  const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
+  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, set } = useUi();
+  const rescue = useUi((s) => s.rescue);
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -58,7 +65,10 @@ export function App() {
       <Header />
       {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
+      {rescue && <Suspense fallback={null}><Rescue /></Suspense>}
       {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
+      {visitorsOpen && account && <Suspense fallback={null}><Visitors /></Suspense>}
+      {oauthRequest && <Suspense fallback={null}><OAuthConsent id={oauthRequest} onClose={() => { history.replaceState(null, "", "/"); setOauthRequest(null); }} /></Suspense>}
       <HatchSheet />
       <CardPanel />
       <AccountPanel />

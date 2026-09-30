@@ -7,6 +7,7 @@ import type { KmsTrailEvent, VaultKekClass, VaultKmsAdmin, VaultRole } from "./k
 import { vaultOf } from "./context.ts";
 import { rewrapAll } from "./jobs.ts";
 import { VAULT_MAIL } from "./mail.ts";
+import { MATCH_AFTER_MS, MATCH_BEFORE_MS, RECONCILE_AUDIT_ACTIONS } from "../ops/kms-reconcile.ts";
 
 /**
  * KMS compromise response (PLAN 4.3b Blast radius and Loss radius; runbook docs/runbooks/kms-compromise.md):
@@ -15,48 +16,73 @@ import { VAULT_MAIL } from "./mail.ts";
  * The functions are the steps; `runCompromiseDrill` runs them in order and times each one.
  */
 
-const PAD_MS = 5 * 60_000;
-const REVEAL_OR_READ = ["secret.reveal.authorized", "secret.reveal.released", "secret.read", "connection.credential.used"];
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-export interface AffectedSecret { record_id: string; kind: "secret" | "connection"; domain_id: string; env: string; decrypts: number; audited: boolean }
+/** `decrypts` successful calls in the window; `unaudited` of them matched no audit row one-to-one; `audited` = none unmatched. */
+export interface AffectedSecret { record_id: string; kind: "secret" | "connection"; domain_id: string; env: string; decrypts: number; unaudited: number; audited: boolean }
+/** `unaudited`: how many of the customer's records had at least one unaudited decrypt. */
 export interface AffectedCustomer { user_id: string; records: AffectedSecret[]; unaudited: number }
+/** `unattributable`: successful calls whose context names no record of its owner (malformed or made-up ids). */
+export interface TrailScope { affected: AffectedCustomer[]; unattributable: number }
 
 /**
  * Who was exposed: successful Decrypt (and ReEncrypt) events in the window, optionally only from the compromised
- * principals, grouped by the encryption context's `owner_id` and `secret_id`, confirmed against the database (a
- * context whose owner does not own the record is dropped, not trusted), and marked audited when a reveal or read row for
- * the record exists in the padded window. Unaudited decrypts are the ones the attacker made.
+ * principals, grouped by the encryption context's `owner_id` and `secret_id`, and confirmed against the database. The
+ * context is attacker-chosen (the key policy pins only app, env and the key set), so an id that is not a canonical UUID,
+ * or a record its owner does not hold, is counted as unattributable and never reaches a query. Each event is matched
+ * one-to-one, as in audit.kms_reconcile, against a pre-decrypt audit row carrying the record's id (`decrypt_nonce`)
+ * from 5 minutes before to 2 minutes after it; an event with no row left to consume is unaudited, however many reads
+ * of the same record were legitimate. Unaudited decrypts are the ones the attacker made.
  */
-export async function affectedFromTrail(ctx: Pick<AppContext, "cron">, events: KmsTrailEvent[], o: { from: Date; to: Date; principals?: string[] }): Promise<AffectedCustomer[]> {
-  const hits = new Map<string, Map<string, number>>();
+export async function scopeTrail(ctx: Pick<AppContext, "cron">, events: KmsTrailEvent[], o: { from: Date; to: Date; principals?: string[] }): Promise<TrailScope> {
+  const hits = new Map<string, Map<string, Date[]>>();
+  let unattributable = 0;
   for (const e of events) {
     if ((e.eventName !== "Decrypt" && e.eventName !== "ReEncrypt") || e.errorCode || e.at < o.from || e.at >= o.to) continue;
     if (o.principals && !o.principals.includes(e.principal)) continue;
     const owner = e.encryptionContext?.owner_id, rec = e.encryptionContext?.secret_id;
-    if (!owner || !rec) continue;
-    const m = hits.get(owner) ?? new Map<string, number>();
-    m.set(rec, (m.get(rec) ?? 0) + 1);
+    if (typeof owner !== "string" || typeof rec !== "string" || !UUID.test(owner) || !UUID.test(rec)) { unattributable++; continue; }
+    const m = hits.get(owner) ?? new Map<string, Date[]>();
+    const at = m.get(rec) ?? [];
+    at.push(e.at);
+    m.set(rec, at);
     hits.set(owner, m);
   }
   const out: AffectedCustomer[] = [];
   for (const [owner, recs] of hits) {
     const ids = [...recs.keys()];
     const found = (await ctx.cron.query(
-      `select id, 'secret' as kind, domain_id, env from secrets where user_id = $1 and id = any($2::uuid[])
+      `select id::text, 'secret' as kind, domain_id, env from secrets where user_id = $1 and id = any($2::uuid[])
        union all
-       select k.id, 'connection', n.domain_id, 'prod' from connection_credentials k join connections n on n.id = k.connection_id where k.user_id = $1 and k.id = any($2::uuid[])`,
-      [owner, ids.filter((x) => /^[0-9a-f-]{36}$/.test(x))])).rows;
+       select k.id::text, 'connection', n.domain_id, 'prod' from connection_credentials k join connections n on n.id = k.connection_id where k.user_id = $1 and k.id = any($2::uuid[])`,
+      [owner, ids])).rows;
+    const confirmed = new Set(found.map((f) => f.id as string));
+    for (const [rec, ats] of recs) if (!confirmed.has(rec)) unattributable += ats.length;
     if (!found.length) continue;
-    const audited = new Set((await ctx.cron.query(
-      "select distinct resource_id from audit_log where chain_id = $1 and action = any($2::text[]) and at >= $3 and at < $4 and (resource_id = any($5::text[]) or detail->>'credential_id' = any($5::text[]))",
-      [owner, REVEAL_OR_READ, new Date(o.from.getTime() - PAD_MS), new Date(o.to.getTime() + PAD_MS), ids])).rows.map((r) => r.resource_id as string));
-    const credAudited = new Set((await ctx.cron.query(
-      "select distinct detail->>'credential_id' as id from audit_log where chain_id = $1 and action = 'connection.credential.used' and at >= $2 and at < $3",
-      [owner, new Date(o.from.getTime() - PAD_MS), new Date(o.to.getTime() + PAD_MS)])).rows.map((r) => r.id as string));
-    const records = found.map((f) => ({ record_id: f.id as string, kind: f.kind as "secret" | "connection", domain_id: f.domain_id as string, env: f.env as string, decrypts: recs.get(f.id) ?? 0, audited: audited.has(f.id) || credAudited.has(f.id) }));
-    out.push({ user_id: owner, records: records.sort((a, b) => a.record_id.localeCompare(b.record_id)), unaudited: records.filter((r) => !r.audited).length });
+    const times = ids.flatMap((id) => recs.get(id) ?? []).map((t) => t.getTime());
+    const rows = (await ctx.cron.query(
+      `select coalesce(detail->>'kms_ref', detail->>'decrypt_nonce') as token, at from audit_log
+        where chain_id = $1 and action ~ $2 and at >= $3 and at <= $4 and coalesce(detail->>'kms_ref', detail->>'decrypt_nonce') = any($5::text[])
+        order by at, seq`,
+      [owner, RECONCILE_AUDIT_ACTIONS, new Date(times.reduce((a, b) => Math.min(a, b)) - MATCH_BEFORE_MS), new Date(times.reduce((a, b) => Math.max(a, b)) + MATCH_AFTER_MS), [...confirmed]])).rows as { token: string; at: Date }[];
+    const records = found.map((f) => {
+      const evs = [...(recs.get(f.id) ?? [])].map((t) => t.getTime()).sort((a, b) => a - b);
+      const audits = rows.filter((r) => r.token === f.id).map((r) => ({ at: new Date(r.at).getTime(), used: false }));
+      let unaudited = 0;
+      for (const t of evs) {
+        const a = audits.find((x) => !x.used && x.at >= t - MATCH_BEFORE_MS && x.at <= t + MATCH_AFTER_MS);
+        if (a) a.used = true; else unaudited++;
+      }
+      return { record_id: f.id as string, kind: f.kind as "secret" | "connection", domain_id: f.domain_id as string, env: f.env as string, decrypts: evs.length, unaudited, audited: unaudited === 0 };
+    });
+    out.push({ user_id: owner, records: records.sort((a, b) => a.record_id.localeCompare(b.record_id)), unaudited: records.filter((r) => r.unaudited > 0).length });
   }
-  return out.sort((a, b) => a.user_id.localeCompare(b.user_id));
+  return { affected: out.sort((a, b) => a.user_id.localeCompare(b.user_id)), unattributable };
+}
+
+/** The per-customer affected list alone (see `scopeTrail`). */
+export async function affectedFromTrail(ctx: Pick<AppContext, "cron">, events: KmsTrailEvent[], o: { from: Date; to: Date; principals?: string[] }): Promise<AffectedCustomer[]> {
+  return (await scopeTrail(ctx, events, o)).affected;
 }
 
 /** Everyone with live material under a KEK: the list when the key itself (not one session) is suspected. */
@@ -95,7 +121,7 @@ export async function autoDenyOnUnauditedDecrypt(ctx: Pick<AppContext, "cron" | 
 }
 
 export interface DrillStep { step: string; ms: number }
-export interface DrillResult { incidentId: string; steps: DrillStep[]; totalMs: number; affected: AffectedCustomer[]; noticesSent: number; rewrapped: number; newKeks: Record<VaultKekClass, string>; oldKeks: Record<VaultKekClass, string> }
+export interface DrillResult { incidentId: string; steps: DrillStep[]; totalMs: number; affected: AffectedCustomer[]; unattributable: number; noticesSent: number; rewrapped: number; newKeks: Record<VaultKekClass, string>; oldKeks: Record<VaultKekClass, string> }
 
 /**
  * Run the drill end to end against the configured KMS (the fake here; the staging account in a live rehearsal).
@@ -116,7 +142,7 @@ export async function runCompromiseDrill(ctx: AppContext, o: { incidentId: strin
   await step("revoke_and_deny", async () => { for (const r of ["vault-prod", "vault-nonprod"] as VaultRole[]) await admin.attachRoleDeny(r); });
   await step("disable_keys", async () => { for (const k of Object.values(oldKeks)) await admin.disableKey(k); });
   const events = await step("scope_from_trail", () => admin.trail(o.window.from, o.window.to));
-  const affected = await step("affected_list", () => affectedFromTrail(ctx, events, { from: o.window.from, to: o.window.to, principals: o.compromisedPrincipals }));
+  const { affected, unattributable } = await step("affected_list", () => scopeTrail(ctx, events, { from: o.window.from, to: o.window.to, principals: o.compromisedPrincipals }));
   const noticesSent = await step("notices", () => sendCompromiseNotices(ctx, o.incidentId, affected));
   const newKeks = await step("new_keys", async () => {
     const out = { "vault-prod": await admin.createKey("vault-prod"), "vault-nonprod": await admin.createKey("vault-nonprod") };
@@ -131,6 +157,6 @@ export async function runCompromiseDrill(ctx: AppContext, o: { incidentId: strin
   await step("retire_old_keys", async () => { for (const k of Object.values(oldKeks)) await admin.disableKey(k); });
   await step("lift_role_deny", async () => { for (const r of ["vault-prod", "vault-nonprod"] as VaultRole[]) await admin.removeRoleDeny(r); });
   const totalMs = Math.round((now() - t0) * 100) / 100;
-  await tx(ctx.cron, (c) => appendAudit(ctx, c, { chainId: SYSTEM_CHAIN, actorKind: "system", action: "vault.compromise_drill", resourceKind: "incident", resourceId: o.incidentId, detail: { customers: affected.length, rewrapped, notices: noticesSent, total_ms: totalMs } }));
-  return { incidentId: o.incidentId, steps, totalMs, affected, noticesSent, rewrapped, newKeks, oldKeks };
+  await tx(ctx.cron, (c) => appendAudit(ctx, c, { chainId: SYSTEM_CHAIN, actorKind: "system", action: "vault.compromise_drill", resourceKind: "incident", resourceId: o.incidentId, detail: { customers: affected.length, unattributable, rewrapped, notices: noticesSent, total_ms: totalMs } }));
+  return { incidentId: o.incidentId, steps, totalMs, affected, unattributable, noticesSent, rewrapped, newKeks, oldKeks };
 }

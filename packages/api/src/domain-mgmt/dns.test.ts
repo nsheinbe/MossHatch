@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { DnsRecord } from "@mosshatch/registrar/port";
+import { RegistrarError, type DnsRecord } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
 import type { DnsOverwriteMode } from "@mosshatch/registrar/mock-port";
 import { classifyRecord } from "./classify.ts";
@@ -224,3 +224,99 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
     });
   });
 }
+
+describe("review: DNS snapshots survive an unknown write outcome, rollbacks keep the write-safety rules, and the rollback link works", () => {
+  let k: Kit; let alice: Person;
+  const base: DnsRecord[] = [
+    { type: "A", name: "", value: "192.0.2.10" }, { type: "MX", name: "", value: "mail.example.net", priority: 10 },
+    { type: "TXT", name: "", value: "v=spf1 include:_spf.example.net -all" }, { type: "CNAME", name: "blog", value: "blog.example.net" },
+  ];
+  let n = 0;
+  async function fresh() {
+    const d = await makeDomain(k, alice, `review-dns-${++n}.com`);
+    await k.registrar.replaceZone(d.fqdn, base);
+    return d;
+  }
+  const live = async (fqdn: string) => (await k.registrar.getDns(fqdn)).records;
+  const snaps = async (id: string) => (await k.app.db.owner.query("select * from dns_snapshots where domain_id = $1 order by taken_at, id", [id])).rows;
+  beforeAll(async () => { k = await makeKit(); alice = await makePerson(k, "rv-alice"); }, 120_000);
+  afterAll(async () => { await k?.app.drop(); });
+  beforeEach(async () => { await resetFuse(k); k.app.email.clear(); });
+
+  it("a zone write that lands upstream but answers with an unknown outcome keeps its pre-write snapshot and audit, and can be rolled back", async () => {
+    const d = await fresh();
+    const before = await live(d.fqdn);
+    const orig = k.registrar.replaceZone.bind(k.registrar);
+    let once = true;
+    k.registrar.replaceZone = async (fqdn, records) => {
+      const r = await orig(fqdn, records);
+      if (once && fqdn === d.fqdn) { once = false; throw new RegistrarError("unknown", "transport timeout", { retryable: true, outcomeUnknown: true }); }
+      return r;
+    };
+    try {
+      const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "TXT", name: "sel._domainkey", value: "k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA" }] });
+      expect(res.status).toBe(502); expect(res.json.error.code).toBe("outcome_unknown");
+      expect(await live(d.fqdn)).toHaveLength(before.length + 1);          // it did land
+      const s = await snaps(d.id);
+      expect(s).toHaveLength(1);
+      expect(s[0].reason).toBe("pre_write"); expect(s[0].zone_hash).toBe(zoneHash(before)); expect(s[0].after_hash).toBeNull();
+      expect(s[0].write_state).toBe("unknown");
+      const audit = (await k.app.db.owner.query("select action, detail from audit_log where resource_id = $1 and action like 'dns.%' order by seq", [d.id])).rows;
+      expect(audit.map((a) => a.action)).toEqual(expect.arrayContaining(["dns.write_intent", "dns.write_outcome_unknown"]));
+      // The change may have touched a sensitive record, so every address is told and pointed at the rollback.
+      expect(k.app.email.to(alice.second).filter((m) => m.kind === "dns.sensitive_changed")).toHaveLength(1);
+      const rb = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s[0].id}/rollback`, {});
+      expect(rb.status, rb.text).toBe(200);
+      expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(before));
+    } finally { k.registrar.replaceZone = orig; }
+  });
+
+  it("a write the registrar refuses leaves no snapshot to roll back to", async () => {
+    const d = await fresh();
+    const orig = k.registrar.replaceZone.bind(k.registrar);
+    k.registrar.replaceZone = async () => { throw new RegistrarError("rejected", "refused", { retryable: false, outcomeUnknown: false, code: "txt_too_long" }); };
+    try {
+      const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "x", value: "192.0.2.3" }] });
+      expect(res.status).toBe(422);
+      expect((await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/dns-snapshots`)).json.snapshots).toHaveLength(0);
+    } finally { k.registrar.replaceZone = orig; }
+  });
+
+  it("rolling back an older write refuses to delete the MX and TXT records a later write added; undoing the writes newest first works", async () => {
+    const d = await fresh();
+    const s1 = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "app", value: "192.0.2.77" }] });
+    expect(s1.status, s1.text).toBe(200);
+    const afterApp = await live(d.fqdn);
+    const s2 = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "MX", name: "", value: "mx.newmail.example", priority: 20 }, { type: "TXT", name: "nm._domainkey", value: "v=DKIM1; k=rsa; p=MIIB" }] });
+    expect(s2.status, s2.text).toBe(200);
+    const withMail = await live(d.fqdn);
+    const old = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s1.json.snapshot_id}/rollback`, {});
+    expect(old.status).toBe(422); expect(old.json.error.code).toBe("unrelated_delete");
+    expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(withMail));
+    const undo2 = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s2.json.snapshot_id}/rollback`, {});
+    expect(undo2.status, undo2.text).toBe(200);
+    expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(afterApp));
+    const undo1 = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s1.json.snapshot_id}/rollback`, {});
+    expect(undo1.status, undo1.text).toBe(200);
+    expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(base));
+  });
+
+  it("a rollback that would delete more than 5 records is refused like any other write", async () => {
+    const d = await fresh();
+    const s1 = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "one", value: "192.0.2.1" }] });
+    const six = Array.from({ length: 6 }, (_, i) => ({ type: "A", name: `h${i}`, value: `192.0.2.${i + 20}` }));
+    expect((await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: six })).status).toBe(200);
+    const rb = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s1.json.snapshot_id}/rollback`, {});
+    expect(rb.status).toBe(422); expect(rb.json.error.code).toBe("too_many_deletes");
+    expect(await live(d.fqdn)).toHaveLength(base.length + 7);
+  });
+
+  it("the rollback link a write returns is the route that rolls it back", async () => {
+    const d = await fresh();
+    const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "linked", value: "192.0.2.8" }] });
+    expect(res.status, res.text).toBe(200);
+    const rb = await call(k, alice, "POST", res.json.rollback as string, {});
+    expect(rb.status, rb.text).toBe(200);
+    expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(base));
+  });
+});

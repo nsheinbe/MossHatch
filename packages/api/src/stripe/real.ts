@@ -3,6 +3,7 @@ import { assertModeConsistency, type ModeInputs } from "../config/modeguard.ts";
 import { verifySignature, DEFAULT_TOLERANCE_SEC } from "./signature.ts";
 import { StripeError, type CheckoutSession, type CreateOffSessionInput, type CreateSessionInput, type PaymentIntent, type PaymentMethodInfo, type Refund, type StripeEvent, type StripePort } from "./port.ts";
 import { toStripeSessionParams } from "./params.ts";
+import { descriptorSuffix, type ProductSpec } from "./catalog.ts";
 
 /**
  * The API version is pinned here and must equal the version set on the webhook endpoint in the Dashboard (plan 4.3b,
@@ -66,7 +67,7 @@ export class StripeReal implements StripePort {
   async createOffSessionPaymentIntent(i: CreateOffSessionInput, idem: string) {
     return mapPi(await this.call(() => this.s.paymentIntents.create({
       amount: i.amount, currency: i.currency, customer: i.customer, payment_method: i.paymentMethod, off_session: true, confirm: true, capture_method: "automatic",
-      payment_method_types: ["card"], metadata: i.metadata,
+      payment_method_types: ["card"], metadata: i.metadata, statement_descriptor_suffix: descriptorSuffix(i.operation ?? "renew"),
     }, { idempotencyKey: idem })));
   }
   async detachPaymentMethod(id: string, idem: string) {
@@ -75,7 +76,22 @@ export class StripeReal implements StripePort {
   async retrievePaymentMethod(id: string) { return mapPm(await this.call(() => this.s.paymentMethods.retrieve(id))); }
   async createRefund(i: { paymentIntent: string; amount?: number; reason?: string; metadata?: Record<string, string> }, idem: string): Promise<Refund> {
     const r = await this.call(() => this.s.refunds.create({ payment_intent: i.paymentIntent, ...(i.amount !== undefined ? { amount: i.amount } : {}), ...(i.reason ? { metadata: { reason: i.reason, ...(i.metadata ?? {}) } } : { metadata: i.metadata ?? {} }) }, { idempotencyKey: idem }));
-    return { id: r.id, status: r.status as Refund["status"], amount: r.amount, payment_intent: typeof r.payment_intent === "string" ? r.payment_intent : (r.payment_intent as any)?.id, currency: r.currency };
+    return mapRefund(r);
+  }
+  async retrieveRefund(id: string): Promise<Refund> { return mapRefund(await this.call(() => this.s.refunds.retrieve(id))); }
+
+  /** C-44 catalog setup: create the Product under its fixed id; an existing one (`resource_already_exists`) is read back instead. */
+  async ensureProduct(spec: ProductSpec, idem: string) {
+    try {
+      const p = await this.s.products.create({ id: spec.id, name: spec.name, metadata: spec.metadata, ...(spec.taxCode ? { tax_code: spec.taxCode } : {}) }, { idempotencyKey: idem });
+      return { id: p.id, created: true };
+    } catch (e) {
+      const err = mapError(e);
+      if (err.kind !== "invalid_request" || err.code !== "resource_already_exists") throw err;
+      const p = await this.call(() => this.s.products.retrieve(spec.id));
+      if (!p.active) throw new StripeError("invalid_request", 400, "product_inactive");
+      return { id: p.id, created: false };
+    }
   }
 
   /** Same scheme and same code as the fake: t=,v1= HMAC-SHA256 over `t.body`, tolerance both ways, any of the given secrets. */
@@ -91,7 +107,12 @@ function mapSession(s: any): CheckoutSession {
     id: s.id, url: s.url ?? null, status: s.status, payment_status: s.payment_status, payment_intent: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id ?? null,
     customer: typeof s.customer === "string" ? s.customer : s.customer?.id ?? null, client_reference_id: s.client_reference_id ?? null, metadata: s.metadata ?? {}, expires_at: s.expires_at,
     livemode: s.livemode, amount_subtotal: s.amount_subtotal ?? 0, amount_total: s.amount_total ?? 0, amount_tax: s.total_details?.amount_tax ?? 0, currency: s.currency ?? "usd",
+    billing_address: s.customer_details?.address ? { country: s.customer_details.address.country ?? null, state: s.customer_details.address.state ?? null } : null,
   };
+}
+
+function mapRefund(r: any): Refund {
+  return { id: r.id, status: r.status as Refund["status"], amount: r.amount, payment_intent: typeof r.payment_intent === "string" ? r.payment_intent : r.payment_intent?.id, currency: r.currency };
 }
 
 function mapPm(p: any): PaymentMethodInfo {
@@ -109,6 +130,7 @@ function mapPi(p: any): PaymentIntent {
     review_open: review ? review.open === true : typeof p.review === "string",
     payment_method: typeof p.payment_method === "string" ? p.payment_method : p.payment_method?.id ?? null,
     customer: typeof p.customer === "string" ? p.customer : p.customer?.id ?? null, capture_method: p.capture_method, cancellation_reason: p.cancellation_reason ?? null, created: p.created,
+    card_brand: charge?.payment_method_details?.card?.brand ?? null,
   };
 }
 

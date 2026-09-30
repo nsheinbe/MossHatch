@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { withUser, type PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
@@ -20,9 +21,27 @@ export interface VersionRow {
 
 export const parseEnv = (raw: string | undefined): SecretEnv | null => (SECRET_ENVS as readonly string[]).includes(raw ?? "") ? raw as SecretEnv : null;
 
-/** KMS HMAC (the `pointer` key) over the secret's identity and its current version: a database writer cannot re-point it. */
-export async function pointerMac(ctx: Pick<AppContext, "kms">, s: { id: string; domain_id: string; name: string; env: string; current_version: number; current_version_id: string }): Promise<Buffer> {
-  return ctx.kms.hmac("pointer", Buffer.from(canonicalJson({ v: 1, secret_id: s.id, domain_id: s.domain_id, name: s.name, env: s.env, current_version: s.current_version, current_version_id: s.current_version_id })));
+type PointerFields = { id: string; domain_id: string; name: string; env: string; current_version: number; current_version_id: string };
+const POINTER_NONCE_BYTES = 16;
+
+async function pointerTag(ctx: Pick<AppContext, "kms">, s: PointerFields, nonce: Buffer): Promise<Buffer> {
+  return ctx.kms.hmac("pointer", Buffer.from(canonicalJson({ v: 2, nonce: nonce.toString("hex"), secret_id: s.id, domain_id: s.domain_id, name: s.name, env: s.env, current_version: s.current_version, current_version_id: s.current_version_id })));
+}
+
+/**
+ * KMS HMAC (the `pointer` key) over the secret's identity, its current version and a fresh random nonce; stored as
+ * `nonce || tag`. A database writer cannot forge one, and cannot replay a saved one either: migration 0805 refuses any
+ * pointer MAC the database has held before, so only a fresh MAC (a write or a restore) moves the pointer.
+ */
+export async function pointerMac(ctx: Pick<AppContext, "kms">, s: PointerFields): Promise<Buffer> {
+  const nonce = crypto.randomBytes(POINTER_NONCE_BYTES);
+  return Buffer.concat([nonce, await pointerTag(ctx, s, nonce)]);
+}
+
+async function pointerMacValid(ctx: Pick<AppContext, "kms">, s: PointerFields, stored: Buffer): Promise<boolean> {
+  if (stored.length <= POINTER_NONCE_BYTES) return false;
+  const tag = await pointerTag(ctx, s, stored.subarray(0, POINTER_NONCE_BYTES));
+  return safeEqual(tag, stored.subarray(POINTER_NONCE_BYTES));
 }
 
 export const secretAad = (s: Pick<SecretRow, "user_id" | "domain_id" | "id" | "name" | "env">, version: number): SecretAad =>
@@ -42,8 +61,8 @@ export async function loadCurrent(ctx: Pick<AppContext, "kms">, c: PoolClient, w
       [where.domainId, where.env, userId, where.names ?? null])).rows;
   for (const r of rows) {
     if (!r.version_id || !r.pointer_mac || Number(r.version) !== Number(r.current_version) || r.kek_class !== kekClassFor(r.env) || r.destroyed_at) throw new VaultIntegrityError();
-    const mac = await pointerMac(ctx, { id: r.id, domain_id: r.domain_id, name: r.name, env: r.env, current_version: Number(r.current_version), current_version_id: r.current_version_id });
-    if (!safeEqual(mac, Buffer.from(r.pointer_mac))) throw new VaultIntegrityError();
+    const fields = { id: r.id, domain_id: r.domain_id, name: r.name, env: r.env, current_version: Number(r.current_version), current_version_id: r.current_version_id };
+    if (!await pointerMacValid(ctx, fields, Buffer.from(r.pointer_mac))) throw new VaultIntegrityError();
     r.version = Number(r.version); r.current_version = Number(r.current_version);
   }
   return rows as (SecretRow & VersionRow)[];

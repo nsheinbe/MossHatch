@@ -7,7 +7,6 @@ import { ACTION_TYPES, type ActionType } from "../http/types.ts";
 
 /** Ids whose gated route does not exist yet, with the phase that adds it. A deferred id that gains a route without the gate fails below. */
 export const DEFERRED_UNTIL_PHASE: Partial<Record<ActionType, number>> = {
-  "agent.purchase.approve": 5,
 };
 
 /** Route path shapes that will carry each deferred id (from PLAN 4.5). A route matching one must declare the gate. */

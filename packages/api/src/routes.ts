@@ -12,6 +12,7 @@ import { registerVaultRoutes } from "./vault/routes.ts";
 import { registerPublish } from "./publish/routes.ts";
 import { registerBindings } from "./bindings/routes.ts";
 import { registerRecipes } from "./recipes/routes.ts";
+import { registerAgentRoutes } from "./agents/routes.ts";
 
 /** The route table. Each module adds one registration line. */
 export function buildRouter(): Router {
@@ -29,5 +30,6 @@ export function buildRouter(): Router {
   registerPublish(router);
   registerBindings(router);
   registerRecipes(router);
+  registerAgentRoutes(router);
   return router;
 }

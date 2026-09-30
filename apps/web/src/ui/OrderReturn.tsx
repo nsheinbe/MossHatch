@@ -3,6 +3,7 @@ import { useUi } from "../store";
 import { handle } from "../world/handle";
 import { getOrder, orderStory, reconcileOrder, TERMINAL, type OrderView } from "../lib/orders";
 import { runHatch } from "./hatchFlow";
+import { takeHandoff } from "../lib/handoff";
 
 /**
  * Where Stripe sends the person back to (`?order=<id>`). It asks the server to reconcile (the same idempotent call the webhook uses),
@@ -23,6 +24,8 @@ export function OrderReturn() {
         const o = first && orderSession ? await reconcileOrder(orderId, orderSession) : await getOrder(orderId);
         if (!alive) return;
         setOrder(o);
+        // A transfer in is followed in the Rescue panel, which says Traveling until the server reports the transfer completed.
+        if (o.kind === "transfer_in") { set({ orderId: null, orderSession: null, rescue: { fqdn: o.fqdn, transferId: takeHandoff(o.id), orderId: o.id } }); history.replaceState(null, "", "/"); return; }
         // A renewal paid on Checkout has no egg to hatch: the creature already lives in the grove.
         const renewal = o.kind === "renew";
         const done = !renewal && ["registered", "capturing", "captured"].includes(o.state);

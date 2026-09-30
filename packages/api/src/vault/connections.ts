@@ -1,4 +1,4 @@
-import { tx, withUser } from "@mosshatch/db";
+import { withUser } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import { appendAudit } from "../audit.ts";
@@ -34,17 +34,28 @@ export async function storeConnectionCredential(ctx: AppContext, userId: string,
   let sealed;
   try { sealed = await seal(v.kms, kekClassFor(CONNECTION_ENV), kmsContext(CONNECTION_ENV, userId, ids.credentialId), aadFor(userId, domainId, ids.connectionId, ids.credentialId, service), input.credential, vaultTimeout(v)); }
   catch (e) { throw await vaultFailure(ctx, e, ids.connectionId); }
-  await withUser(v.pool, userId, async (c) => {
-    const now = ctx.clock.now();
-    await c.query("update connection_credentials set revoked_at = $2 where connection_id = $1 and revoked_at is null", [ids.connectionId, now]);
-    await c.query(
-      `insert into connection_credentials (id, connection_id, user_id, kind, scope_summary, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [ids.credentialId, ids.connectionId, userId, input.kind, input.scopeSummary ?? null, sealed.ciphertext, sealed.nonce, sealed.tag, sealed.wrappedDek, sealed.kekRef, sealed.kekClass]);
-    await c.query("update connections set status = 'active' where id = $1", [ids.connectionId]);
-    await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "connection.credential.stored", resourceKind: "connection", resourceId: ids.connectionId, detail: { service, credential_id: ids.credentialId } });
-  });
-  sealed.ciphertext.fill(0);
+  try {
+    await withUser(v.pool, userId, async (c) => {
+      // The connection must still be live: a disconnect that landed while KMS ran makes this write the loser (409), so no
+      // credential is ever stored under an ended connection, where nothing could destroy it. The lock also serialises
+      // concurrent writes to one connection (the later one replaces the earlier credential).
+      const live = (await c.query("select id from connections where id = $1 and user_id = $2 and ended_at is null for update", [ids.connectionId, userId])).rows[0];
+      if (!live) throw new HttpError(409, "write_conflict");
+      const now = ctx.clock.now();
+      await c.query("update connection_credentials set revoked_at = $2 where connection_id = $1 and revoked_at is null", [ids.connectionId, now]);
+      await c.query(
+        `insert into connection_credentials (id, connection_id, user_id, kind, scope_summary, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [ids.credentialId, ids.connectionId, userId, input.kind, input.scopeSummary ?? null, sealed.ciphertext, sealed.nonce, sealed.tag, sealed.wrappedDek, sealed.kekRef, sealed.kekClass]);
+      await c.query("update connections set status = 'active' where id = $1 and ended_at is null", [ids.connectionId]);
+      await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "connection.credential.stored", resourceKind: "connection", resourceId: ids.connectionId, detail: { service, credential_id: ids.credentialId } });
+    });
+  } catch (e) {
+    if (!(e instanceof HttpError) && (e as { code?: unknown }).code === "23505" && (e as { constraint?: unknown }).constraint === "connection_credentials_live") throw new HttpError(409, "write_conflict");
+    throw e;
+  } finally {
+    sealed.ciphertext.fill(0);
+  }
   return ids;
 }
 
@@ -61,15 +72,20 @@ export async function disconnect(ctx: AppContext, userId: string, domainId: stri
 }
 
 /**
- * The only decrypt path for a stored credential: system jobs (`recipe.apply`, `connection.check`) under the cron role.
- * The audit row commits before the decrypt; the value exists only for the callback and its buffer is zeroed after.
+ * The only decrypt path for a stored credential: system jobs (`recipe.apply`, `connection.check`). The owner is looked up
+ * under the cron role; the row is read and the audit row written by the vault role under the owner's tenant context
+ * (PLAN 4.4: `connection.credential.used` is a vault-only audit row, 0805). The audit row commits before the decrypt; the
+ * value exists only for the callback and its buffer is zeroed after.
  */
 export async function withConnectionCredential<T>(ctx: AppContext, credentialId: string, purpose: CredentialPurpose, fn: (value: string) => Promise<T>): Promise<T> {
   const v = vaultOf(ctx);
-  const row = await tx(ctx.cron, async (c) => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(credentialId)) throw new HttpError(404, "not_found");
+  const owner = (await ctx.cron.query("select user_id from connection_credentials where id = $1", [credentialId])).rows[0]?.user_id as string | undefined;
+  if (!owner) throw new HttpError(404, "not_found");
+  const row = await withUser(v.pool, owner, async (c) => {
     const r = (await c.query(
       `select k.*, n.domain_id, n.service from connection_credentials k join connections n on n.id = k.connection_id
-        where k.id = $1 and k.revoked_at is null and n.ended_at is null`, [credentialId])).rows[0];
+        where k.id = $1 and k.user_id = $2 and k.revoked_at is null and n.ended_at is null`, [credentialId, owner])).rows[0];
     if (!r) throw new HttpError(404, "not_found");
     await appendAudit(ctx, c, { chainId: r.user_id, actorKind: "system", action: "connection.credential.used", resourceKind: "connection", resourceId: r.connection_id, detail: { purpose, credential_id: r.id, decrypt_nonce: r.id } });
     await c.query("update connection_credentials set last_used_at = $2 where id = $1", [r.id, ctx.clock.now()]);

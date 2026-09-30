@@ -1,13 +1,40 @@
 /**
- * Encoders for `pull` and the parser for `push` (PLAN 4.5 CLI). The dotenv writer double-quotes every value and escapes
- * backslash, double quote, newline, carriage return and `$` (and NUL as `\0`), so no value can end its line, open a
- * substitution or be read as a comment. `--format shell` single-quotes instead, for `. file` in a POSIX shell. The parser
- * reads what the writer writes (and plain `NAME=value` lines), so hostile values round-trip unchanged (ST-89).
+ * Encoders for `pull` and the parser for `push` (PLAN 4.5 CLI). Every value is quoted, so none can end its line, open a
+ * substitution or be read as a comment, and each gets the first form that the common readers (Node's --env-file, the
+ * dotenv package, docker compose) and this parser all read back unchanged:
+ *   1. `"value"` when it holds no backslash, double quote, `$`, newline, carriage return or NUL;
+ *   2. `"a\nb"` when its only such character is a newline (every reader turns `\n` into a newline);
+ *   3. `'value'`, literal, when it holds no single quote, carriage return or NUL (newlines stay raw inside);
+ *   4. a backtick-quoted literal when it holds a single quote but no backtick, carriage return or NUL;
+ *   5. otherwise the escaped double-quoted form below, which only this parser reads back (`unportableNames` lists them).
+ * Review deviation from PLAN 4.5: the plan's single escaped double-quoted form is read wrongly by Node and dotenv (they do
+ * not unescape `\\`, `\"` or `\$`), so it is now the last resort. `--format shell` single-quotes, for `. file` in a
+ * POSIX shell. Hostile values round-trip unchanged (ST-89).
  */
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** Which of the forms above a value takes (5 is readable by this parser only). */
+export function dotenvForm(v: string): 1 | 2 | 3 | 4 | 5 {
+  const special = /[\\"$\n\r\0]/.test(v);
+  if (!special) return 1;
+  if (!/[\\"$\r\0]/.test(v)) return 2;
+  if (!/['\r\0]/.test(v)) return 3;
+  if (!/[`\r\0]/.test(v)) return 4;
+  return 5;
+}
+
+/** Names whose values only `mosshatch push` reads back from a dotenv file (a carriage return, a NUL, or every quote kind). */
+export function unportableNames(entries: readonly { name: string; value: string }[]): string[] {
+  return entries.filter((e) => dotenvForm(e.value) === 5).map((e) => e.name);
+}
+
 export function encodeDotenvValue(v: string): string {
+  const form = dotenvForm(v);
+  if (form === 1) return `"${v}"`;
+  if (form === 2) return `"${v.replace(/\n/g, "\\n")}"`;
+  if (form === 3) return `'${v}'`;
+  if (form === 4) return `\`${v}\``;
   let out = '"';
   for (const ch of v) {
     if (ch === "\\") out += "\\\\";
@@ -37,7 +64,7 @@ export class ShellNulError extends Error { constructor() { super("A value contai
 
 export class DotenvError extends Error { constructor(public line: number) { super(`line ${line} is not NAME=value`); } }
 
-/** Parse dotenv text: `NAME="escaped"`, `NAME='literal'`, `NAME=plain` (trailing ` #comment` dropped), `export ` allowed. */
+/** Parse dotenv text: `NAME="escaped"`, `NAME='literal'`, NAME=`literal`, `NAME=plain` (trailing ` #comment` dropped), `export ` allowed. */
 export function parseDotenv(text: string): { name: string; value: string }[] {
   const out: { name: string; value: string }[] = [];
   const src = text.replace(/^\uFEFF/, "");
@@ -72,8 +99,8 @@ export function parseDotenv(text: string): { name: string; value: string }[] {
         value += ch; k++;
       }
       if (!closed) throw new DotenvError(line);
-    } else if (src[k] === "'") {
-      const end = src.indexOf("'", k + 1);
+    } else if (src[k] === "'" || src[k] === "`") {
+      const end = src.indexOf(src[k]!, k + 1);
       if (end < 0) throw new DotenvError(line);
       value = src.slice(k + 1, end);
       line += (value.match(/\n/g) ?? []).length;

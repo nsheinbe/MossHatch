@@ -226,6 +226,29 @@ describe("ST-55: another account's passkey cannot complete the action", () => {
     expect(alerts.length).toBe(1); expect(alerts[0].severity).toBe("page");
     expect(JSON.stringify(alerts[0].detail)).not.toContain(k.credentialId);
   });
+  it("ST-53: hardened mode keeps backup-eligible passkeys out of step-up: not offered at prepare, refused at commit", async () => {
+    const u = await makeUser(app, "hardened-stepup@example.com");
+    const device = await addPasskey(app, u);
+    const synced = await addPasskey(app, u, { backupEligible: true, backupState: true });
+    // Prepared before hardened mode is on: the synced key is in allowCredentials, but commit still refuses it.
+    const early = await prep(u);
+    await app.db.owner.query("update users set hardened_mode = true where id = $1", [u.userId]);
+    const r = await commit(app, u, early.id, synced.auth.get(early.options));
+    expect(r.status, JSON.stringify(r.json)).toBe(403);
+    expect(r.json.error.code).toBe("assertion_invalid");
+    expect((await actionRow(early.id)).state).not.toBe("committed");
+    expect((await auditActions(u.userId)).at(-1)!.detail.reason).toBe("hardened_mode");
+    // Prepared with hardened mode on: only the device-bound key is offered, and it commits.
+    const later = await prep(u);
+    expect(later.options.allowCredentials.map((c) => c.id)).toEqual([device.credentialId]);
+    expect((await commit(app, u, later.id, synced.auth.get(later.options))).status).toBe(403);
+    const next = await prep(u);
+    expect((await commit(app, u, next.id, device.auth.get(next.options))).status).toBe(200);
+    // An account whose only keys are synced has nothing to offer.
+    await app.db.owner.query("update passkeys set revoked_at = now() where credential_id = $1", [device.credentialId]);
+    const none = await prepare(app, u, { type: "card.publish", target_id: "t", user_input: {} });
+    expect(none.status).toBe(409); expect(none.json.error.code).toBe("no_passkey");
+  });
   it("a credential outside allowCredentials fails (a passkey added after prepare)", async () => {
     const { id, options } = await prep(alice);
     const late = await addPasskey(app, alice);

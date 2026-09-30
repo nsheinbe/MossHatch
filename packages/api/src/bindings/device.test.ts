@@ -220,6 +220,22 @@ describe("device flow: polling, expiry, one-time use and replay", () => {
     expect((await k.app.db.owner.query("select count(*)::int n from bindings where device_request_id is not null and user_id = $1", [p.user.userId])).rows[0].n).toBe(1);
   });
 
+  it("review: an approved device code cannot be redeemed after its 600 s lifetime", async () => {
+    const p = await makePerson(k, "lateredeem");
+    const dc = await deviceCode(k.app);
+    await approveDevice(k, p, dc.user_code);
+    k.app.email.clear();
+    k.app.clock.advance(7 * 86_400_000);
+    const late = await poll(k.app, dc.device_code);
+    expect(late.status).toBe(400); expect(late.json.error.code).toBe("expired_token");
+    expect(late.text).not.toContain("mh_cli_");
+    expect((await k.app.db.owner.query("select count(*)::int n from bindings where user_id = $1", [p.user.userId])).rows[0].n).toBe(0);
+    expect((await k.app.db.owner.query("select state from device_requests where device_code_hash = $1", [sha256(dc.device_code)])).rows[0].state).toBe("expired");
+    expect(k.app.email.sent.filter((m) => m.userId === p.user.userId)).toEqual([]);
+    k.app.clock.advance(10_000);
+    expect((await poll(k.app, dc.device_code)).json.error.code).toBe("expired_token");
+  });
+
   it("a denied request answers access_denied and never yields a token", async () => {
     const p = await makePerson(k, "deny");
     const dc = await deviceCode(k.app);

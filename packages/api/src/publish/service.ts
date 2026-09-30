@@ -13,6 +13,11 @@ export interface PublishServices {
   site: CardsSitePort;
   /** The share host is configuration, so a rename is a redirect, not a rewrite (PLAN 4.8). */
   cardsOrigin: string;
+  /**
+   * The key the `cards` build presents to read the export (`CARDS_EXPORT_KEY`, held only in the web and cards projects). Unset
+   * closes the export: it lists unlisted cards too, so it is never anonymous (threat row 42).
+   */
+  exportKey?: string;
 }
 
 export function installPublish(ctx: AppContext, s: PublishServices): PublishServices {
@@ -48,6 +53,11 @@ export async function ownedLiveDomain(c: PoolClient, userId: string, domainId: s
 
 export async function publishBlocked(c: PoolClient, userId: string): Promise<boolean> {
   return ((await c.query("select 1 from card_publish_blocks where user_id = $1", [userId])).rowCount ?? 0) > 0;
+}
+
+/** A take-down on this domain that support has not reinstated holds its card down (C-66). A domain never changes owner, so RLS shows every row. */
+export async function takedownHeld(c: PoolClient, domainId: string): Promise<boolean> {
+  return ((await c.query("select 1 from cards where domain_id = $1 and takedown_state = 'taken_down' limit 1", [domainId])).rowCount ?? 0) > 0;
 }
 
 /** Public shape of one card, identical in the owner's view and the export. */

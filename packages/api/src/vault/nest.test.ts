@@ -274,6 +274,54 @@ describe("integrity of stored rows", () => {
     expect((await reveal(k, p, id, await activateReveal(k, p, id).catch(() => "00000000-0000-0000-0000-000000000000"))).status).toBeGreaterThanOrEqual(400);
   });
 
+  it("ST-04: replaying a saved (current_version, current_version_id, pointer_mac) triple after a rotation is refused; a fresh restore still works", async () => {
+    await resetLimits();
+    const p = await makePerson(k, "st04r");
+    const leaked = canary(), rotated = canary();
+    await putSecret(k, p, "dev", "DB_URL", leaked);
+    const id = await secretId(p, "dev", "DB_URL");
+    const triple = async () => (await k.app.db.owner.query("select current_version, current_version_id, pointer_mac from secrets where id = $1", [id])).rows[0];
+    const setTriple = (pool: typeof k.vaultPool, t: { current_version: number; current_version_id: string; pointer_mac: Buffer }) =>
+      withUser(pool, p.user.userId, (c) => c.query("update secrets set current_version = $2, current_version_id = $3, pointer_mac = $4 where id = $1", [id, t.current_version, t.current_version_id, t.pointer_mac]));
+    const saved1 = await triple();
+    expect((await putSecret(k, p, "dev", "DB_URL", rotated)).status).toBe(200);
+    const saved2 = await triple();
+    const revealed = async () => { const r = await reveal(k, p, id, await activateReveal(k, p, id)); await resetLimits(); return r; };
+
+    // A database writer with the vault role (or the owner) writes the saved v1 triple back: refused, and v2 is still served.
+    await expect(setTriple(k.vaultPool, saved1)).rejects.toThrow(/pointer/);
+    await expect(k.app.db.owner.query("update secrets set current_version = $2, current_version_id = $3, pointer_mac = $4 where id = $1", [id, saved1.current_version, saved1.current_version_id, saved1.pointer_mac])).rejects.toThrow(/pointer/);
+    // Clearing the pointer first does not launder the replay.
+    await expect(withUser(k.vaultPool, p.user.userId, async (c) => {
+      await c.query("update secrets set current_version = null, current_version_id = null, pointer_mac = null where id = $1", [id]);
+      await c.query("update secrets set current_version = $2, current_version_id = $3, pointer_mac = $4 where id = $1", [id, saved1.current_version, saved1.current_version_id, saved1.pointer_mac]);
+    })).rejects.toThrow(/pointer/);
+    const now = await revealed();
+    expect(now.status, now.text).toBe(200);
+    expect(now.json).toMatchObject({ version: 2, value: rotated });
+
+    // A legitimate restore (ST-35: a fresh MAC over the older version) works ...
+    const fresh = await pointerMac(k.app.ctx, { id, domain_id: p.domain.id, name: "DB_URL", env: "dev", current_version: 1, current_version_id: saved1.current_version_id });
+    expect(fresh.equals(Buffer.from(saved1.pointer_mac))).toBe(false);
+    await setTriple(k.vaultPool, { ...saved1, pointer_mac: fresh });
+    const restored = await revealed();
+    expect(restored.status, restored.text).toBe(200);
+    expect(restored.json).toMatchObject({ version: 1, value: leaked });
+    // ... and the pre-restore v2 triple cannot be replayed over it either.
+    await expect(setTriple(k.vaultPool, saved2)).rejects.toThrow(/pointer/);
+    expect((await revealed()).json).toMatchObject({ version: 1, value: leaked });
+  });
+
+  it("ST-12: connection.credential.used rows (matched by the reconcile and the drill) also need the vault role", async () => {
+    const p = await makePerson(k, "st12c");
+    const entry = { chainId: p.user.userId, actorKind: "system" as const, action: "connection.credential.used", resourceKind: "connection", resourceId: p.domain.id, detail: { purpose: "connection.check", credential_id: p.domain.id, decrypt_nonce: p.domain.id } };
+    await expect(withUser(k.app.ctx.runtime, p.user.userId, (c) => appendAudit(k.app.ctx, c, entry))).rejects.toThrow(/vault role/);
+    await expect(withUser(k.app.ctx.cron, p.user.userId, (c) => appendAudit(k.app.ctx, c, entry))).rejects.toThrow(/vault role/);
+    await withUser(k.vaultPool, p.user.userId, (c) => appendAudit(k.app.ctx, c, entry));
+    // A look-alike action is not caught by the pattern.
+    await withUser(k.app.ctx.runtime, p.user.userId, (c) => appendAudit(k.app.ctx, c, { ...entry, action: "connection.credential.stored", detail: {} }));
+  });
+
   it("ST-12: the runtime database role cannot insert reveal or read audit rows; the vault role can", async () => {
     const p = await makePerson(k, "st12");
     for (const action of ["secret.reveal.authorized", "secret.reveal.released", "secret.read", "secret.reveal"]) {

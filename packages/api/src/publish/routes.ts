@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { z } from "zod";
 import { withUser } from "@mosshatch/db";
 import type { Router } from "../http/router.ts";
@@ -6,13 +7,13 @@ import type { HandlerReq, HandlerResult, Route } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
 import { enqueue } from "../jobs/registry.ts";
 import { markExecuted, requireAction } from "../stepup/gate.ts";
-import { sha256 } from "../util/bytes.ts";
+import { safeEqual, sha256 } from "../util/bytes.ts";
 import { MAX_UPLOAD_BYTES, PngError, sanitizePng } from "./png.ts";
 import { portraitKey } from "./storage.ts";
-import { cardFacts, cardView, cardsOriginOf, countLookup, ownedLiveDomain, publishBlocked, publishSvc } from "./service.ts";
+import { cardFacts, cardView, cardsOriginOf, countLookup, ownedLiveDomain, publishBlocked, publishSvc, takedownHeld } from "./service.ts";
 import { installCardSpec } from "./spec.ts";
 import { registerPublishJobs, installCardReleaseHook, purgeUnpublished } from "./jobs.ts";
-import { exportPublicCards } from "./export.ts";
+import { CARDS_KEY_HEADER, CURSOR_RE, exportPublicCards } from "./export.ts";
 
 const P = "/api/v1/domains/:id/card";
 
@@ -30,7 +31,7 @@ async function getCard(r: HandlerReq): Promise<HandlerResult> {
   return withUser(r.ctx.runtime, userId, async (c) => {
     const d = await ownedLiveDomain(c, userId, r.params.id!);
     const row = (await c.query("select slug, species, family, rarity, traits, hatched_on::text as hatched_on, indexable, published_at, takedown_state from cards where domain_id = $1 and unpublished_at is null", [d.id])).rows[0];
-    const blocked = await publishBlocked(c, userId);
+    const blocked = await publishBlocked(c, userId) || await takedownHeld(c, d.id);
     return json({ card: row ? cardView(row, origin) : null, eligible: !!d.registeredAt && !blocked, address: `${origin}/${d.fqdn}/` });
   });
 }
@@ -61,12 +62,17 @@ async function publish(r: HandlerReq): Promise<HandlerResult> {
   if (flagged) throw new HttpError(422, "card_screen_refused", undefined, undefined, { reason: "web_risk_flagged" });
 
   const storedSha = sha256(clean.png).toString("hex");
-  const stored = await svc.storage.put(portraitKey(action.id, storedSha), clean.png);
+  // A fresh key per upload: two requests replaying one action never share a file, so the loser's clean-up cannot touch the winner's.
+  const stored = await svc.storage.put(portraitKey(crypto.randomUUID(), storedSha), clean.png);
   try {
     const card = await withUser(r.ctx.runtime, userId, async (c) => {
       const d = await ownedLiveDomain(c, userId, params.domain_id);
       if (!d.registeredAt) throw new HttpError(409, "card_not_eligible");
+      // One publish or take-down of this domain's card at a time (jobs.ts takeDownCard takes the same lock).
+      await c.query("select pg_advisory_xact_lock(hashtextextended('card:' || $1::text, 0))", [d.id]);
       if (await publishBlocked(c, userId)) throw new HttpError(403, "card_publish_blocked");
+      // A take-down that landed after the step-up still holds (C-66).
+      if (await takedownHeld(c, d.id)) throw new HttpError(409, "card_taken_down");
       await markExecuted(c, action);
       const prev = await c.query("update cards set unpublished_at = $2, unpublish_reason = 'republished' where domain_id = $1 and unpublished_at is null returning id", [d.id, now]);
       const row = (await c.query(
@@ -83,7 +89,9 @@ async function publish(r: HandlerReq): Promise<HandlerResult> {
     return json({ card: cardView(card, cardsOriginOf(r.ctx)) }, 201);
   } catch (e) {
     // The file went up but the card did not: take it down again (best effort; an orphan holds no owner data and is unlinked).
-    await svc.storage.delete(stored.ref).catch(() => undefined);
+    // Never while a card row names it (defence in depth: the key is already unique to this request).
+    const referenced = await withUser(r.ctx.runtime, userId, async (c) => ((await c.query("select 1 from cards where snapshot_ref = $1 limit 1", [stored.ref])).rowCount ?? 0) > 0).catch(() => true);
+    if (!referenced) await svc.storage.delete(stored.ref).catch(() => undefined);
     throw e;
   }
 }
@@ -106,10 +114,19 @@ async function unpublish(r: HandlerReq): Promise<HandlerResult> {
   return json({ unpublished: true });
 }
 
-/** The JSON the `cards` build reads: the public view and nothing else (threat row 42). */
+/**
+ * The JSON the `cards` build reads: the public view and nothing else (threat row 42), one page at a time. It lists unlisted cards
+ * too, so only the build may read it: the key in `X-MH-Cards-Key`, compared in constant time; no key configured means closed.
+ * Anonymous by router principal only because the key is not a binding token; every caller without the key gets one 401.
+ */
 async function exportCards(r: HandlerReq): Promise<HandlerResult> {
-  const data = await exportPublicCards(r.ctx.runtime, cardsOriginOf(r.ctx), r.ctx.clock.now());
-  return json(data, 200, { headers: { "Cache-Control": "public, max-age=60", "X-Robots-Tag": "noindex" } });
+  const want = (r.ctx.services as { publish?: { exportKey?: string } }).publish?.exportKey;
+  const got = r.request.headers.get(CARDS_KEY_HEADER) ?? "";
+  if (!want || !safeEqual(sha256(want), sha256(got))) throw new HttpError(401, "unauthorized");
+  const after = r.url.searchParams.get("after");
+  if (after !== null && !CURSOR_RE.test(after)) throw new HttpError(422, "invalid_cursor");
+  const data = await exportPublicCards(r.ctx.runtime, cardsOriginOf(r.ctx), r.ctx.clock.now(), { after });
+  return json(data, 200, { headers: { "Cache-Control": "no-store", "X-Robots-Tag": "noindex" } });
 }
 
 const base = { tag: "publish" };
@@ -129,5 +146,5 @@ export function registerPublish(router: Router): Router {
   return router;
 }
 
-/** Support's take-down, for the abuse runbook (C-66). Exported from the module index. */
-export { takeDownCard } from "./jobs.ts";
+/** Support's take-down and reinstatement, for the abuse runbook (C-66). Exported from the module index. */
+export { takeDownCard, reinstateCard } from "./jobs.ts";

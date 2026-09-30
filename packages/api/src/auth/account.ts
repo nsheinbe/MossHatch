@@ -7,7 +7,9 @@ import { HttpError, json } from "../http/router.ts";
 import { clearCookie, createSession, PRE_AUTH_COOKIE, revokeAllSessions, revokeSession, SESSION_COOKIE } from "../http/session.ts";
 import { verifyRegistration } from "../webauthn.ts";
 import { SECRET_REVEAL_HOLD_MS, SUSPENSION_MS, UUID_RE, auditUser, parseBody } from "./common.ts";
-import { asRegistration, challengeFrom, consumeChallenge } from "./ceremony.ts";
+import { asRegistration, challengeFrom, challengeOptionsHash, consumeChallenge } from "./ceremony.ts";
+import { markExecuted, requireAction } from "../stepup/gate.ts";
+import { safeEqual } from "../util/bytes.ts";
 import { assertCredentialAllowed, insertPasskey, passkeyView, requireIndependentChannel } from "./credentials.ts";
 import { issueRecoveryCodes, unusedRecoveryCodes } from "./codes.ts";
 import { assertNoRecoveryActivity, assertNotHeld } from "./holds.ts";
@@ -123,15 +125,17 @@ async function deletePasskey(req: HandlerReq): Promise<HandlerResult> {
 }
 
 /**
- * Runs after the step-up gate for `passkey.add`. The gate hands over the registration response and label in
- * `req.action.params`; this verifies the ceremony, stores the credential and starts the 24-hour `secret.reveal` hold.
+ * Runs after the step-up gate for `passkey.add`. The gate hands over the signed, server-derived params (the label and
+ * the hash of the registration options the person approved); the registration response comes from the request body.
+ * The ceremony must have been issued with exactly the approved options, and the action is spent in the same
+ * transaction that stores the credential and starts the 24-hour `secret.reveal` hold.
  */
 async function addPasskey(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
   const { userId, sessionIdHash } = sessionOf(req);
-  if (!req.action) throw new HttpError(403, "step_up_required");
-  const p = (req.action.params ?? {}) as { registration?: unknown; response?: unknown; credential?: unknown; label?: unknown };
-  const response = asRegistration(p.registration ?? p.response ?? p.credential);
+  const action = requireAction(req, "passkey.add");
+  const params = (action.params ?? {}) as { label?: unknown; options_hash?: unknown };
+  const response = asRegistration((req.body as { registration?: unknown } | null)?.registration);
   const challenge = challengeFrom(response);
   const ch = await consumeChallenge(ctx, challenge, "register", { sessionHash: sessionIdHash });
   if (!ch || ch.user_id !== userId) throw new HttpError(400, "invalid_challenge");
@@ -139,11 +143,16 @@ async function addPasskey(req: HandlerReq): Promise<HandlerResult> {
   try { reg = await verifyRegistration(ctx, response, challenge); } catch { throw new HttpError(400, "registration_failed"); }
   const row = await withUser(ctx.runtime, userId, async (c) => {
     await assertNotHeld(ctx, c, userId, "passkey.add");
+    const issued = await challengeOptionsHash(c, ch.id, userId);
+    const signed = typeof params.options_hash === "string" && /^[0-9a-f]{64}$/.test(params.options_hash) ? Buffer.from(params.options_hash, "hex") : null;
+    if (!issued || !signed || !safeEqual(issued, signed)) throw new HttpError(409, "params_changed");
     await assertCredentialAllowed(c, userId, reg);
-    const { id, row } = await insertPasskey(ctx, c, userId, reg, { label: typeof p.label === "string" ? p.label : undefined });
+    // Single use: a second add with this action (a race, or a retry after success) gets 409 and its insert rolls back.
+    await markExecuted(c, action);
+    const { id, row } = await insertPasskey(ctx, c, userId, reg, { label: typeof params.label === "string" ? params.label : undefined });
     const now = ctx.clock.now();
     await c.query("insert into action_holds (user_id, scope, until, created_at) values ($1,'secret.reveal',$2,$3)", [userId, new Date(now.getTime() + SECRET_REVEAL_HOLD_MS), now]);
-    await auditUser(ctx, c, userId, "auth.passkey.added", { resourceKind: "passkey", resourceId: id, detail: { via: "step_up", action: req.action!.id, be: reg.backupEligible, bs: reg.backupState, alg: reg.alg } });
+    await auditUser(ctx, c, userId, "auth.passkey.added", { resourceKind: "passkey", resourceId: id, detail: { via: "step_up", action: action.id, be: reg.backupEligible, bs: reg.backupState, alg: reg.alg } });
     await notifyUser(ctx, c, userId, { kind: "passkey.added", dedupeKey: `passkey-added:${id}`, subject: "A passkey was added to your Mosshatch account", text: "A passkey was added. Secret reveals are on hold for 24 hours. If this was not you, sign out everywhere and review your passkeys." });
     return row;
   });

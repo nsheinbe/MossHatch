@@ -270,8 +270,13 @@ export async function tokenHandler(req: HandlerReq): Promise<HandlerResult> {
   const deviceHash = sha256(b.data.device_code);
   const row = (await withNoUser(ctx.runtime, (c) => c.query("select * from device_request_poll($1,$2)", [deviceHash, now]))).rows[0];
   if (!row) throw new HttpError(400, "invalid_grant");
-  if (row.state === "expired" || (row.state === "pending" && new Date(row.expires_at) <= now)) {
-    await withNoUser(ctx.runtime, (c) => c.query("select device_request_expire($1)", [row.id]));
+  // The device code lives 600 s whatever its state: an approval not redeemed in that time is void too (RFC 8628).
+  if (row.state === "expired" || ((row.state === "pending" || row.state === "approved") && new Date(row.expires_at) <= now)) {
+    if (row.state === "approved" && row.user_id) {
+      await withUser(ctx.runtime, row.user_id, (c) => c.query("update device_requests set state = 'expired' where id = $1 and user_id = $2 and state = 'approved' and expires_at <= $3", [row.id, row.user_id, now]));
+    } else {
+      await withNoUser(ctx.runtime, (c) => c.query("select device_request_expire($1)", [row.id]));
+    }
     throw new HttpError(400, "expired_token");
   }
   if (row.prev_polled_at && now.getTime() - new Date(row.prev_polled_at).getTime() < row.interval_seconds * 1000) {
@@ -285,7 +290,7 @@ export async function tokenHandler(req: HandlerReq): Promise<HandlerResult> {
   const scopes = row.approved_scopes as Scope[];
   const issued = await withUser(ctx.runtime, userId, async (c) => {
     // The one-time use: a compare-and-set from approved. A second poll, or a racing one, gets invalid_grant.
-    const won = await c.query("update device_requests set state = 'consumed' where id = $1 and state = 'approved' and user_id = $2", [row.id, userId]);
+    const won = await c.query("update device_requests set state = 'consumed' where id = $1 and state = 'approved' and user_id = $2 and expires_at > $3", [row.id, userId, now]);
     if (won.rowCount !== 1) return null;
     if (!(await deviceLoginEnabled(c, userId))) return null;
     const t = await issueCliGrant(ctx, c, { userId, deviceRequestId: row.id, actionId: row.approved_by_action_id, scopes });

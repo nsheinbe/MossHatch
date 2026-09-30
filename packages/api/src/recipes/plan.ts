@@ -26,7 +26,8 @@ export interface Plan extends PlanParts {
   fqdn: string;
   input: unknown;
   zone_before: string | null;
-  connections: { service: Service; id: string }[];
+  /** Each connection the plan uses and the provider object it points at (a Neon or Vercel project id): part of the hash. */
+  connections: { service: Service; id: string; external_ref: string | null }[];
   sensitive: Sensitive[];
   touched: { dns: boolean; envs: Env[] };
 }
@@ -74,7 +75,8 @@ export async function computePlan(ctx: AppContext, c: PoolClient, userId: string
     v: 1, recipe: recipe.id, version: recipe.version, domain_id: d.id, fqdn: d.fqdn_ascii, input: parsed.data,
     zone_before: recipe.touchesDns && live ? zoneHash(live) : null,
     dns: { add, remove }, pending_records: parts.pending_records, variables: parts.variables, steps: parts.steps, services,
-    connections: services.map((s) => ({ service: s, id: conns.get(s)!.id })),
+    // The provider object is bound too: a connection moved to another project (a Neon project.create) voids older plans.
+    connections: services.map((s) => ({ service: s, id: conns.get(s)!.id, external_ref: conns.get(s)!.externalRef ?? null })),
     sensitive,
     touched: { dns: add.length + remove.length > 0, envs: [...envs].sort() },
   };

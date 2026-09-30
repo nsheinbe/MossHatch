@@ -68,10 +68,22 @@ const unavailable = (type: ActionType): ActionSpec => ({
 
 export const SUPPORTED_ALG_LIST = [-7, -257];
 
+/**
+ * The credential ids a new registration excludes: every passkey of the user that is not revoked (suspended ones
+ * included). The one list both the issued registration options and the signed options hash are built from.
+ */
+export async function passkeyExcludeIds(client: PoolClient, userId: string): Promise<string[]> {
+  return (await client.query("select credential_id from passkeys where user_id = $1 and revoked_at is null", [userId])).rows.map((r) => r.credential_id as string).sort();
+}
+
+/** Hash of the parts of registration options that matter for what gets registered. */
+export function registrationOptionsHash(o: { rpId: string; algs: number[]; attestation: string; userVerification: string; exclude: string[] }): string {
+  return hashOf({ rp_id: o.rpId, algs: o.algs, attestation: o.attestation, user_verification: o.userVerification, exclude: [...o.exclude].sort() }).toString("hex");
+}
+
 /** The options a registration ceremony will use, hashed. Includes the live credential ids, so adding one in between invalidates the action. */
 export async function passkeyAddOptionsHash(ctx: AppContext, client: PoolClient, userId: string): Promise<string> {
-  const ids = (await client.query("select credential_id from passkeys where user_id = $1 and revoked_at is null order by credential_id", [userId])).rows.map((r) => r.credential_id as string);
-  return hashOf({ rp_id: ctx.config.rpId, algs: SUPPORTED_ALG_LIST, attestation: "none", user_verification: "required", exclude: ids }).toString("hex");
+  return registrationOptionsHash({ rpId: ctx.config.rpId, algs: SUPPORTED_ALG_LIST, attestation: "none", userVerification: "required", exclude: await passkeyExcludeIds(client, userId) });
 }
 
 const passkeyAddInput = z.object({ label: z.string().trim().min(1).max(64).regex(/^[^\u0000-\u001f\u007f]+$/) }).strict();

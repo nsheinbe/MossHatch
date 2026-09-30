@@ -306,6 +306,51 @@ describe("recovery", () => {
     void doneA;
   });
 
+  it("ST-48 review: undoing a recovery also revokes what later recoveries and the recovery's own sessions added, and cancels them", async () => {
+    const p = await signUp(app, "r-chain@example.com");
+    await start(p.email, "codes_email");
+    const r1 = await redeemAndRegister(p, { recoveryCode: p.recoveryCodes[0] });   // A1; the victim's passkey V is suspended by R1
+    expect(r1.reg!.status).toBe(201);
+    // R1's hold ends. The recovery's credential adds a passkey (A3) with a step-up, then a second recovery (R2) adds A2.
+    app.clock.advance(25 * 3600_000);
+    const atk = (await signIn(app, r1.newAuth!)).cookie!;
+    const opts = await app.call("POST", "/api/v1/auth/register/options", { body: {}, cookie: atk });
+    const a3 = authenticator();
+    const added = await app.call("POST", "/api/v1/passkeys", { body: { registration: a3.create(opts.json.options), label: "A3" }, cookie: atk });
+    expect(added.status, added.text).toBe(201);
+    await start(p.email, "codes_email");
+    const r2 = await redeemAndRegister(p, { recoveryCode: p.recoveryCodes[1] });   // suspends A1 and A3 (V is already suspended by R1)
+    expect(r2.reg!.status).toBe(201);
+    // The victim signs in with V: the undo covers R1 and everything that hangs off it.
+    const undo = await signIn(app, p.auth);
+    expect(undo.res.status).toBe(200);
+    expect(undo.res.json.restored).toBe(true);
+    const rows = (await app.db.owner.query("select credential_id, suspended_at, revoked_at from passkeys where user_id = $1", [p.userId])).rows;
+    const byId = (id: string) => rows.find((r) => r.credential_id === id)!;
+    expect(byId(p.auth.id)).toMatchObject({ suspended_at: null, revoked_at: null });
+    for (const a of [r1.newAuth!, r2.newAuth!, a3]) expect(byId(a.id).revoked_at, a.id).not.toBeNull();
+    for (const a of [r2.newAuth!, a3, r1.newAuth!]) expect((await signIn(app, a)).res.status).toBe(401);
+    expect((await app.db.owner.query("select status from recovery_requests where user_id = $1 order by created_at", [p.userId])).rows.map((r) => r.status)).toEqual(["cancelled", "cancelled"]);
+    expect(await heldIds(p.userId)).toHaveLength(12);
+  });
+
+  it("ST-46 review: a sign-in that undoes a recovery also cancels a later request that is still open", async () => {
+    const p = await signUp(app, "r-open@example.com");
+    await start(p.email, "codes_email");
+    const r1 = await redeemAndRegister(p, { recoveryCode: p.recoveryCodes[0] });
+    expect(r1.reg!.status).toBe(201);
+    app.clock.advance(25 * 3600_000);
+    await start(p.email, "codes_email");                                              // R2, pending
+    const r2 = (await app.db.owner.query("select id, status from recovery_requests where user_id = $1 order by created_at desc limit 1", [p.userId])).rows[0];
+    expect(r2.status).toBe("pending");
+    const code = codeFrom(lastMail(app, p.email, "recovery.code")!.text);
+    const undo = await signIn(app, p.auth);
+    expect(undo.res.json.restored).toBe(true);
+    expect((await app.db.owner.query("select status, cancelled_by from recovery_requests where id = $1", [r2.id])).rows[0]).toEqual({ status: "cancelled", cancelled_by: "sign_in" });
+    // R2 can no longer be redeemed.
+    expect((await post("/auth/recovery/redeem", { email: p.email, code, recoveryCode: p.recoveryCodes[1] })).status).toBe(401);
+  });
+
   it("ST-49: recovery codes are limited to 10 attempts an hour per account, the limit never touches passkey sign-in, and it resets", async () => {
     const p = await signUp(app, "r11@example.com");
     expect(RECOVERY_CODE_ATTEMPTS.max).toBe(10);

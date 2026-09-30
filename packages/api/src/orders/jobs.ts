@@ -4,6 +4,7 @@ import type { AppContext } from "../ports.ts";
 import { advance, machine, reconcileOpen, sweepUnknown, toCanceling } from "./machine.ts";
 import { loadOrder } from "./support.ts";
 import { MIN_AUTH_WINDOW_MS } from "./types.ts";
+import { recordSales } from "./sales-ledger.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The only thing read from a job payload is an order id. */
@@ -41,6 +42,8 @@ const defs: JobDef[] = [
   { kind: "order.sweep_unknown", priority: 0, maxRuntimeSec: 30, handler: orderSweepUnknown },
   { kind: "order.capture", priority: 0, maxRuntimeSec: 45, handler: orderCapture },
   { kind: "order.cancel", priority: 0, maxRuntimeSec: 45, handler: orderCancel },
+  // C-43: captured and refunded amounts per billing region and month, and the nexus alerts.
+  { kind: "sales.ledger", priority: 1, maxRuntimeSec: 120, handler: async (ctx) => { await recordSales(ctx); } },
 ];
 
 let registered = false;
@@ -50,6 +53,7 @@ export function registerOrderJobs(): void {
   for (const d of defs) if (!getJobDef(d.kind)) registerJob(d);
   registerRecurringJob({ kind: "order.reconcile", everySec: 300 });
   registerRecurringJob({ kind: "order.sweep_unknown", everySec: 60 });
+  registerRecurringJob({ kind: "sales.ledger", everySec: 3600 });
   registerDeadLetterHook("order.fulfil", async (ctx, dead) => {
     // A money job that dead-letters applies a default: if the authorization deadline is near and the name is not ours yet, cancel the hold.
     const row = (await ctx.cron.query("select payload from jobs where id = $1", [dead.id])).rows[0];

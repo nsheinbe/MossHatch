@@ -10,7 +10,7 @@ Status: built and tested against a real PostgreSQL 16, with the web app on real 
 - **Web** (`apps/web/src`): the Grove and Ledger on real data; the domain panel (Overview and DNS tabs), transfer code shown once, Stop, DNSSEC, nameservers, contact change, registrant verification, Renew now, refund.
 - **Phase 3 finish (this pass, migration 0700)**:
   - `bootFromEnv` installs the domains services (`installDomainsFromEnv`) and chooses the registrar from `MH_REGISTRAR_MODE`: the mock, or the signed RPC client (a sandbox or live process without `REGISTRAR_RPC_URL`/`REGISTRAR_RPC_SECRET` answers `registrar_rpc_not_configured`, never the mock). A boot test calls every job and route registrar in the source after boot and fails if any job kind, schedule or dead-letter default appears that boot did not install.
-  - Saved cards (C-31, C-38): the checkout auto-renew box (unticked, separate from the terms, with its own authorisation hash) is the only thing that sends `setup_future_usage=off_session`; only such a card is ever charged off-session; a card saved for an order that ended without a name is detached (`card.detach_sweep`). Renew now with no saved card, or when the bank wants authentication, opens a hosted Checkout for the same renewal order (automatic capture; the registrar is called only after the payment). `payment_method.automatically_updated` records the update and emails the person with the one-click turn-off link; a new card brand needs a fresh passkey signature before any charge.
+  - Saved cards (C-31, C-38): the checkout auto-renew box (unticked, separate from the terms, with its own authorisation hash) is the only thing that sends `setup_future_usage=off_session`; only such a card is ever charged off-session; a card saved for an order that ended without a name is detached (`card.detach_sweep`). Renew now with no saved card, or when the bank wants authentication, opens a hosted Checkout for the same renewal order (automatic capture; the registrar is called only after the payment); the return page reconciles it without waiting for the webhook, and ticking the authorisation first lets that Checkout save the card for auto-renew (the only way to save one after a purchase without the box). `payment_method.automatically_updated` records the update and emails the person with the one-click turn-off link; a new card brand needs a fresh passkey signature before any charge.
   - Mandate rules: an automatic charge waits until a pre-charge notice for that charge is at least 7 days old (Visa; the C-8 notice gives 8); a mandate above its price cap or needing re-consent can be signed again without turning it off first; every email about an automatic charge must carry the turn-off link (the template schema refuses one without it); the renewal receipt carries the authorisation terms and the link.
   - Registrant verification starts at registration (C-16): the 15-day clock is created in the same transaction as the domain row. It was built but never started.
   - Public pages under the strict CSP: `/fees.html` (prices, late renewal, restore, refund windows, announced price changes, the notice schedule, the deletion timeline, auto-renew, `.ai` and `.io` rules, the planned registrar of record and the complaints path) and `/commitments.html` rewritten for live sales (who sees a search, no registration on search, no bulk RDAP). A test holds every price and date on the fee page to the price table and the notice code.
@@ -21,10 +21,10 @@ Status: built and tested against a real PostgreSQL 16, with the web app on real 
 
 | Item | Result |
 |---|---|
-| Unit and database tests (`npx vitest run`) | see "Test run" below |
-| End-to-end (Playwright) | see "Test run" below |
-| Initial JS / engine chunk / domain panel | 86.6 kB / 149.1 kB (unchanged) / 7.4 kB gzip (limits 130 / 150 / lazy) |
-| New Phase 3 finish tests | `domains/cards.test.ts` 13, `domains/fees-page.test.ts` 7, `boot.test.ts` +3, two browser tests |
+| Unit and database tests (`npx vitest run`, whole repo, 2026-09-30 15:50 UTC) | 959 passed, 44 skipped, 4 failed; all 4 in modules other agents are still building (`bindings`, `ops/kms-reconcile`). Phase 3 suites: 478 passed, 44 skipped, 0 failed |
+| Initial JS / engine chunk / domain panel | 86.9 kB / 149.1 kB (unchanged) / 9.2 kB gzip (limits 130 / 150 / lazy) |
+| New Phase 3 finish tests | `domains/cards.test.ts` 15, `domains/fees-page.test.ts` 7, `boot.test.ts` +3; browser: domain management, refund, fee page and addenda |
+| Playwright | account 4/4, prod 12/12 (including the fee page and addenda, axe at desktop and phone), public, dev and cards passing; the `publish` project (another agent's, in progress) failed in the last all-projects run |
 
 ## Exit criteria
 
@@ -35,7 +35,7 @@ Status: built and tested against a real PostgreSQL 16, with the web app on real 
 | Renewal notices at E-43, E-32, C-8 and E+1 sent from the jobs table in staging | Met on a simulated clock against real PostgreSQL (`domains/notices.test.ts`); not run in a staging deployment |
 | Detector fires within its cadence on a simulated change | Met against the mock's out-of-band simulator (ST-114) |
 | OpenSRS key rotation drill rehearsed against Horizon | **Owed.** Rehearsed only against the fake transport (ST-116); runbook written |
-| Cross-tenant matrix re-runs on the domain routes | Met for the domain routes. The matrix currently fails on `GET /api/v1/transfers/:id`, a Phase 5 route another agent is adding without a fixture |
+| Cross-tenant matrix re-runs on the domain routes | Met (`security/matrix.test.ts` passes over every route, including the Phase 3 finish routes) |
 
 | ST | Test |
 |---|---|
@@ -106,9 +106,10 @@ No row is deferred. Rows that still need counsel text or an upstream answer are 
 | Stop a hostile transfer | Runbook written: `docs/runbooks/stop-hostile-transfer.md`; product path covered by ST-125 and the browser test |
 | Stripe sandbox authorisation-cancel check | Owed (no Stripe account) |
 
-## Found while finishing (other agents' in-progress work)
+## Found while finishing
 
-The boot completeness test fails today because the vault module registers `vault.read_digest` and `vault.rewrap` but `bootFromEnv` does not install them yet, and the cross-tenant matrix fails on the new `GET /api/v1/transfers/:id` route. Both belong to agents working at the same time; the fix is their one registration line in `boot.ts` and one matrix fixture.
+- Bugs fixed: `.ai` restore could not be priced; registrant verification was never started at registration; a renewal paid on Checkout had no reconcile path without the webhook; the fee page's scrollable table was not keyboard reachable (axe `scrollable-region-focusable`).
+- Other agents' work in progress at the time of the last run: `npm run typecheck` fails in `packages/api/src/agents/requests.ts` (2 errors) and 4 tests fail in `bindings` and `ops/kms-reconcile`. None of them is Phase 3 code. The boot completeness test will fail again if a later module registers a job without wiring it into `bootFromEnv`, which is its purpose.
 
 ## Decisions needed
 

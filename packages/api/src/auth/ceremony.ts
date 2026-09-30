@@ -5,6 +5,7 @@ import { HttpError } from "../http/router.ts";
 import { assertionOptions, challengeOf, registrationOptions } from "../webauthn.ts";
 import { withNoUser } from "@mosshatch/db";
 import { CEREMONY_TTL_MS } from "../webauthn.ts";
+import { passkeyExcludeIds, registrationOptionsHash } from "../stepup/specs.ts";
 
 const ttl = `${Math.round(CEREMONY_TTL_MS / 1000)} seconds`;
 
@@ -15,10 +16,21 @@ export async function issueRegistrationOptions(
   bind: { sessionHash?: Buffer; preHash?: Buffer; recoveryId?: string },
 ) {
   if (!bind.sessionHash && !bind.preHash) throw new Error("registration challenge needs a binding");
-  const existing = (await c.query("select credential_id from passkeys where user_id = $1", [u.id])).rows.map((r) => r.credential_id as string);
+  // One exclude list for these options and for the options hash a passkey.add step-up signs.
+  const existing = await passkeyExcludeIds(c, u.id);
   const options = await registrationOptions(ctx, { userHandle: u.handle, email: u.email, existingCredentialIds: existing });
-  await c.query("select auth2_challenge_put('register',$1,$2,$3,$4,$5,$6,$7::interval)", [options.challenge, u.id, bind.sessionHash ?? null, bind.preHash ?? null, bind.recoveryId ?? null, ctx.clock.now(), ttl]);
+  const id = (await c.query("select auth2_challenge_put('register',$1,$2,$3,$4,$5,$6,$7::interval) as id", [options.challenge, u.id, bind.sessionHash ?? null, bind.preHash ?? null, bind.recoveryId ?? null, ctx.clock.now(), ttl])).rows[0].id as string;
+  // Record what this ceremony was issued with, so POST /passkeys can require the options its step-up signed.
+  await c.query("update webauthn_challenges set options_hash = $2 where id = $1 and user_id = $3", [id, Buffer.from(issuedOptionsHash(options), "hex"), u.id]);
   return options;
+}
+
+/** The options hash of issued registration options, computed from what the browser receives. */
+export function issuedOptionsHash(options: Awaited<ReturnType<typeof registrationOptions>>): string {
+  return registrationOptionsHash({
+    rpId: options.rp.id ?? "", algs: options.pubKeyCredParams.map((p) => p.alg), attestation: options.attestation ?? "",
+    userVerification: options.authenticatorSelection?.userVerification ?? "", exclude: (options.excludeCredentials ?? []).map((x) => x.id),
+  });
 }
 
 /** Login options: a random challenge, discoverable credentials, bound to the hash of the pre-auth cookie. */
@@ -29,6 +41,12 @@ export async function issueLoginOptions(ctx: AppContext, preHash: Buffer) {
 }
 
 export type ConsumedChallenge = { id: string; user_id: string | null; recovery_id: string | null };
+
+/** The options hash stored on a registration challenge (null for one issued before the column existed). */
+export async function challengeOptionsHash(c: PoolClient, challengeId: string, userId: string): Promise<Buffer | null> {
+  const r = (await c.query("select options_hash from webauthn_challenges where id = $1 and user_id = $2", [challengeId, userId])).rows[0];
+  return r?.options_hash ? Buffer.from(r.options_hash) : null;
+}
 
 /** Consume a challenge in its own committed statement, before any verification, so a failed attempt also burns it. */
 export async function consumeChallenge(ctx: AppContext, challenge: string, purpose: "register" | "login", bind: { sessionHash?: Buffer | null; preHash?: Buffer | null }): Promise<ConsumedChallenge | null> {

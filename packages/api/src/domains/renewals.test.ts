@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ACTION_HEADER } from "../stepup/gate.ts";
 import { mintToken } from "../util/token.ts";
+import { deliver } from "../orders/testkit.ts";
 import { sha256 } from "../util/bytes.ts";
 import { runRenewalScheduler, nextUpstreamTry } from "./renewals.ts";
 import { AUTH_TEXT_HASH, alertRows, at, autoRenewOn, buyDomain, days, domainRow, harnessPerTest, mailOf, makeDomainsHarness, makeOwner, relogin, renewOrders, settle, signMandate, termRow, type DomainsHarness, type Owner } from "./testkit.ts";
@@ -334,6 +335,74 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     const orders = await renewOrders(h, dom.id);
     expect(orders.map((r) => r.state)).toEqual(["renewed"]);
     expect(renewPIs(h).at(-1)!.amount).toBe(1925);
+  });
+});
+
+describe("review: a renewal paid on Checkout while an off-session charge for the same order is in flight is charged once", () => {
+  /** Every succeeded PaymentIntent for the order, with what is still kept after refunds. */
+  const kept = (h: DomainsHarness, orderId: string) => [...h.stripe.paymentIntents.values()]
+    .filter((p) => p.metadata.order_id === orderId && p.status === "succeeded")
+    .map((p) => ({ id: p.id, kept: p.amount_received - [...h.stripe.refunds.values()].filter((r) => r.payment_intent === p.id).reduce((a, r) => a + r.amount, 0) }));
+
+  /**
+   * A name with no card saved for off-session use: Renew now opens a Checkout (tab A). The person then buys another name with the
+   * auto-renew box ticked, which saves a card, and presses Renew now again (tab B), which charges that card off-session.
+   */
+  async function checkoutThenCard(tag: string) {
+    const h = await per.make();
+    const o = await makeOwner(h, `${tag}@example.com`);
+    const dom = await buyDomain(h, o, `free-${tag}.dev`, { autoRenew: false });
+    const a = await postRenew(h, o, dom.id);
+    expect(a.status, JSON.stringify(a.json)).toBe(200);
+    expect(a.json.status).toBe("checkout");
+    const orderId = a.json.order_id as string;
+    await buyDomain(h, o, `free-${tag}-b.dev`);                 // auto-renew ticked: the card is saved
+    const sessionId = (await h.app.db.owner.query("select stripe_checkout_session_id from orders where id = $1", [orderId])).rows[0].stripe_checkout_session_id as string;
+    return { h, o, dom, orderId, sessionId };
+  }
+
+  it("the Checkout webhook lands while the off-session request is in flight: one charge is kept, the other is refunded and an operator is told", async () => {
+    const { h, o, orderId, sessionId, dom } = await checkoutThenCard("race1");
+    const paid = h.stripe.payCheckout(sessionId);                   // tab A pays; the webhook is on its way
+    const orig = h.stripe.createOffSessionPaymentIntent.bind(h.stripe);
+    let delivered = false;
+    h.stripe.createOffSessionPaymentIntent = async (input, key) => {
+      const pi = await orig(input, key);
+      if (!delivered && input.metadata.order_id === orderId) { delivered = true; for (const ev of paid) await deliver(h, ev); }
+      return pi;
+    };
+    const b = await postRenew(h, await relogin(h, o), dom.id);   // tab B
+    expect([200, 202, 409]).toContain(b.status);
+    expect(delivered).toBe(true);
+    await settle(h);
+    const pis = kept(h, orderId);
+    expect(pis).toHaveLength(2);                                     // Stripe took two payments for one term...
+    expect(pis.filter((p) => p.kept > 0)).toHaveLength(1);          // ...and exactly one is kept
+    const keptPi = pis.find((p) => p.kept > 0)!;
+    const pays = (await h.app.db.owner.query("select stripe_payment_intent_id from payments where order_id = $1", [orderId])).rows;
+    expect(pays.map((r) => r.stripe_payment_intent_id)).toEqual([keptPi.id]);
+    expect((await h.app.db.owner.query("select state from orders where id = $1", [orderId])).rows[0].state).toBe("renewed");
+    expect((await h.app.db.owner.query("select count(*)::int n from alerts where subject = $1 and kind in ('renewal_duplicate_charge','renewal_checkout_after_close')", [orderId])).rows[0].n).toBeGreaterThanOrEqual(1);
+  });
+
+  it("the off-session request timed out but was applied, then the Checkout is paid: the unanswered charge is settled first and only one payment is kept", async () => {
+    const { h, o, orderId, sessionId, dom } = await checkoutThenCard("race2");
+    h.stripe.fail("createOffSessionPaymentIntent", { kind: "timeout" });   // applied at Stripe, the answer never arrives
+    const b = await postRenew(h, await relogin(h, o), dom.id);
+    expect(b.status, JSON.stringify(b.json)).toBe(202);
+    expect(kept(h, orderId)).toHaveLength(1);
+    for (const ev of h.stripe.payCheckout(sessionId)) await deliver(h, ev);
+    at(h, new Date(h.app.clock.now().getTime() + 5 * 60_000));
+    await settle(h);
+    for (const ev of h.stripe.takeEvents()) await deliver(h, ev);   // a redelivered webhook changes nothing
+    await settle(h);
+    const pis = kept(h, orderId);
+    expect(pis).toHaveLength(2);
+    expect(pis.filter((p) => p.kept > 0)).toHaveLength(1);
+    const pays = (await h.app.db.owner.query("select stripe_payment_intent_id from payments where order_id = $1", [orderId])).rows;
+    expect(pays.map((r) => r.stripe_payment_intent_id)).toEqual([pis.find((p) => p.kept > 0)!.id]);
+    expect((await h.app.db.owner.query("select state from orders where id = $1", [orderId])).rows[0].state).toBe("renewed");
+    expect(h.registrar.calls.renew).toBe(1);
   });
 });
 

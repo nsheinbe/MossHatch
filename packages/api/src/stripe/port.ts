@@ -2,6 +2,8 @@
  * The Stripe port. Only what the order machine needs; amounts are the integer minor units Stripe uses (JS numbers,
  * converted to bigint at the edge of our own code). Nothing here holds card data.
  */
+import type { ProductSpec, StripeOperation } from "./catalog.ts";
+
 export type StripeErrorKind = "api_error" | "timeout" | "rate_limit" | "invalid_request" | "card_error" | "idempotency_error" | "idempotency_in_progress" | "authentication" | "signature";
 
 export class StripeError extends Error {
@@ -32,6 +34,8 @@ export interface CheckoutSession {
   amount_total: number;
   amount_tax: number;
   currency: string;
+  /** `customer_details.address` country and state as collected by Checkout (C-42: the tax location is the billing address). */
+  billing_address?: { country: string | null; state: string | null } | null;
 }
 
 export type PaymentIntentStatus = "requires_payment_method" | "requires_confirmation" | "requires_action" | "processing" | "requires_capture" | "succeeded" | "canceled";
@@ -53,6 +57,8 @@ export interface PaymentIntent {
   capture_method: "manual" | "automatic";
   cancellation_reason: string | null;
   created: number;
+  /** `latest_charge.payment_method_details.card.brand` (C-40 per-network dispute ratios); null when unknown. */
+  card_brand?: string | null;
 }
 
 export interface CreateSessionInput {
@@ -63,7 +69,11 @@ export interface CreateSessionInput {
   /** Unix seconds; Stripe requires 30 minutes to 24 hours from now. */
   expiresAt: number;
   metadata: Record<string, string>;
-  lineItem: { name: string; unitAmount: number; currency: "usd" };
+  lineItem: {
+    name: string; unitAmount: number; currency: "usd";
+    /** C-44: the operation selects its own Stripe Product (catalog.ts) and statement-descriptor suffix. */
+    operation?: StripeOperation;
+  };
   captureMethod: "manual" | "automatic";
   requestThreeDSecure: "any" | "automatic";
   /**
@@ -76,7 +86,7 @@ export interface CreateSessionInput {
 /** The parts of a PaymentMethod Mosshatch reads: never a number, only the brand for the new-agreement rule (C-38). */
 export interface PaymentMethodInfo { id: string; customer: string | null; brand: string | null }
 
-export interface Refund { id: string; status: "succeeded" | "pending" | "failed" | "canceled"; amount: number; payment_intent: string; currency: string }
+export interface Refund { id: string; status: "succeeded" | "pending" | "requires_action" | "failed" | "canceled"; amount: number; payment_intent: string; currency: string }
 
 export interface StripeEvent {
   id: string;
@@ -88,7 +98,7 @@ export interface StripeEvent {
   data: { object: Record<string, any>; previous_attributes?: Record<string, any> };
 }
 
-export interface CreateOffSessionInput { customer: string; paymentMethod: string; amount: number; currency: "usd"; metadata: Record<string, string> }
+export interface CreateOffSessionInput { customer: string; paymentMethod: string; amount: number; currency: "usd"; metadata: Record<string, string>; operation?: StripeOperation }
 
 export interface StripePort {
   readonly livemode: boolean;
@@ -106,9 +116,13 @@ export interface StripePort {
   /** Off-session charge of a saved payment method, captured at once. */
   createOffSessionPaymentIntent(input: CreateOffSessionInput, idem: string): Promise<PaymentIntent>;
   createRefund(input: { paymentIntent: string; amount?: number; reason?: string; metadata?: Record<string, string> }, idem: string): Promise<Refund>;
+  /** Read a refund back: a refund Stripe accepted as `pending` is followed by id, never sent again. */
+  retrieveRefund(id: string): Promise<Refund>;
   /**
    * Verify the signature over the raw body against every secret in `secrets` (two during a roll) and the timestamp
    * tolerance, then parse. Throws StripeError("signature") on any failure.
    */
   constructEvent(rawBody: string, signatureHeader: string | null, secrets: string[], now: Date, toleranceSec?: number): StripeEvent;
+  /** Create the Product with this fixed id, or confirm it exists (C-44 catalog setup). */
+  ensureProduct?(spec: ProductSpec, idem: string): Promise<{ id: string; created: boolean }>;
 }

@@ -11,7 +11,7 @@ import { advance, machine, move, type M } from "../orders/machine.ts";
 import { customerAddresses, loadOrder } from "../orders/support.ts";
 import { mintEmailActionToken } from "../auth/email-actions.ts";
 import type { OrderRow } from "../orders/types.ts";
-import { StripeError } from "../stripe/port.ts";
+import { StripeError, type CreateOffSessionInput } from "../stripe/port.ts";
 import { quoteToJson } from "../pricing/index.ts";
 import { hashOf } from "../util/bytes.ts";
 import { DAY_MS, flagTrue, loadDomain, registrarOf, rowToDomain, svcOf, yearOf, type DomainRow } from "./common.ts";
@@ -70,6 +70,35 @@ async function latestOp(q: Pick<PoolClient, "query">, orderId: string, kind: str
 }
 const resolveOp = (c: PoolClient, id: string, code: string, extra: { registrarOrderId?: string; detail?: Record<string, unknown> } = {}) =>
   c.query("update order_operations set state = 'resolved', response_code = $2, registrar_order_id = coalesce($3, registrar_order_id), detail = coalesce(detail, '{}'::jsonb) || $4::jsonb where id = $1", [id, code, extra.registrarOrderId ?? null, extra.detail ?? {}]);
+
+/** The card an off-session try charged, stored on its operation so a replay under the same key sends the same body. */
+interface ChargeReq { customer: string; paymentMethod: string }
+function reqOf(op: Op): ChargeReq | null {
+  const r = op.detail?.req as { customer?: unknown; payment_method?: unknown } | undefined;
+  return r && typeof r.customer === "string" && typeof r.payment_method === "string" ? { customer: r.customer, paymentMethod: r.payment_method } : null;
+}
+const chargeKey = (domainId: string, termEnd: Date, seq: number) => `renew:${domainId}:${termEnd.toISOString().slice(0, 10)}:${seq}`;
+const offSessionInput = (o: OrderRow, term: TermRow, req: ChargeReq): CreateOffSessionInput =>
+  ({ customer: req.customer, paymentMethod: req.paymentMethod, amount: Number(o.subtotalMinor), currency: "usd", metadata: { order_id: o.id, renewal_id: term.id, purpose: "renewal" } });
+/** An unresolved `renew_charge` operation opened by a renewal Checkout (as opposed to an off-session try). */
+const isCheckoutOp = (op: Op) => op.detail?.via === "checkout";
+
+/** A renewal payment the order did not keep is refunded once, and an operator is told. Returns what happened to it. */
+async function refundUnkept(ctx: AppContext, o: OrderRow, piId: string, alertKind: string): Promise<"kept" | "refunded" | "failed"> {
+  const kept = (await ctx.cron.query("select 1 from payments where stripe_payment_intent_id = $1 union all select 1 from orders where id = $2 and stripe_payment_intent_id = $1", [piId, o.id])).rowCount;
+  if (kept) return "kept";
+  try { await svcOf(ctx).stripe.createRefund({ paymentIntent: piId, reason: "duplicate_renewal" }, `renew-dup-refund:${piId}`); }
+  catch (e) {
+    if (!(e instanceof StripeError)) throw e;
+    await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "page", kind: "renewal_duplicate_refund_failed", subject: o.id, detail: { order_id: o.id, code: e.code ?? e.kind } }));
+    return "failed";
+  }
+  await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: alertKind, subject: o.id, detail: { order_id: o.id } }));
+  return "refunded";
+}
+
+/** Raised while an off-session try for the order is still in flight: the Checkout webhook fails and is delivered again later. */
+export class RenewalChargeInFlight extends Error { constructor() { super("renewal_charge_in_flight"); this.name = "RenewalChargeInFlight"; } }
 
 /** Claim (or reuse) the write-ahead operation for one side effect. A `sent` operation is reused with the same key and never re-sent as a new try. */
 async function claimOp(c: PoolClient, m: M, orderId: string, kind: string, detail?: Record<string, unknown>): Promise<{ op: Op; fresh: boolean }> {
@@ -225,14 +254,23 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
   const claimed = await ltx(m, async (c) => {
     const cur = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as string | undefined;
     if (cur !== "draft") return null;
+    // A Checkout payment for this order is being recorded: no off-session charge is sent beside it.
+    const last = await latestOp(c, o.id, "renew_charge");
+    if (last && last.state !== "resolved" && isCheckoutOp(last)) return "checkout" as const;
     await c.query("update renewal_terms set state = 'charging', held_reason = null where id = $1 and state in ('scheduled','held','charging','payment_failed')", [term.id]);
-    return claimOp(c, m, o.id, "renew_charge", { term: term.id });
+    return claimOp(c, m, o.id, "renew_charge", { term: term.id, req: { customer: card.customer, payment_method: card.paymentMethod } });
   });
   if (!claimed) return "progressed";                        // another worker moved the order
-  const key = `renew:${d.id}:${term.termEnd.toISOString().slice(0, 10)}:${claimed.op.seq}`;
+  if (claimed === "checkout") {
+    await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 60_000)]);
+    return "wait";
+  }
+  const key = chargeKey(d.id, term.termEnd, claimed.op.seq);
+  // A reused `sent` operation replays the body it was first sent with, so the same key never carries a different request.
+  const req = reqOf(claimed.op) ?? card;
   const svc = svcOf(ctx);
   try {
-    const pi = await svc.stripe.createOffSessionPaymentIntent({ customer: card.customer, paymentMethod: card.paymentMethod, amount: Number(o.subtotalMinor), currency: "usd", metadata: { order_id: o.id, renewal_id: term.id, purpose: "renewal" } }, key);
+    const pi = await svc.stripe.createOffSessionPaymentIntent(offSessionInput(o, term, req), key);
     if (pi.status !== "succeeded") {
       await ltx(m, (c) => resolveOp(c, claimed.op.id, "declined", { detail: { status: pi.status } }));
       return failedCharge(m, o, term, "authentication_required");
@@ -272,7 +310,11 @@ async function charged(m: M, o: OrderRow, term: TermRow, piId: string, amount: b
     await enqueue(c, { kind: "renewal.charge", payload: { order_id: o.id }, userId: o.userId, dedupeKey: `renewal.charge:${o.id}:up`, priority: 0 });
     return b;
   });
-  if (!done) return "progressed";
+  if (!done) {
+    // Another payment moved the order first (a Checkout and an off-session try crossed, or the order ended): this one is refunded, never dropped.
+    await refundUnkept(m.ctx, o, piId, "renewal_duplicate_charge");
+    return "progressed";
+  }
   try { await tx(m.ctx.cron, (c) => mailRenewalReceipt(m.ctx, c, o, term, { totalMinor: amount, taxMinor: 0n, paidAt: at })); }
   catch { await tx(m.ctx.cron, (c) => raiseAlert(m.ctx, c, { severity: "warn", kind: "mail_failed", subject: o.id })).catch(() => undefined); }
   return "progressed";
@@ -662,30 +704,65 @@ export async function startRenewalCheckout(ctx: AppContext, o: OrderRow, opts: {
  * (the name was renewed another way, or it lapsed) is refunded in full and an operator is told; nothing is charged twice for one term.
  */
 export async function renewalCheckoutPaid(ctx: AppContext, orderId: string, sessionId: string, piId: string): Promise<"charged" | "refunded" | "ignored"> {
-  const o = await loadOrder(ctx.cron, orderId);
+  let o = await loadOrder(ctx.cron, orderId);
   if (!o || o.kind !== "renew") return "ignored";
   const svc = svcOf(ctx);
   const pi = await svc.stripe.retrievePaymentIntent(piId);
   if (pi.status !== "succeeded" || pi.metadata.order_id !== o.id || pi.livemode !== o.livemode) return "ignored";
   const m = machine(ctx);
   const term = await termOfOrder(ctx.cron, o.id);
-  const claimed = o.state === "draft" && term && o.sessionId === sessionId ? await ltx(m, async (c) => {
-    const cur = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as string | undefined;
+  const mine = () => !!o && o.state === "draft" && !!term && o.sessionId === sessionId;
+  if (mine() && term) {
+    // An off-session try for this order that is in flight or unanswered is settled first, under its own key and body (a replay, never a
+    // second charge). When it went through, it pays the term and this Checkout's payment is refunded below.
+    const pending = await latestOp(ctx.cron, o.id, "renew_charge");
+    if (pending && pending.state !== "resolved" && !isCheckoutOp(pending)) {
+      if ((await settleOffSessionTry(m, o, term, pending)) === "in_flight") throw new RenewalChargeInFlight();
+      o = (await loadOrder(ctx.cron, o.id)) ?? o;
+    }
+  }
+  const cur0 = o;
+  const claimed = mine() && term ? await ltx(m, async (c) => {
+    const cur = (await c.query("select state from orders where id = $1 for update", [cur0.id])).rows[0]?.state as string | undefined;
     if (cur !== "draft") return null;
-    return claimOp(c, m, o.id, "renew_charge", { term: term.id, via: "checkout" });
+    const last = await latestOp(c, cur0.id, "renew_charge");
+    if (last && last.state !== "resolved" && !isCheckoutOp(last)) return "busy" as const;   // an off-session try started meanwhile
+    return claimOp(c, m, cur0.id, "renew_charge", { term: term.id, via: "checkout" });
   }) : null;
+  if (claimed === "busy") throw new RenewalChargeInFlight();
   if (claimed && term) {
     await charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, claimed.op.id);
+    const kept = (await ctx.cron.query("select 1 from payments where stripe_payment_intent_id = $1", [pi.id])).rowCount;
     // The card used on Checkout, kept for off-session renewals only when this Checkout carried the auto-renew consent.
-    await ctx.cron.query("update orders set payment_method_ref = coalesce(payment_method_ref, $2), stripe_customer_id = coalesce(stripe_customer_id, $3), card_reusable = save_card and $2::text is not null where id = $1",
-      [o.id, pi.payment_method, pi.customer]);
-    const after = await loadOrder(ctx.cron, o.id);
-    if (after && after.state !== "draft") return "charged";
+    if (kept) {
+      await ctx.cron.query("update orders set payment_method_ref = coalesce(payment_method_ref, $2), stripe_customer_id = coalesce(stripe_customer_id, $3), card_reusable = save_card and $2::text is not null where id = $1",
+        [o.id, pi.payment_method, pi.customer]);
+      return "charged";
+    }
   }
   // Already paid another way for this term (or the order ended): give the money back, once.
-  const already = (await ctx.cron.query("select 1 from payments where stripe_payment_intent_id = $1", [pi.id])).rowCount;
-  if (already) return "charged";
-  await svc.stripe.createRefund({ paymentIntent: pi.id, reason: "duplicate_renewal" }, `renewcs-refund:${pi.id}`);
-  await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "renewal_checkout_after_close", subject: o.id, detail: { order_id: o.id, state: o.state } }));
+  const r = await refundUnkept(ctx, o, pi.id, "renewal_checkout_after_close");
+  if (r === "kept") return "charged";
+  if (r === "failed") throw new Error("renewal_refund_failed");          // the webhook is delivered again
   return "refunded";
+}
+
+/**
+ * Settle an off-session try whose answer this process has not seen, by sending the same request under the same key: Stripe replays the
+ * first result (or reports that it is still in flight). A payment that went through moves the order; a determined failure closes the try.
+ */
+async function settleOffSessionTry(m: M, o: OrderRow, term: TermRow, op: Op): Promise<"settled" | "in_flight"> {
+  const req = reqOf(op);
+  if (!req || !o.domainId) return "in_flight";              // the exact request is not known here: the charge step's next look replays it
+  try {
+    const pi = await svcOf(m.ctx).stripe.createOffSessionPaymentIntent(offSessionInput(o, term, req), chargeKey(o.domainId, term.termEnd, op.seq));
+    if (pi.status === "succeeded") { await charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, op.id); return "settled"; }
+    await ltx(m, (c) => resolveOp(c, op.id, "declined", { detail: { status: pi.status, settled_by: "checkout" } }));
+    return "settled";
+  } catch (e) {
+    if (!(e instanceof StripeError)) throw e;
+    if (e.isTimeout || e.kind === "idempotency_in_progress") return "in_flight";
+    await ltx(m, (c) => resolveOp(c, op.id, e.retryable ? "api_error" : "declined", { detail: { code: e.code ?? e.kind, settled_by: "checkout" } }));
+    return "settled";
+  }
 }

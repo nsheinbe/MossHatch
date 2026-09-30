@@ -59,6 +59,8 @@ export function Find() {
   let ai = 0;
   const chips = results.map((r) => <Chip key={r.domain} r={r} list={list} row={r.available ? ai++ % 2 : 0} onPick={onPick} />);
   const hiding = hatchPhase === "hatching";
+  // Rescue: a taken name may be the person's own at another registrar (the pre-check says whether it can move).
+  const rescuable = alternatives.length === 0 ? results.find((r) => !r.available) : undefined;
 
   return (
     <main className={`find${results.length ? " has-results" : ""}`} style={hiding ? { visibility: "hidden" } : undefined}>
@@ -100,6 +102,12 @@ export function Find() {
           />
           <button type="button" className="link-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button>
         </div>
+        {apiReady && rescuable && (
+          <div className="rescue-offer" role="group" aria-label="Bring a name you own">
+            <span>Already yours at another registrar?</span>
+            <button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button>
+          </div>
+        )}
         <p className="search-note">{apiReady ? "We check names with our registrar, never register one because you searched, and never sell your searches." : "Your searches stay in this browser."} <a href="/commitments.html">Our commitments</a> · <a href="/fees.html">Fees</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
       </form>
 

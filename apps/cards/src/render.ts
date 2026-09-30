@@ -19,7 +19,9 @@ export const longDate = (iso: string) => { const [y, m, d] = iso.split("-").map(
 export const article = (w: string) => (/^[aeiou]/i.test(w) ? "an" : "a");
 
 export const cardPath = (c: Card) => `/${c.slug}/`;
-export const imagePath = (c: Card) => (c.image ? `/img/${c.image.sha256.slice(0, 24)}.png` : `/img/${c.slug}.svg`);
+/** Every portrait is the flat SVG computed from the name (packages/core portraitSvg); an uploaded image is never served. */
+export const imagePath = (c: Card) => `/img/${c.slug}.svg`;
+export const PORTRAIT = { width: 512, height: 640 } as const;
 
 interface PageOpts { title: string; description: string; path: string; indexable: boolean; body: string; og?: { image: string; alt: string } }
 
@@ -55,7 +57,7 @@ ${site.sample ? `<p class="sample" role="note">Sample cards for a preview build.
 
 export function cardPage(site: Site, c: Card): string {
   const alt = `Portrait of the creature for ${c.slug}, ${article(c.species)} ${c.species}`;
-  const w = c.image?.width ?? 512, h = c.image?.height ?? 640;
+  const w = PORTRAIT.width, h = PORTRAIT.height;
   const body = `<article class="card">
 <img class="portrait" src="${imagePath(c)}" alt="${esc(alt)}" width="${w}" height="${h}" />
 <div class="facts">
@@ -76,7 +78,7 @@ export function cardPage(site: Site, c: Card): string {
 
 export function galleryPage(site: Site, cards: Card[]): string {
   const listed = cards.filter((c) => c.indexable);
-  const items = listed.map((c) => `<li><a href="${cardPath(c)}"><img src="${imagePath(c)}" alt="" width="${c.image?.width ?? 512}" height="${c.image?.height ?? 640}" loading="lazy" /><span class="fqdn">${esc(c.slug)}</span><span class="species">${esc(c.species)}</span></a></li>`).join("\n");
+  const items = listed.map((c) => `<li><a href="${cardPath(c)}"><img src="${imagePath(c)}" alt="" width="${PORTRAIT.width}" height="${PORTRAIT.height}" loading="lazy" /><span class="fqdn">${esc(c.slug)}</span><span class="species">${esc(c.species)}</span></a></li>`).join("\n");
   const body = `<h1>Every name hatches</h1>
 <p class="lede">Each creature here hatched from a domain name registered at Mosshatch. Its owner chose to share it.</p>
 ${listed.length ? `<ul class="gallery">\n${items}\n</ul>` : `<p>No cards are listed yet.</p>`}`;

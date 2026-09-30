@@ -12,8 +12,11 @@ export interface CardStoragePort {
   delete(ref: string): Promise<void>;
 }
 
-/** The key never carries the domain name or an owner id: a hash of the card id and the image hash. */
-export const portraitKey = (cardId: string, imageSha256: string): string => `cards/${sha256(`${cardId}:${imageSha256}`).toString("hex").slice(0, 32)}.png`;
+/**
+ * The key never carries the domain name or an owner id: a hash of a random id for this one upload and the image hash. One key per
+ * upload, so a request that fails can delete its own file and never another request's (two requests replaying one action).
+ */
+export const portraitKey = (uploadId: string, imageSha256: string): string => `cards/${sha256(`${uploadId}:${imageSha256}`).toString("hex").slice(0, 32)}.png`;
 
 /** A faithful in-memory fake for tests and local development. */
 export class MemoryCardStorage implements CardStoragePort {

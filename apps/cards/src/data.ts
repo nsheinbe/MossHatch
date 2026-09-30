@@ -1,10 +1,15 @@
-import crypto from "node:crypto";
-
 /**
  * The cards the site is built from. Source, in order: `CARDS_EXPORT_URL` (the web project's GET /api/v1/cards/public, which reads
- * only the `public_cards` view), else the sample fixtures. A production build refuses the fixtures.
- * Every record is checked field by field against the export contract; one bad record fails the build rather than publishing it.
+ * only the `public_cards` view and answers only the build's key, `CARDS_EXPORT_KEY`), else the sample fixtures. A production
+ * build refuses the fixtures. Every record is checked field by field against the export contract; one bad record fails the build
+ * rather than publishing it.
+ *
+ * The export's `image` (the owner's uploaded snapshot) is checked but never fetched or shown: every portrait on hatchkind.com is
+ * computed from the name at build time (review fix, threat row 42: a card carries no content the owner chose).
  */
+
+/** Mirrors CARDS_KEY_HEADER in packages/api/src/publish/export.ts. */
+export const CARDS_KEY_HEADER = "x-mh-cards-key";
 
 export interface Card {
   slug: string;
@@ -64,16 +69,3 @@ export function validateExport(raw: unknown): Card[] {
   return cards;
 }
 
-export const MAX_IMAGE_BYTES = 400_000;
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** Download one portrait and check it is the PNG the export promised (hash, signature, size). */
-export async function fetchPortrait(card: Card, f: typeof fetch = fetch): Promise<Buffer> {
-  if (!card.image) throw new CardDataError("no image");
-  const res = await f(card.image.url, { redirect: "error" });
-  if (!res.ok) throw new CardDataError(`portrait ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_IMAGE_BYTES || !buf.subarray(0, 8).equals(PNG_SIG)) throw new CardDataError("portrait is not a PNG within the size cap");
-  if (crypto.createHash("sha256").update(buf).digest("hex") !== card.image.sha256) throw new CardDataError("portrait hash mismatch");
-  return buf;
-}

@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explainDomain, getDomain, getSecurity, getTransfer, type DomainDetail, type Security, type TransferState } from "../lib/domains";
 import { DomainOverview } from "./DomainOverview";
 import { DnsTab } from "./DnsTab";
 import { CardSection } from "./CardSection";
 
-type Tab = "overview" | "dns";
+// The Nest (secrets) and the Gate (transfer away) load only when their tab opens.
+const NestTab = lazy(() => import("./NestTab"));
+const GateTab = lazy(() => import("./GateTab"));
 
-/** One domain: Overview and DNS tabs. Lazy chunk; nothing here is kept in the store except which domain is open. */
+type Tab = "overview" | "dns" | "nest" | "gate";
+
+/** One domain: Overview, DNS, Nest and Gate tabs. Lazy chunk; nothing here is kept in the store except which domain is open. */
 export default function DomainPanel() {
   const { domainPanel, set } = useUi();
   const [tab, setTab] = useState<Tab>("overview");
@@ -38,10 +42,11 @@ export default function DomainPanel() {
   }, [id, set]);
   if (!domainPanel) return null;
 
-  const tabs: [Tab, string][] = [["overview", "Overview"], ["dns", "DNS"]];
+  const tabs: [Tab, string][] = [["overview", "Overview"], ["dns", "DNS"], ...(d?.released ? [] : [["nest", "Nest"] as [Tab, string]]), ["gate", "Gate"]];
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-    const next = tab === "overview" ? "dns" : "overview";
+    const i = Math.max(0, tabs.findIndex(([k]) => k === tab));
+    const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length]![0];
     setTab(next);
     requestAnimationFrame(() => document.getElementById(`tab-${next}`)?.focus());
   };
@@ -61,6 +66,8 @@ export default function DomainPanel() {
           {d && tab === "overview" && <DomainOverview d={d} sec={sec} xfer={xfer} reload={reload} />}
           {d && tab === "overview" && !d.released && <CardSection domainId={d.id} fqdn={domainPanel.fqdn} />}
           {d && tab === "dns" && <DnsTab d={d} sec={sec} reloadAll={reload} />}
+          {d && tab === "nest" && !d.released && <Suspense fallback={<p role="status">Loading.</p>}><NestTab key={d.id} fqdn={d.fqdn} /></Suspense>}
+          {d && tab === "gate" && <Suspense fallback={<p role="status">Loading.</p>}><GateTab key={d.id} d={d} reloadAll={reload} /></Suspense>}
         </div>
         <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ domainPanel: null })}>Close</button></div>
       </div>

@@ -95,9 +95,92 @@ const publicRecord = (zone: string, r: DnsRecord) => {
 };
 
 const lockKey = (domainId: string) => `mh.dns:${domainId}`;
-async function lockDomainZone(c: PoolClient, domainId: string): Promise<void> {
-  await c.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [lockKey(domainId)]);
+
+interface ZoneSession {
+  /** One transaction on the session's connection, as the person (RLS applies). */
+  step: <R>(f: (c: PoolClient) => Promise<R>) => Promise<R>;
+  /** Take the domain's zone lock until the session ends. */
+  lock: (c: PoolClient, domainId: string) => Promise<void>;
 }
+
+/**
+ * A zone write in several transactions on one pooled connection, holding the per-domain lock from the fresh read to the follow-up: a
+ * session-level advisory lock on the same key the transaction-level writers take (the two kinds exclude each other). The pre-write
+ * snapshot and an intent audit row commit BEFORE the registrar is called, so an unknown outcome, or a failure after the write, never
+ * loses them (plan 4.3b: the pre-write zone is stored with a rollback).
+ */
+async function zoneSession<T>(ctx: AppContext, userId: string, fn: (s: ZoneSession) => Promise<T>): Promise<T> {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new HttpError(401, "unauthorized");
+  const conn = await ctx.runtime.connect();
+  const held: string[] = [];
+  let broken = false;
+  const step = async <R>(f: (c: PoolClient) => Promise<R>): Promise<R> => {
+    await conn.query("begin");
+    try {
+      await conn.query("select set_config('app.user_id', $1, true)", [userId]);
+      const r = await f(conn);
+      await conn.query("commit");
+      return r;
+    } catch (e) {
+      await conn.query("rollback").catch(() => { broken = true; });
+      throw e;
+    }
+  };
+  const lock = async (c: PoolClient, domainId: string) => {
+    await c.query("select pg_advisory_lock(hashtextextended($1, 0))", [lockKey(domainId)]);
+    held.push(lockKey(domainId));
+  };
+  try { return await fn({ step, lock }); }
+  finally {
+    for (const k of held) await conn.query("select pg_advisory_unlock(hashtextextended($1, 0))", [k]).catch(() => { broken = true; });
+    conn.release(broken);                                    // a connection that may still hold the lock is closed, never pooled
+  }
+}
+
+/** The pre-write zone (and the hash of the zone the write asks for), committed as `pending` with an intent audit row before the registrar is called. */
+async function takeSnapshot(ctx: AppContext, c: PoolClient, userId: string, d: DomainRow, reason: "pre_write" | "pre_rollback", live: DnsRecord[], target: DnsRecord[], diff: Diff, sensitive: Sensitive[], extra: Record<string, unknown> = {}): Promise<string> {
+  const now = ctx.clock.now();
+  const snap = (await c.query(
+    `insert into dns_snapshots (user_id, domain_id, reason, zone_hash, records, added_count, removed_count, sensitive_count, taken_at, expires_at, write_state, intended_hash)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11) returning id`,
+    [userId, d.id, reason, zoneHash(live), JSON.stringify(live), diff.added.length, diff.removed.length, sensitive.length, now, new Date(now.getTime() + SNAPSHOT_TTL_MS), zoneHash(target)])).rows[0];
+  await audit(ctx, c, userId, "dns.write_intent", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, reason, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length, ...extra } });
+  return snap.id as string;
+}
+
+/**
+ * Send the zone. A refusal changed nothing (a write that did not read back is put back first), so its snapshot is marked `refused` and
+ * leaves the history. Any other failure may have landed: the snapshot stays for rollback marked `unknown`, the audit says so, and a change
+ * that may have touched sensitive records is announced like one that did.
+ */
+async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: DomainRow, live: DnsRecord[], target: DnsRecord[], snapId: string, sensitive: Sensitive[]): Promise<{ hash: string }> {
+  const port = registrarOf(ctx);
+  try { return await port.replaceZone(d.fqdn_ascii, target); }
+  catch (e) {
+    let refused = e instanceof RegistrarError && !e.outcomeUnknown && e.kind !== "unknown";
+    if (refused && (e as RegistrarError).code === "dns_readback_mismatch") {
+      try { await port.replaceZone(d.fqdn_ascii, live); } catch { refused = false; /* the zone is not known now: keep the snapshot */ }
+    }
+    await s.step(async (c) => {
+      if (refused) {
+        await c.query("update dns_snapshots set write_state = 'refused' where id = $1 and write_state = 'pending'", [snapId]);
+        await audit(ctx, c, userId, "dns.write_refused", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snapId } });
+        return;
+      }
+      await c.query("update dns_snapshots set write_state = 'unknown' where id = $1 and write_state = 'pending'", [snapId]);
+      await audit(ctx, c, userId, "dns.write_outcome_unknown", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snapId, sensitive: sensitive.length } });
+      if (sensitive.length > 0) {
+        await notifyDomainEvent(ctx, c, userId, {
+          kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain may have changed",
+          text: `A change from your signed-in session to ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn_ascii} may have been applied: our registrar did not confirm it.\n${sensitiveLines(sensitive)}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.`,
+        });
+      }
+    }).catch(() => undefined);                               // the snapshot is already committed; the original error is the answer
+    throw e;
+  }
+}
+
+const sensitiveLines = (sensitive: Sensitive[]) => sensitive.slice(0, 10).map((x) => `- ${x.type} ${x.name === "" ? "@ (the domain itself)" : x.name}`).join("\n");
 
 async function liveZone(ctx: AppContext, d: DomainRow): Promise<DnsRecord[]> {
   const z = await registrarOf(ctx).getDns(d.fqdn_ascii);
@@ -112,7 +195,7 @@ export async function dnsReadHandler(req: HandlerReq): Promise<HandlerResult> {
   const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
   let z;
   try { z = await registrarOf(ctx).getDns(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); }
-  const snaps = (await withUser(ctx.runtime, userId, (c) => c.query("select count(*)::int as n from dns_snapshots where domain_id = $1 and expires_at > $2", [d.id, ctx.clock.now()]))).rows[0].n as number;
+  const snaps = (await withUser(ctx.runtime, userId, (c) => c.query("select count(*)::int as n from dns_snapshots where domain_id = $1 and expires_at > $2 and write_state <> 'refused'", [d.id, ctx.clock.now()]))).rows[0].n as number;
   if (!z.hosted) {
     return json({ domain: d.fqdn_ascii, hosted: false, read_only: true, nameservers: d.nameservers, records: [], message: "DNS for this domain is hosted elsewhere, at the nameservers listed. Change records there.", sync_state: "not_hosted", snapshots: snaps });
   }
@@ -129,45 +212,40 @@ async function applyChange(req: HandlerReq, build: (live: DnsRecord[], zone: str
   const rl = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `dns:write:${userId}`, { bucket: "dns_write", max: 120, windowSeconds: 3600 }));
   if (!rl.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(rl.retryAfterSeconds) });
   try {
-    return await withUser(ctx.runtime, userId, async (c) => {
-      const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
-      await assertWritesOpen(c);
-      await lockDomainZone(c, d.id);            // one writer per domain; the read below happens under the lock
-      const live = await liveZone(ctx, d);
-      const plan = build(live, d.fqdn_ascii);
-      const desired = canonicalZone(plan.desired);
-      checkShape(desired);
-      validateZone(desired);
-      const diff = diffZones(live, desired);
-      if (diff.added.length === 0 && diff.removed.length === 0) return json({ changed: false, zone_hash: zoneHash(live) });
-      assertSafeDiff(diff, plan.named);
-      const sensitive = sensitiveOf(d.fqdn_ascii, diff);
-      const now = ctx.clock.now();
-      const snap = (await c.query(
-        `insert into dns_snapshots (user_id, domain_id, reason, zone_hash, records, added_count, removed_count, sensitive_count, taken_at, expires_at)
-         values ($1,$2,'pre_write',$3,$4,$5,$6,$7,$8,$9) returning id`,
-        [userId, d.id, zoneHash(live), JSON.stringify(live), diff.added.length, diff.removed.length, sensitive.length, now, new Date(now.getTime() + SNAPSHOT_TTL_MS)])).rows[0];
-      let written;
-      try { written = await registrarOf(ctx).replaceZone(d.fqdn_ascii, desired); }
-      catch (e) {
-        // A write that did not read back may have half-applied: put the snapshot back before reporting the failure.
-        if (e instanceof RegistrarError && e.code === "dns_readback_mismatch") { try { await registrarOf(ctx).replaceZone(d.fqdn_ascii, live); } catch { /* the detector and the next read will show the zone */ } }
-        throw e;
-      }
-      await c.query("update dns_snapshots set after_hash = $2 where id = $1", [snap.id, written.hash]);
-      await audit(ctx, c, userId, "dns.write", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length, actor: "session" } });
-      if (sensitive.length > 0) {
-        // The residual risk of D-034: a human session is not gated, so every address is told and the change can be rolled back.
-        await audit(ctx, c, userId, "dns.sensitive_change", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, count: sensitive.length } });
-        const lines = sensitive.slice(0, 10).map((s) => `- ${s.type} ${s.name === "" ? "@ (the domain itself)" : s.name}`).join("\n");
-        await notifyDomainEvent(ctx, c, userId, {
-          kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
-          text: `A change from your signed-in session touched ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn_ascii}:\n${lines}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.`,
-        });
-      }
+    return await zoneSession(ctx, userId, async (s) => {
+      const pre = await s.step(async (c) => {
+        const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
+        await assertWritesOpen(c);
+        await s.lock(c, d.id);                   // one writer per domain until the follow-up commits; the read below happens under the lock
+        const live = await liveZone(ctx, d);
+        const plan = build(live, d.fqdn_ascii);
+        const desired = canonicalZone(plan.desired);
+        checkShape(desired);
+        validateZone(desired);
+        const diff = diffZones(live, desired);
+        if (diff.added.length === 0 && diff.removed.length === 0) return { d, live, desired, diff, sensitive: [] as Sensitive[], snapId: null };
+        assertSafeDiff(diff, plan.named);
+        const sensitive = sensitiveOf(d.fqdn_ascii, diff);
+        return { d, live, desired, diff, sensitive, snapId: await takeSnapshot(ctx, c, userId, d, "pre_write", live, desired, diff, sensitive) };
+      });
+      const { d, live, diff, sensitive, snapId } = pre;
+      if (!snapId) return json({ changed: false, zone_hash: zoneHash(live) });
+      const written = await sendZone(ctx, s, userId, d, live, pre.desired, snapId, sensitive);
+      await s.step(async (c) => {
+        await c.query("update dns_snapshots set after_hash = $2, write_state = 'applied' where id = $1", [snapId, written.hash]);
+        await audit(ctx, c, userId, "dns.write", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snapId, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length, actor: "session" } });
+        if (sensitive.length > 0) {
+          // The residual risk of D-034: a human session is not gated, so every address is told and the change can be rolled back.
+          await audit(ctx, c, userId, "dns.sensitive_change", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snapId, count: sensitive.length } });
+          await notifyDomainEvent(ctx, c, userId, {
+            kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
+            text: `A change from your signed-in session touched ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn_ascii}:\n${sensitiveLines(sensitive)}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.`,
+          });
+        }
+      });
       return json({
-        changed: true, snapshot_id: snap.id, zone_hash: written.hash, added: diff.added.length, removed: diff.removed.length,
-        sensitive: sensitive.length > 0, sensitive_records: sensitive, rollback: `/api/v1/domains/${d.fqdn_ascii}/dns/snapshots/${snap.id}/rollback`,
+        changed: true, snapshot_id: snapId, zone_hash: written.hash, added: diff.added.length, removed: diff.removed.length,
+        sensitive: sensitive.length > 0, sensitive_records: sensitive, rollback: `/api/v1/domains/${d.fqdn_ascii}/dns-snapshots/${snapId}/rollback`,
       });
     });
   } catch (e) { throw mapRegistrarError(e); }
@@ -212,43 +290,55 @@ export async function snapshotsHandler(req: HandlerReq): Promise<HandlerResult> 
   const { ctx } = req; const userId = userIdOf(req);
   return withUser(ctx.runtime, userId, async (c) => {
     const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
-    const rows = (await c.query("select id, reason, zone_hash, after_hash, added_count, removed_count, sensitive_count, taken_at, expires_at, rolled_back_at from dns_snapshots where domain_id = $1 and expires_at > $2 order by taken_at desc, id desc limit 50", [d.id, ctx.clock.now()])).rows;
-    return json({ domain: d.fqdn_ascii, snapshots: rows.map((r) => ({ id: r.id, reason: r.reason, zone_hash: r.zone_hash, after_hash: r.after_hash, added: r.added_count, removed: r.removed_count, sensitive: r.sensitive_count, taken_at: new Date(r.taken_at).toISOString(), expires_at: new Date(r.expires_at).toISOString(), rolled_back_at: r.rolled_back_at ? new Date(r.rolled_back_at).toISOString() : null })) });
+    const rows = (await c.query("select id, reason, zone_hash, after_hash, write_state, added_count, removed_count, sensitive_count, taken_at, expires_at, rolled_back_at from dns_snapshots where domain_id = $1 and expires_at > $2 and write_state <> 'refused' order by taken_at desc, id desc limit 50", [d.id, ctx.clock.now()])).rows;
+    return json({ domain: d.fqdn_ascii, snapshots: rows.map((r) => ({ id: r.id, reason: r.reason, zone_hash: r.zone_hash, after_hash: r.after_hash, write_state: r.write_state, added: r.added_count, removed: r.removed_count, sensitive: r.sensitive_count, taken_at: new Date(r.taken_at).toISOString(), expires_at: new Date(r.expires_at).toISOString(), rolled_back_at: r.rolled_back_at ? new Date(r.rolled_back_at).toISOString() : null })) });
   });
 }
 
-/** One-click rollback: the zone as it was before the chosen write. It takes its own snapshot first, so a rollback can be rolled back too. */
+/**
+ * One-click rollback: the zone as it was before the chosen write. It takes its own snapshot first, so a rollback can be rolled back too.
+ * A rollback is a DNS write and keeps the write-safety rules. When the zone is exactly as the chosen write left it (its `after_hash`), the
+ * records the rollback removes are that write's own and count as named; otherwise later changes would be undone with it, so nothing is
+ * named and a rollback that deletes an MX, TXT or SRV record (or more than 5 records) is refused: undo the later writes first.
+ */
 export async function rollbackHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req; const userId = userIdOf(req);
   const sid = req.params.sid ?? "";
   try {
-    return await withUser(ctx.runtime, userId, async (c) => {
-      const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
-      const snap = /^[0-9a-f-]{36}$/i.test(sid) ? (await c.query("select * from dns_snapshots where id = $1 and domain_id = $2 and expires_at > $3", [sid, d.id, ctx.clock.now()])).rows[0] : undefined;
-      if (!snap) throw new HttpError(404, "not_found");
-      await assertWritesOpen(c);
-      await lockDomainZone(c, d.id);
-      const live = await liveZone(ctx, d);
-      const target = canonicalZone(snap.records as DnsRecord[]);
-      const diff = diffZones(live, target);
-      if (diff.added.length === 0 && diff.removed.length === 0) return json({ changed: false, zone_hash: zoneHash(live) });
-      const sensitive = sensitiveOf(d.fqdn_ascii, diff);
+    return await zoneSession(ctx, userId, async (s) => {
+      const pre = await s.step(async (c) => {
+        const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
+        const snap = /^[0-9a-f-]{36}$/i.test(sid) ? (await c.query("select * from dns_snapshots where id = $1 and domain_id = $2 and expires_at > $3 and write_state <> 'refused'", [sid, d.id, ctx.clock.now()])).rows[0] : undefined;
+        if (!snap) throw new HttpError(404, "not_found");
+        await assertWritesOpen(c);
+        await s.lock(c, d.id);
+        const live = await liveZone(ctx, d);
+        const target = canonicalZone(snap.records as DnsRecord[]);
+        const diff = diffZones(live, target);
+        if (diff.added.length === 0 && diff.removed.length === 0) return { d, live, target, diff, sensitive: [] as Sensitive[], snapId: snap.id as string, backId: null };
+        // The zone the chosen write left: read back when it completed, or the zone it asked for when its outcome is not known.
+        const left = (snap.after_hash ?? snap.intended_hash) as string | null;
+        const exact = !!left && left === zoneHash(live);
+        assertSafeDiff(diff, exact ? diff.removed.map((r) => ({ type: r.type, name: r.name, value: r.value })) : []);
+        const sensitive = sensitiveOf(d.fqdn_ascii, diff);
+        return { d, live, target, diff, sensitive, snapId: snap.id as string, backId: await takeSnapshot(ctx, c, userId, d, "pre_rollback", live, target, diff, sensitive, { rollback_of: snap.id }) };
+      });
+      const { d, live, diff, sensitive, snapId, backId } = pre;
+      if (!backId) return json({ changed: false, zone_hash: zoneHash(live) });
+      const written = await sendZone(ctx, s, userId, d, live, pre.target, backId, sensitive);
       const now = ctx.clock.now();
-      const back = (await c.query(
-        `insert into dns_snapshots (user_id, domain_id, reason, zone_hash, records, added_count, removed_count, sensitive_count, taken_at, expires_at)
-         values ($1,$2,'pre_rollback',$3,$4,$5,$6,$7,$8,$9) returning id`,
-        [userId, d.id, zoneHash(live), JSON.stringify(live), diff.added.length, diff.removed.length, sensitive.length, now, new Date(now.getTime() + SNAPSHOT_TTL_MS)])).rows[0];
-      const written = await registrarOf(ctx).replaceZone(d.fqdn_ascii, target);
-      await c.query("update dns_snapshots set after_hash = $2 where id = $1", [back.id, written.hash]);
-      await c.query("update dns_snapshots set rolled_back_at = $2 where id = $1", [snap.id, now]);
-      await audit(ctx, c, userId, "dns.rollback", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snap.id, undo_snapshot: back.id, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length } });
-      if (sensitive.length > 0) {
-        await notifyDomainEvent(ctx, c, userId, {
-          kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
-          text: `A rollback from your signed-in session touched ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn_ascii}. You can undo it from the DNS tab, under History.`,
-        });
-      }
-      return json({ changed: true, restored_snapshot_id: snap.id, undo_snapshot_id: back.id, zone_hash: written.hash, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length > 0 });
+      await s.step(async (c) => {
+        await c.query("update dns_snapshots set after_hash = $2, write_state = 'applied' where id = $1", [backId, written.hash]);
+        await c.query("update dns_snapshots set rolled_back_at = $2 where id = $1", [snapId, now]);
+        await audit(ctx, c, userId, "dns.rollback", { resourceKind: "domain", resourceId: d.id, detail: { snapshot: snapId, undo_snapshot: backId, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length } });
+        if (sensitive.length > 0) {
+          await notifyDomainEvent(ctx, c, userId, {
+            kind: "dns.sensitive_changed", domainId: d.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
+            text: `A rollback from your signed-in session touched ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${d.fqdn_ascii}. You can undo it from the DNS tab, under History.`,
+          });
+        }
+      });
+      return json({ changed: true, restored_snapshot_id: snapId, undo_snapshot_id: backId, zone_hash: written.hash, added: diff.added.length, removed: diff.removed.length, sensitive: sensitive.length > 0 });
     });
   } catch (e) { throw mapRegistrarError(e); }
 }

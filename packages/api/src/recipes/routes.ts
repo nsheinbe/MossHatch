@@ -98,7 +98,8 @@ async function apply(req: HandlerReq): Promise<HandlerResult> {
   await withUser(req.ctx.runtime, actor.userId, async (c) => {
     const r = await c.query("update recipe_applications set state = 'applying' where id = $1 and user_id = $2 and state = $3 and plan_hash = $4", [app.id, actor.userId, app.state, app.plan_hash]);
     if (r.rowCount !== 1) throw new HttpError(409, "plan_used");
-    await enqueue(c, { kind: "recipe.apply", userId: actor.userId, payload: { application_id: app.id, user_id: actor.userId }, dedupeKey: `recipe.apply:${app.id}` });
+    // Who asked (ids only): the job mails the owner at once when an agent's apply writes prod (ST-35).
+    await enqueue(c, { kind: "recipe.apply", userId: actor.userId, payload: { application_id: app.id, user_id: actor.userId, by_kind: actor.kind, by_id: actor.id }, dedupeKey: `recipe.apply:${app.id}` });
     await appendAudit(req.ctx, c, { chainId: actor.userId, actorKind: actor.kind, actorId: actor.id, action: "recipe.apply_requested", resourceKind: "recipe_application", resourceId: app.id, detail: { recipe: recipe.id, approved_by: app.approved_by_action_id ?? null } });
   });
   return json({ application_id: app.id, state: "applying" }, 202);
@@ -133,6 +134,8 @@ export const sensitiveApproveSpec: ActionSpec<Record<string, never>> = {
         pending: p.pending_records.map((r) => `${r.type} ${r.name}`),
         steps: p.steps.filter((s) => s.creates_resource || s.cost !== "free").map((s) => `${s.service} ${s.op} (${s.cost})`),
         add: p.dns.add.length, remove: p.dns.remove.length, variables: p.variables.map((v) => v.name),
+        // A project.create moves the connection off the project it uses now, and every later plan follows: say which one.
+        replaces: p.steps.some((s) => s.op === "project.create") ? (p.connections ?? []).filter((c) => c.service === "neon" && c.external_ref).map((c) => `neon project ${c.external_ref}`) : [],
       },
       resourceId: a.id,
     };
@@ -143,7 +146,8 @@ export const sensitiveApproveSpec: ActionSpec<Record<string, never>> = {
     return `Apply the "${String(q.recipe)}" plan ${String(q.plan_hash).slice(0, 12)} to ${String(q.domain)}: ${String(q.add)} record${q.add === 1 ? "" : "s"} added and ${String(q.remove)} removed. `
       + `Sensitive records (${sens.length}): ${sens.length ? list(sens) : "none"}. `
       + (pend.length ? `Records the provider will create later (${pend.length}): ${list(pend)}. ` : "")
-      + `Provider steps that create something or may cost money (${steps.length}): ${steps.length ? list(steps) : "none"}.`;
+      + `Provider steps that create something or may cost money (${steps.length}): ${steps.length ? list(steps) : "none"}.`
+      + ((q.replaces as string[] | undefined)?.length ? ` The connection stops using ${list(q.replaces)} and uses the new project from then on.` : "");
   },
 };
 

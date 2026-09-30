@@ -67,7 +67,11 @@ export async function prepareHandler(req: HandlerReq): Promise<HandlerResult> {
   return withUser(ctx.runtime, userId, async (c) => {
     if (spec.held) await assertNotHeld(ctx, c, userId, spec.type);
     const d = await deriveAction(ctx, c, spec, userId, body.data.target_id, input.data);
-    const allow = (await c.query("select credential_id from passkeys where user_id = $1 and revoked_at is null and suspended_at is null order by created_at, id", [userId])).rows.map((r) => r.credential_id as string);
+    // Hardened mode keeps no weaker fallback: backup-eligible (synced) credentials are not offered (ST-53).
+    const allow = (await c.query(
+      `select p.credential_id from passkeys p join users u on u.id = p.user_id
+        where p.user_id = $1 and p.revoked_at is null and p.suspended_at is null and not (u.hardened_mode and p.backup_eligible)
+        order by p.created_at, p.id`, [userId])).rows.map((r) => r.credential_id as string);
     if (allow.length === 0) throw new HttpError(409, "no_passkey");
 
     const now = ctx.clock.now();
@@ -146,10 +150,12 @@ export async function commitHandler(req: HandlerReq): Promise<HandlerResult> {
   // (b) Session and user match (checked by the lookup above), response.id was issued, credential belongs to this user and is live.
   if (!(action.allow_credential_ids ?? []).includes(assertion.id)) return fail(403, "assertion_invalid", "credential_not_allowed");
   const cred = await withUser(ctx.runtime, userId, async (c) => (await c.query(
-    `select p.id, p.credential_id, p.public_key, p.sign_count, p.transports, p.backup_eligible, p.backup_state, u.webauthn_user_handle
+    `select p.id, p.credential_id, p.public_key, p.sign_count, p.transports, p.backup_eligible, p.backup_state, u.webauthn_user_handle, u.hardened_mode
        from passkeys p join users u on u.id = p.user_id
       where p.credential_id = $1 and p.user_id = $2 and p.revoked_at is null and p.suspended_at is null`, [assertion.id, action.user_id])).rows[0]);
   if (!cred) return fail(403, "assertion_invalid", "credential_unavailable");
+  // Hardened mode, turned on after prepare, still refuses a synced credential (ST-53).
+  if (cred.hardened_mode && cred.backup_eligible) return fail(403, "assertion_invalid", "hardened_mode");
   const handle = assertion.response.userHandle;
   if (handle && !safeEqual(fromB64u(handle), Buffer.from(cred.webauthn_user_handle))) return fail(403, "assertion_invalid", "user_handle_mismatch");
 

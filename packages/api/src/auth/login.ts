@@ -103,7 +103,8 @@ async function loginVerify(req: HandlerReq): Promise<HandlerResult> {
       await auditUser(ctx, c, userId, "auth.passkey.backup_state_cleared", { resourceKind: "passkey", resourceId: passkeyId });
     }
     if (restoreRecoveryId) await undoRecovery(ctx, c, userId, restoreRecoveryId);
-    else await cancelOpenOnSignIn(ctx, c, userId);
+    // Every legitimate sign-in cancels a request still open, the undo sign-in included (ST-46).
+    await cancelOpenOnSignIn(ctx, c, userId);
     // Unfreezing happens only here, after a valid assertion. Paused tokens stay paused; each resumes through agent.token.widen.
     const un = await c.query("update users set frozen_at = null where id = $1 and frozen_at is not null returning id", [userId]);
     if (un.rowCount === 1) await auditUser(ctx, c, userId, "auth.unfreeze", { resourceKind: "user", resourceId: userId });

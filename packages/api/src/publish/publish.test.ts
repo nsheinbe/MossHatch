@@ -9,16 +9,18 @@ import { decodePng, encodePng, sanitizePng, PngError } from "./png.ts";
 import { MemoryCardStorage, MemoryCardsSite } from "./storage.ts";
 import { FakeWebRisk, screenName } from "./screen.ts";
 import { installPublish } from "./service.ts";
-import { EXPORT_KEYS } from "./export.ts";
+import { CARDS_KEY_HEADER, EXPORT_KEYS } from "./export.ts";
 import { purgeUnpublished, rescanCards, takeDownCard } from "./jobs.ts";
 
 let k: Kit; let alice: Person; let bob: Person;
 let storage: MemoryCardStorage; let webRisk: FakeWebRisk; let site: MemoryCardsSite;
+/** The cards build's key for the export (review fix: the export is never anonymous). */
+const EXPORT_KEY = "cards-export-key-for-tests-0123456789abcdef";
 
 beforeAll(async () => {
   k = await makeKit();
   storage = new MemoryCardStorage(); webRisk = new FakeWebRisk(); site = new MemoryCardsSite();
-  installPublish(k.app.ctx, { storage, webRisk, site, cardsOrigin: "https://hatchkind.test" });
+  installPublish(k.app.ctx, { storage, webRisk, site, cardsOrigin: "https://hatchkind.test", exportKey: EXPORT_KEY });
   alice = await makePerson(k, "alice"); bob = await makePerson(k, "bob");
 }, 120_000);
 afterAll(async () => { await k?.app.drop(); });
@@ -218,7 +220,7 @@ describe("ST-145 the public view and the cards role", () => {
   });
 
   it("the export carries only the public fields, and traits are fixed phrases computed from the name", async () => {
-    const res = await k.app.call("GET", "/api/v1/cards/public");
+    const res = await k.app.call("GET", "/api/v1/cards/public", { headers: { [CARDS_KEY_HEADER]: EXPORT_KEY } });
     expect(res.status).toBe(200);
     expect(res.headers.get("set-cookie")).toBeNull();
     expect(res.json.cards.length).toBeGreaterThan(0);
