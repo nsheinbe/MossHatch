@@ -3,7 +3,7 @@ import { axe } from "./axe";
 import path from "node:path";
 import { deriveTraits } from "../packages/core/src/index.ts";
 
-const CORE = path.resolve(__dirname, "../packages/core/src/index.ts");
+const CORE = path.resolve(process.cwd(), "packages/core/src/index.ts");
 
 declare global { interface Window { __mh: { world: { stats(): { calls: number; creatures: number; dpr: number } }; pause(): void; step(s: number, dt?: number): void } } }
 
