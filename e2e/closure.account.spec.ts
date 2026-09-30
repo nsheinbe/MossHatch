@@ -42,7 +42,7 @@ test("account data: download my data with a passkey, close my account, sign in t
   await signUp(page, request, email);
 
   // C-58: the checkout sheet for a .dev name says it works over HTTPS only.
-  await page.fill("#name-input", `quiet-fern${Date.now().toString(36)}`);
+  await page.fill("#name-input", `free-quiet-fern${Date.now().toString(36)}`);   // "free-" labels are always available in the mock, so the .dev chip is always offered
   const chip = page.locator("button.chip", { hasText: ".dev" });
   await expect(chip).toBeVisible({ timeout: 20_000 });
   await chip.click();
