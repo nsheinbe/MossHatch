@@ -2,6 +2,8 @@
 
 Status: design only. The chain format, PII columns and export shape are fixed in Phase 2; the flows are built in Phases 3 (closure, released names) and 4 (export, vault destruction). Sources: PLAN 4.3b "Account closure, export and erasure" and "Backup, restore and regional failure", decisions D-027 and D-030 (Proposed default). What Phase 2 already ships is marked **built**.
 
+Built on 2026-09-30 in `packages/api/src/closure` (migration 1050), with the step-up ids `account.close` and `account.export` (D-052); what was built and what remains unproven is in `docs/PHASE4.md`.
+
 ## 1. States and transitions
 
 `active -> closing -> closed -> purged` (column `users.status`; `pending` exists only before sign-up completes).

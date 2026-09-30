@@ -2,7 +2,7 @@
 
 Status: built and tested in process against a real PostgreSQL 16 (local, Node 22.22.2), with the Rescue, Gate, Visitors, approval card and connected-app consent screens in the web app. **No transfer has ever reached a registrar**: there are no OpenSRS credentials, and Horizon cannot run transfers anyway, so every transfer statement below is about `MockRegistrarPort` and the OpenSRS adapter code that has never met a response. Stripe (test or live), GitHub secret scanning and every real MCP or OAuth client were never called or connected; payments ran against FakeStripe, and the MCP and OAuth tests are our own client. You waived the phase gates on 2026-09-30 (D-050); nothing that ran only against a fake is called verified here.
 
-A third round of review fixes was in progress when this report was written (see "Round 3 fixes" below). The test counts and findings here describe the tree at commit `ce79de0`.
+A third round of review fixes landed after this report was first written, followed by two race fixes; "Round 3 fixes" below lists them with their tests and the counts measured after them. Everywhere else, the test counts and findings describe the tree at commit `ce79de0`.
 
 ## What shipped
 
@@ -54,7 +54,7 @@ Paths are relative to `packages/api/src` unless they start with `apps/` or `e2e/
 | ST-61 | `agents/approvals.test.ts` "approval races leave one terminal state and at most one order" | Passes |
 | ST-68 | `agents/scanning.test.ts` "the secret-scanning receiver revokes a reported token once and emails the owner" (2 tests) | Passes against keys made in the test; GitHub never delivered |
 | ST-73 | `agents/approvals.test.ts` "a bearer token cannot approve, exceed its cap or reach /actions/*" | Passes |
-| ST-74 | `agents/approvals.test.ts` "concurrent proposals never exceed the cap or the pending limits; lowering the cap keeps what exists" | Passes |
+| ST-74 | `agents/approvals.test.ts` "concurrent proposals never exceed the cap or the pending limits; lowering the cap keeps what exists"; round 3: `agents/lockorder.test.ts`, `agents/approval-expiry.test.ts`, `agents/order-expiry-race.test.ts` | Passes |
 | ST-75 | `agents/approvals.test.ts` "duplicates reserve nothing; reservations return on decline, expiry, void and failure"; `agents/review.test.ts` | Passes |
 | ST-76 | `agents/approvals.test.ts` "approval alone charges nothing; no Checkout URL reaches a bearer; a total above the tax ceiling voids" | Passes against FakeStripe |
 | ST-77 | `agents/approvals.test.ts` "state order, price rise voids, approval after expiry fails"; `agents/review.test.ts` (Pay now re-check) | Passes against FakeStripe |
@@ -63,11 +63,11 @@ Paths are relative to `packages/api/src` unless they start with `apps/` or `e2e/
 | ST-80 | `agents/approvals.test.ts` "typed confirmation and frame-ancestors" | Passes |
 | ST-81 | `mcp/mcp.test.ts` "tool output is data; descriptions are static" | Passes |
 | ST-82 | `mcp/mcp.test.ts` "scope-denied bursts are audited and raise an alert" | Passes |
-| ST-83 | `mcp/mcp.test.ts` "authorized by the binding's scopes, never the server's; other audiences refused" | Passes |
-| ST-84 | `mcp/mcp.test.ts` "the Origin allow-list and the token check run before the handler"; `oauth/oauth.test.ts` "no client uses another's consent; an unregistered redirect is never followed"; `oauth/review.test.ts`; `mcp/review.test.ts` | Passes |
+| ST-83 | `mcp/mcp.test.ts` "authorized by the binding's scopes, never the server's; other audiences refused"; round 3: `oauth/grant-bounds.test.ts` (a `/mcp` grant is refused on every other bearer route) | Passes |
+| ST-84 | `mcp/mcp.test.ts` "the Origin allow-list and the token check run before the handler"; `oauth/oauth.test.ts` "no client uses another's consent; an unregistered redirect is never followed"; `oauth/review.test.ts`; `mcp/review.test.ts`; round 3: `oauth/grant-bounds.test.ts` (a consent cannot be redeemed at `POST /bindings`) | Passes |
 | ST-124 | `transfers/gate.test.ts` "transfer-out and code issue return 403 step_up_required without a committed action" | Passes |
 | ST-126 | `transfers/guards.test.ts` (7 tests); `apps/web/src/lib/transfers.test.ts` "pre-check reasons" | Passes against the mock and a test DNSSEC lookup; see Not proven |
-| ST-131 | `mcp/mcp.test.ts` "an agent write of a sensitive record gets a pending approval and no write" | Passes |
+| ST-131 | `mcp/mcp.test.ts` "an agent write of a sensitive record gets a pending approval and no write"; round 3: `agents/dns-write.test.ts`, `agents/dns-decline-race.test.ts` | Passes |
 | ST-133 | `agents/approvals.test.ts` "the new-account limits bind a scripted bulk registration by agents"; `agents/review.test.ts` (kill switch) | Passes |
 | ST-136 | `mcp/mcp.test.ts` "a burst of bad tokens from the connector range does not deny a valid token"; `mcp/review.test.ts`; `oauth/review.test.ts` | Passes |
 | ST-91 re-run | `agents/walk.test.ts` "cross-tenant matrix over bindings, approvals and transfers"; `security/matrix.test.ts`; `transfers/gate.test.ts` | Passes |
@@ -123,7 +123,31 @@ The lead reports that the second round, over four modules, fixed 21 findings and
 
 ## Round 3 fixes
 
-> **Placeholder for the lead.** A third review round was in progress when this report was written. Its findings, as reported: a consent redeemable at `POST /bindings`; MCP OAuth tokens accepted on REST routes; a lock-order deadlock; recovery not voiding device grants and consents; an approved request's reservation never expiring; the agent DNS path's snapshot. For each: the fix, the test that failed before it, and the test count after it. Until this section is filled, treat all six as open.
+The third review round landed in commit `c580b74` (2026-09-30, 19:46 UTC). Review of that commit found two races, fixed afterwards in the working tree. For the two races, the agent who fixed them reports that every new test failed before its fix. For the six earlier findings, the commit records only that the deadlock was reproduced before its fix. I did not run any test against the unfixed code; I ran them all after the fixes (counts below). Every test ran against `MockRegistrarPort`, FakeStripe and our own OAuth client; no provider was called. Paths are relative to `packages/api/src`.
+
+| Finding | Fix | Test |
+|---|---|---|
+| An approved OAuth consent could be redeemed as a plain token at `POST /bindings`. The consent screen signs `agent.token.create`, and `/bindings` accepted that action and minted a bearer token with no client and no audience | `/bindings` refuses an action that carries a route (409 `action_unavailable`) before spending it, so the consent can still be approved at its own route, which issues the grant bound to its client and resource | `oauth/grant-bounds.test.ts` "ST-84 review: an approved OAuth consent cannot be redeemed as a plain token at POST /bindings" |
+| An access token minted for `/mcp` was accepted on the REST bearer routes | Audience binding (RFC 8707): the router refuses a token with an `audience` (401 `invalid_token`) on every route whose declared resource differs; migration 0965 returns the audience from the pre-authentication lookup. Bindings-tab and CLI tokens have no audience and are unchanged | `oauth/grant-bounds.test.ts` "ST-83 review (RFC 8707)" (3 tests, one a walk over every route) |
+| Revoke-all could deadlock with decline, approval and the reservation-release trigger: revoke-all locked bindings then requests, and the others locked requests then bindings | One lock order everywhere: device grants first, then the user's agent lock, agent requests by id, bindings by id, refresh tokens (`bindings/tokens.ts` `revokeAllBindings`) | `agents/lockorder.test.ts`: 16 rounds of revoke-all racing declines, two approvals and the sweeper; no server error, every request ends in a terminal state, and each binding's reserved amount equals what its approved requests hold |
+| A completed recovery left approved device grants and open OAuth consents claimable, so a later device poll or code exchange could mint a token | Completing a recovery denies approved device grants and pending or approved consents, before the bindings are revoked (`auth/recovery.ts`) | `auth/recovery.test.ts` "ST-48 review: completing a recovery denies approved device grants and open OAuth consents, so a later device poll gets no token" |
+| An approved purchase whose order was never made (the order path failed after the approval, or nobody pressed Pay now) held its spend-cap reservation forever | An approval now expires 72 hours after it was given (`APPROVAL_TTL_MS`, equal to `REQUEST_TTL_MS`; the plan names no figure, D-054). From then Pay now answers 409 `request_expired`, and the sweeper, 10 minutes later, expires the request (`approval_expired`) and releases the reservation. An approval whose order exists is never expired this way | `agents/approval-expiry.test.ts` (ST-74, ST-75) |
+| The agent DNS path did not use the DNS tab's write safety (snapshot and intent committed before the registrar call), so a write whose outcome was unknown could leave no snapshot to roll back to | Agent writes, direct or approved, go through `writeZoneLocked`: the pre-write snapshot and the intent row commit before the registrar is called. An unknown outcome answers 502 `outcome_unknown`, keeps the snapshot (`write_state` `unknown`), is audited as `dns.write_outcome_unknown`, tells the owner the change may have landed, and can be rolled back from the DNS tab; a retry cannot write over it | `agents/dns-write.test.ts` (ST-131, 5 tests) |
+| Race, found after `c580b74`: the owner could decline a sensitive DNS change while its approval was writing the zone | In the transaction that commits the pre-write snapshot, the approval takes the user's agent lock, then the request, then the binding, and moves the request from pending to approved before the registrar is called. A decline that lands first wins and nothing is written; a later one gets 409 and the write completes (snapshot applied, request completed). When the registrar's outcome is unknown the request stays `approved` and agents see "approved", not "applied" (the existing test in `agents/dns-write.test.ts` that expected `pending` was updated). A write the registrar refuses now fails the request (`write_refused`), so the agent can propose again | `agents/dns-decline-race.test.ts` (3 tests, one per interleaving, each set up with gates rather than timing); `agents/dns-write.test.ts` |
+| Race, found after `c580b74`: Pay now could make an order for an approval the sweeper was expiring at that moment | Pay now re-checks the approval and creates the order while holding the request row lock, which the sweeper also takes, so an expired approval never yields an order and an approval with an order never loses its reservation. Approval expiry now applies to purchases (`register`, `renew`) only; an approved DNS change is never expired by it. Trade-off: Pay now holds one extra database connection while the order is made | `agents/order-expiry-race.test.ts` (2 tests, interleaved with gates) |
+
+The same commit also carried fixes outside this phase's modules: a legal hold on `transfer_log` (migration 0946); Dashboard refunds of renewals reaching the ledger (`domains/dashboard-refund.test.ts`); mandates kept 3 years after the last renewal charge (migration 0670, `domains/mandate-retention.test.ts`, D-055); web fixes named in its commit message (the step-up dialog can no longer run a new request with an older signed action; approval cards sign the scopes shown); CSP violation reporting and account closure, export and erasure (`docs/PHASE4.md`, `docs/PHASE6.md`).
+
+| Item (run 2026-09-30 about 20:11 to 20:13 UTC, working tree with the race fixes) | Result |
+|---|---|
+| `npx vitest run packages/api/src/agents packages/api/src/security` | 12 files, 55 passed, 0 failed. Agents 40: approvals 15, review 6, dns-write 5, walk 4, dns-decline-race 3, order-expiry-race 2, scanning 2, approval-expiry 1, lockorder 1, session 1. Security 15: matrix 14, vault-canary 1 |
+| `packages/api/src/oauth` | 22 passed: grant-bounds 4, oauth 8, review 10 |
+| `auth/recovery.test.ts` | 20 passed |
+| `packages/api/src/mcp`, `recipes`, `domain-mgmt`, `bindings` | 10 files, 136 passed |
+| `npm run typecheck` | Clean |
+| Whole unit and database suite | 1186 passing at `c580b74`, as its commit message reports; I did not re-run the whole suite after the race fixes |
+
+None of the six findings is open.
 
 ## Deviations from the plan
 
@@ -159,6 +183,6 @@ The lead reports that the second round, over four modules, fixed 21 findings and
 
 1. **Stripe account.** A test-mode key and webhook secret so the scripted agent purchase and the transfer-in hold can run on real Stripe test-mode Checkout.
 2. **OpenSRS activation** after counsel's review of the MSA, and the written answers in PLAN 4.1, question 11 above all (outbound approve or decline, who sends the Losing FOA, `.io` codes). Transfers stay unproven until the Phase 6 live rehearsal.
-3. **Rate limits for the OAuth server.** Sign off on the own-target numbers or change them: authorize 60 per address per 10 minutes; client registration 20 per address per hour; metadata-document fetches 3 per URL and 30 per host per 10 minutes; the token endpoint 120 a minute per address range and credential.
+3. **Rate limits for the OAuth server** (D-056). Sign off on the own-target numbers or change them: authorize 60 per source network (/24, or /48 for IPv6) per 10 minutes; client registration 20 per source network per hour; metadata-document fetches 3 per URL and 30 per host per 10 minutes; the token endpoint 120 a minute per source network and credential.
 4. **Compliance.** Build or approve deferring C-05 (a console screen for denials), C-09 (TEAC contacts in the contract and the registrant help text) and the C-55 manual passes. Nothing is deferred without your written approval.
 5. **Counsel.** Question 2 (passkey gating and I.A.5.3, for C-02 and C-04) and the Losing FOA sender (C-08).

@@ -382,7 +382,9 @@ export async function resolveScope(ctx: AppContext, userId: string, id: string) 
 /**
  * Expire pending requests past their time, void those of a revoked binding, and expire approvals nobody paid for (the release of a
  * held reservation happens in the trigger). Cron role. One transaction in the lock order every path uses (see `revokeAllBindings`):
- * the requests first, in id order, then their bindings, in id order, then the state changes.
+ * the requests first, in id order, then their bindings, in id order, then the state changes, each a fresh statement that re-checks
+ * the state under those locks. Pay now makes an order only while holding the same request row (`withApproval` in approve.ts), so an
+ * approval is expired only when no order points at it, and an order is never made for one this expired (ST-74).
  */
 export async function expireDue(ctx: AppContext): Promise<number> {
   const now = ctx.clock.now();
@@ -391,7 +393,7 @@ export async function expireDue(ctx: AppContext): Promise<number> {
     const ids = (await c.query(
       `select r.id from agent_requests r join bindings b on b.id = r.binding_id
         where (r.state = 'pending' and (r.expires_at <= $1 or b.revoked_at is not null))
-           or (r.state = 'approved' and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id))
+           or (r.state = 'approved' and r.kind in ('register','renew') and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id))
         order by r.id for update of r`, [now, stale])).rows.map((x) => x.id as string);
     if (ids.length === 0) return 0;
     await c.query("select id from bindings where id in (select binding_id from agent_requests where id = any($1::uuid[])) order by id for no key update", [ids]);
@@ -399,9 +401,11 @@ export async function expireDue(ctx: AppContext): Promise<number> {
     // A binding revoked on its own (not through revoke-all) leaves its pending requests behind: they are void, never approvable.
     const v = await c.query("update agent_requests r set state = 'void', decision_reason = 'binding_revoked', decided_at = $2 from bindings b where r.id = any($1::uuid[]) and b.id = r.binding_id and r.state = 'pending' and b.revoked_at is not null", [ids, now]);
     // An approval whose order was never made (the order path failed after it, or nobody pressed Pay now) expires and gives its
-    // reservation back to the cap. `decided_at` keeps the time of the approval.
+    // reservation back to the cap. `decided_at` keeps the time of the approval. A purchase only: an approved DNS change is one whose
+    // write is out or whose outcome is unknown, and it keeps that state. This statement's snapshot is taken after the row locks, so an
+    // order a Pay now committed while holding one of them is seen here.
     const a = await c.query(
-      "update agent_requests r set state = 'expired', decision_reason = 'approval_expired' where r.id = any($1::uuid[]) and r.state = 'approved' and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id)",
+      "update agent_requests r set state = 'expired', decision_reason = 'approval_expired' where r.id = any($1::uuid[]) and r.state = 'approved' and r.kind in ('register','renew') and r.order_id is null and r.decided_at <= $2 and not exists (select 1 from orders o where o.agent_request_id = r.id)",
       [ids, stale]);
     return (r.rowCount ?? 0) + (v.rowCount ?? 0) + (a.rowCount ?? 0);
   });
@@ -414,7 +418,10 @@ export async function expireDue(ctx: AppContext): Promise<number> {
  * request, so the approval TTL already in code (REQUEST_TTL_MS) is used, counted from the approval: Pay now refuses from then on.
  */
 export const APPROVAL_TTL_MS = REQUEST_TTL_MS;
-/** The sweeper waits this much longer, so an order that Pay now started just before the expiry has long committed when it looks. */
+/**
+ * Slack between Pay now's refusal and the sweeper. Correctness does not depend on it: Pay now makes an order only under the request row
+ * lock after re-checking the approval, and the sweeper expires under the same lock (see `expireDue`).
+ */
 export const APPROVAL_SWEEP_GRACE_MS = 10 * 60_000;
 
 /** An approved request with no order whose approval is older than APPROVAL_TTL_MS (checked again against `orders` by the caller). */

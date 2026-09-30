@@ -366,7 +366,7 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 ## D-045 Agent spend is consumed at capture
 **Status:** Proposed default (departs from PLAN 4.3b "Agent-approved purchase"; decided during the build, 2026-09-30).
 **Context.** PLAN 4.3b moves an agent request's reservation to spent when the passkey approves it. Approval charges nothing: the person may never pay on Checkout, the payment may fail, or the registration may fail and the order be voided, and none of those should use up the agent's cap.
-**Choice.** A proposal reserves its quoted amount against the binding (`reserved + spent + quoted <= cap`). A database trigger on `orders` moves it from reserved to spent only when the order the approval created reaches `captured`, counting what was actually taken and never more than was reserved. A void, an expired Checkout, a failed payment or a failed registration fails the request and releases the reservation (`packages/db/migrations/0950_agents.sql`). Between approval and capture the amount stays reserved, so the cap still holds. A reservation held by an approved request that is never paid was found not to expire; a fix was in progress on 2026-09-30 (`docs/PHASE5.md`, Round 3).
+**Choice.** A proposal reserves its quoted amount against the binding (`reserved + spent + quoted <= cap`). A database trigger on `orders` moves it from reserved to spent only when the order the approval created reaches `captured`, counting what was actually taken and never more than was reserved. A void, an expired Checkout, a failed payment or a failed registration fails the request and releases the reservation (`packages/db/migrations/0950_agents.sql`). Between approval and capture the amount stays reserved, so the cap still holds. An approved request whose order is never made releases its reservation when the approval expires, 72 hours after it was given (D-054; `docs/PHASE5.md`, Round 3).
 **Why.** Spent means money taken, and the cap is never exceeded because the reservation counts until then.
 **Would change if.** You want the cap to count approvals the person never paid for.
 
@@ -404,6 +404,55 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 **Choice.** On 2026-09-30 you said "go all out and just finish this. make it excellent". Phases 3 to 6 were built without waiting at the gates (`docs/BUILD-CONTRACT.md`). The waiver covers the stop-and-wait only. The honesty rules are unchanged: nothing that ran only against a fake is called verified, every unbuilt compliance row is listed in the phase reports, and no deferral counts as approved, because you have approved none.
 **Why.** Recorded so that the "Not met" exits in `docs/PHASE4.md` to `docs/PHASE6.md` read as open items, not as gates that were passed.
 **Would change if.** You reinstate the gates.
+
+## D-051 Response headers follow PLAN 4.3a, with three CSP departures
+**Status:** Proposed default (departs from the CSP row of PLAN 4.3a in three places; decided during the build, 2026-09-30).
+**Context.** PLAN 4.3a sets one response-header set for every route of `web` and `cards` (D-015). The two `vercel.json` files had drifted from it: `Strict-Transport-Security` carried `includeSubDomains` (the plan adds it only after a subdomain audit), the web CSP lacked `worker-src`, `manifest-src` and `upgrade-insecure-requests`, `/boot.js` sent `max-age=0, must-revalidate` instead of `no-cache`, `/api/*` had no `Cache-Control` rule, and `cards` had its own `Permissions-Policy` (with the unknown `interest-cohort` token), `no-referrer`, and no `X-Frame-Options` or `Reporting-Endpoints`.
+**Choice.** Both files now send the plan's value for every row, and the Report-Only row is merged into the enforced policy, as the plan says once the Nest ships. ST-14 (`e2e/headers.prod.spec.ts`, `e2e/headers.cards.spec.ts`) reads the table and the CSP row from `PLAN.md` and compares every served value on every static route class, so the files and the plan cannot drift apart again. Three departures remain, each because the plan's value breaks something that works: (1) web `img-src 'self' data: blob:` keeps `data:`, because the hatch card portrait is a PNG data URL (`apps/web/src/world/engine.ts`, shown by `CardPanel`; asserted in `e2e/account.spec.ts`); (2) web `trusted-types mosshatch` names the app's one policy, because `apps/web/src/lib/trusted.ts` creates it at start; (3) `cards` leaves out `script-src`, because hatchkind.com runs no script and its build gate (`scripts/check-cards.mjs`, ST-145) fails any CSP with `script-src`, so scripts fall back to `default-src 'none'`.
+**Why.** With the plan's exact policy in Chromium, the app does not boot (`Policy "mosshatch" disallowed`) and a data-URL image is refused. The named list still refuses a `default` policy and a second `mosshatch` policy (ST-38). Known limits: on `cards`, `report-uri` and `report-to` name `/api/csp-report`, which the static card host does not serve, so its reports are dropped until it has a report function; the API function sets its own headers (`packages/api/src/http/router.ts`: `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `Strict-Transport-Security` with `includeSubDomains`), which override `vercel.json` on API routes and were not changed here. Only Chromium was run, and how Vercel merges overlapping header rules is untested (4.3a).
+**Would change if.** The card portrait moves to a `blob:` URL (drop `data:`), the app stops creating a Trusted Types policy (use the plan's empty `trusted-types`), or hatchkind.com ever ships script (it then takes `script-src 'self'`).
+
+## D-052 Two step-up ids for account closure and export
+**Status:** Proposed default (adds two ids to the step-up table of PLAN 4.5, which had thirteen; decided during the build, 2026-09-30).
+**Context.** PLAN 4.5 lists `POST /account/close` and `POST /account/export`, and the closure design (PLAN 4.3b Account closure, export and erasure; D-030) asks for a passkey on both, but the step-up table had no id for either and `actions.type` accepted exactly the thirteen ids of Phase 2.
+**Choice.** Two new ids, both held (refused during the recovery holds): `account.close` binds the account, the names still registered, the choice to delete them and the cooling-off days; `account.export` binds the account and the export format. Migration 1050 widens the `actions.type` check, and the table in PLAN 4.5 lists both. Both routes accept a signed-in session only, so a bearer token can neither close an account nor take a copy of it (`packages/api/src/closure/routes.ts`; `closure/closure.test.ts`, `closure/export.test.ts`). A passkey sign-in during the 14-day cooling-off cancels a closure.
+**Why.** Closing an account and copying all of its personal data are what a person who took over an account would want most, so they get the same passkey and the same recovery hold as the other sensitive actions.
+**Would change if.** You want access requests served without a passkey (for example, by support after an identity check), or closure allowed during a recovery hold.
+
+## D-053 CSP reports at `/api/csp-report`, kept 30 days
+**Status:** Proposed default (the path is PLAN 4.3a's; the retention, the fields kept and the limits are own targets; decided during the build, 2026-09-30).
+**Context.** PLAN 4.3a names `/api/csp-report` in `report-uri` and `Reporting-Endpoints` and says what the handler accepts, but gives no retention and no limits. Anyone can post to the endpoint, so every report is attacker-controlled.
+**Choice.** `POST /api/csp-report` (anonymous, outside `/api/v1` as PLAN 4.5 lists it) accepts `application/csp-report` and `application/reports+json`, caps the body at 8 KiB, and allows 20 reports a minute per source network and 200 a minute overall (own targets). It keeps three coarse fields counted per day in `csp_reports` (migration 1100, no user id): the directive, the blocked resource's origin or a CSP keyword or scheme name, and the document path without its query or fragment. It drops reports caused by browser extensions and reports about documents on other origins, and logs nothing. The daily `csp.reports_sweep` job deletes rows older than 30 days (`packages/api/src/csp/report.ts`; `csp/csp.test.ts`, 10 tests).
+**Why.** Enough to see that a violation happens and on which page, without storing a URL, a sample, a referrer, a user agent or an address. Thirty days matches the log retention in PLAN 4.3b (Operations: alerts, logs and on-call). The known limit that `cards` names the endpoint but cannot serve it is in D-051.
+**Would change if.** You want a longer trend history, or reports go to an outside collector.
+
+## D-054 An approved agent purchase expires 72 hours after approval
+**Status:** Proposed default (PLAN 4.5 names no expiry for an approved request; decided during the build, 2026-09-30).
+**Context.** PLAN 4.5 gives a proposal 72 hours. An approval whose order was never made (the order path failed after the approval committed, or nobody pressed Pay now) held its spend-cap reservation forever (`docs/PHASE5.md`, Round 3).
+**Choice.** The approval expires `REQUEST_TTL_MS` (72 hours) after it was given (`APPROVAL_TTL_MS` in `packages/api/src/agents/requests.ts`). From then Pay now answers 409 `request_expired`; 10 minutes later the sweeper marks the request `expired` (`approval_expired`) and releases the reservation. It applies to purchases (`register`, `renew`) with no order only; an approval whose order exists is settled by that order (D-045). Pay now and the sweeper both take the request row lock, so an expired approval never yields an order (`agents/approval-expiry.test.ts`, `agents/order-expiry-race.test.ts`).
+**Why.** It reuses the only figure the plan gives for agent requests instead of inventing one, and it is long enough to pay after a failed first attempt.
+**Would change if.** You want the cap freed sooner (a shorter window) or approvals kept longer.
+
+## D-055 Auto-renew mandates are kept 3 years after the last renewal charge
+**Status:** Proposed default (reads COMPLIANCE C-31, "kept at least 3 years after the last renewal"; decided during the build, 2026-09-30).
+**Context.** A mandate and the consent that proves it were kept 3 years from the signature (`MANDATE_RETAIN_MS`). A mandate revoked after a late renewal could lose its record while that charge could still be disputed.
+**Choice.** A trigger on `payments` (migration 0670) moves the `retain_until` of the mandate and of its consent to 1,095 days after each successful renewal charge for the domain. It covers the mandates in force for that charge: signed before it and not switched off more than 30 days before it settled. Mandates charged before the migration got the same rule once. The retention purge keeps a consent while its mandate is kept (`domains/mandate-retention.test.ts`, 4 tests).
+**Why.** It is the wording of C-31, and it also covers the dispute window of the last charge: the longest card-network window, 540 days (an unverified own figure; neither PLAN nor COMPLIANCE states one), is shorter.
+**Would change if.** Counsel sets another schedule (C-19, PLAN 4.7 question 9).
+
+## D-056 Rate limits for the OAuth metadata fetch and authorize endpoints
+**Status:** Proposed default (own targets; awaiting your sign-off, `docs/PHASE5.md` Decisions needed 3; decided during the build, 2026-09-30).
+**Context.** The OAuth server fetches a Client ID Metadata Document from whatever URL a client names, so an anonymous caller can aim the fetcher; the authorize endpoint is anonymous too. The rate-limit table in PLAN 4.5 names neither.
+**Choice.** Metadata-document fetches: 3 per URL and 30 per host per 10 minutes (`CIMD_FETCH_LIMITS`, `packages/api/src/oauth/clients.ts`). Authorize: 60 per source network (/24, or /48 for IPv6) per 10 minutes (`AUTHORIZE_LIMIT`, `oauth/authorize.ts`). The other two limits of the OAuth server are listed with these in the Phase 5 report: client registration 20 per source network per hour, and the token endpoint 120 a minute per source network and credential. Tests: `oauth/review.test.ts`.
+**Why.** A URL is fetched a few times while a person consents, not dozens; the per-host limit bounds how hard the fetcher can be pointed at one host from many addresses; and keying authorize on the network rather than the address stops a caller from escaping the limit by rotating addresses within one network, while 60 in 10 minutes is far more than people consenting from one office need (own judgement, untested with real clients).
+**Would change if.** Real clients hit the limits (none has connected yet), or you want different numbers.
+
+## D-057 Link previews of hatchkind.com cards use the computed SVG
+**Status:** Proposed default (open in `docs/PHASE6.md` Decisions needed 6; decided during the build, 2026-09-30).
+**Context.** D-043 makes each card's portrait an SVG computed from the name and never serves uploaded pixels. A link preview needs an image URL in `og:image`.
+**Choice.** `og:image` points at that same SVG on the cards origin, with `og:image:alt` (`apps/cards/src/render.ts`). No raster image is made.
+**Why.** It adds no image pipeline and no uploaded pixels, and it keeps the cards build free of script and free of a renderer.
+**Would change if.** Previews without an image matter: many link-preview services do not render SVG (not tested against any of them), so a server-side or build-time PNG render of the same portrait would be needed.
 
 ## Where to veto
 An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 and D-050 are records with nothing to veto.
@@ -447,3 +496,10 @@ An entry with status Needs your decision is answered in `PLAN.md` under Open dec
 | D-047 | AAD as JCS, binding the KEK class | new assumption to add |
 | D-048 | Public pages generated from fragments and committed | new assumption to add |
 | D-049 | Cards project switched by `MH_CARDS_PRODUCTION` | new assumption to add |
+| D-051 | CSP departures: `data:` images and the `mosshatch` Trusted Types policy on `web`, no `script-src` on `cards` | 12 |
+| D-052 | Step-up ids `account.close` and `account.export`, both held | new assumption to add |
+| D-053 | CSP reports at `/api/csp-report`, three coarse fields, kept 30 days | 12 covers the policy; new assumption to add for retention |
+| D-054 | An approved agent purchase expires 72 hours after approval | new assumption to add |
+| D-055 | Mandates kept 3 years after the last renewal charge | new assumption to add |
+| D-056 | OAuth metadata-fetch and authorize rate limits | new assumption to add |
+| D-057 | The computed SVG as the link-preview image | new assumption to add |

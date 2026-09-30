@@ -15,6 +15,7 @@ import { rowToDomain } from "../domains/common.ts";
 import { ensureTerm } from "../domains/terms.ts";
 import { ensureRenewalOrder, startRenewalCheckout } from "../domains/renewals.ts";
 import { StripeError } from "../stripe/port.ts";
+import type { OrderRow } from "../orders/types.ts";
 import { approvedZonePlan } from "./dns.ts";
 import { mapRegistrarError, notifyDomainEvent } from "../domain-mgmt/common.ts";
 import { writeZoneLocked, type ZoneWriter } from "../domain-mgmt/dns.ts";
@@ -195,36 +196,77 @@ async function assertStillAsSigned(ctx: AppContext, userId: string, r: RequestRo
   if (refusal) throw new HttpError(409, refusal, undefined, NO_STORE);
 }
 
+type Pay = { order_id: string | null; checkout_url: string | null };
+
 /**
  * The order and its Checkout for an approved request. Idempotent (key `agent:<request>`), so a lost response, a second tab
  * or the "Pay now" button later all reach the same order and the same Session. A refusal from the order path (the name was
  * taken, a new-account limit, no registrant contact, a quote or terms that changed since the approval) fails the request,
  * which releases its reservation. The order never charges more than was signed: one priced higher gets no Checkout URL.
+ * Pay now and the sweeper's expiry of an approval nobody paid for (ST-74) meet on the request row: see `withApproval`.
  */
-async function checkoutFor(req: HandlerReq, userId: string, r: RequestRow, actionId: string, later = false): Promise<{ order_id: string | null; checkout_url: string | null }> {
+async function checkoutFor(req: HandlerReq, userId: string, r: RequestRow, actionId: string, later = false): Promise<Pay> {
   const { ctx } = req;
   try {
     await withUser(ctx.runtime, userId, (c) => assertAgentPurchasesOpen(c));
     if (later) await assertStillAsSigned(ctx, userId, r, actionId);
     if (r.kind === "register") {
-      const res = await createOrder(ctx, { userId, fqdn: r.fqdn_ascii, years: r.years, idempotencyKey: `agent:${r.id}`, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily, assertionActionId: actionId, agentRequestId: r.id });
+      const res = await withApproval(ctx, userId, r, () => createOrder(ctx, { userId, fqdn: r.fqdn_ascii, years: r.years, idempotencyKey: `agent:${r.id}`, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily, assertionActionId: actionId, agentRequestId: r.id }));
       if (exceedsSigned(res.order, r)) throw new HttpError(409, "price_changed", undefined, NO_STORE);
-      await withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set order_id = $2 where id = $1 and order_id is null", [r.id, res.order.id]));
+      await linkOrder(ctx, userId, r.id, res.order.id);
       return { order_id: res.order.id, checkout_url: res.checkoutUrl };
     }
-    return await renewalCheckout(ctx, userId, r, req);
+    const order = await withApproval(ctx, userId, r, () => renewalOrder(ctx, userId, r));
+    await linkOrder(ctx, userId, r.id, order.id);
+    return await renewalCheckout(ctx, order, req);
   } catch (e) {
-    if (e instanceof HttpError && e.status < 500 && e.code !== "rate_limited") {
-      // The release of the reservation happens in the database trigger on the move to `failed`.
-      await withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set state = 'failed', decision_reason = $2 where id = $1 and state = 'approved' and order_id is null",
-        [r.id, `order_${e.code}`.slice(0, 40).replace(/[^a-z_]/g, "_")]));
-    }
+    if (e instanceof HttpError && e.status < 500 && !KEEPS_APPROVAL.has(e.code)) await failApproval(ctx, userId, r.id, e.code);
     throw e;
   }
 }
 
-/** Renewals approved for an agent are paid on Checkout too: off-session charging is never used for agent purchases in v1. */
-async function renewalCheckout(ctx: AppContext, userId: string, r: RequestRow, req: HandlerReq): Promise<{ order_id: string | null; checkout_url: string | null }> {
+/** Refusals that leave the approval as it is: a limit to wait out, a request no longer approved, an approval the sweeper expires. */
+const KEEPS_APPROVAL = new Set(["rate_limited", "request_unavailable", "request_expired"]);
+
+/**
+ * Make the order for an approved request while holding the request row (`for update`), after checking under that lock that the
+ * request is still approved and its approval not past its time. The sweeper expires an approval only under the same lock, and only
+ * when no order points at the request (`expireDue`). Whichever comes second sees what the first did, with no margin of time involved:
+ * an expired approval never yields an order, and an approval with an order is never expired (the order settles or releases the
+ * reservation). When an order already exists for the request, nothing new is made, so `make` replays it after the lock is released: a
+ * replay may update that order, and a change of the order's state locks this row (the settle trigger), so it never runs under the lock.
+ */
+async function withApproval<T>(ctx: AppContext, userId: string, r: RequestRow, make: () => Promise<T>): Promise<T> {
+  const held = await withUser(ctx.runtime, userId, async (g): Promise<{ made: true } | { made: false; out: T }> => {
+    const cur = await loadRequest(g, userId, r.id, true);
+    if (!cur || cur.state !== "approved") throw new HttpError(409, cur?.state === "expired" ? "request_expired" : "request_unavailable", undefined, NO_STORE);
+    // A statement after the lock, so an order that a racing Pay now committed is seen.
+    const made = !!cur.order_id || !!(await g.query("select 1 from orders where user_id = $1 and (agent_request_id = $2 or idempotency_key = $3) limit 1", [userId, r.id, `agent:${r.id}`])).rowCount;
+    if (made) return { made: true };
+    if (approvalExpired(cur, ctx.clock.now())) throw new HttpError(409, "request_expired", undefined, NO_STORE);
+    return { made: false, out: await make() };
+  });
+  return held.made ? make() : held.out;
+}
+
+const linkOrder = (ctx: AppContext, userId: string, requestId: string, orderId: string) =>
+  withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set order_id = $2 where id = $1 and order_id is null", [requestId, orderId]));
+
+/**
+ * A refusal from the order path fails the request; the trigger releases its reservation on the move to `failed`. Under the request row
+ * lock, then a fresh statement, and only while no order points at the request: an order that exists settles or releases it itself.
+ */
+async function failApproval(ctx: AppContext, userId: string, requestId: string, code: string): Promise<void> {
+  await withUser(ctx.runtime, userId, async (c) => {
+    await c.query("select 1 from agent_requests where id = $1 and user_id = $2 for update", [requestId, userId]);
+    await c.query(
+      "update agent_requests r set state = 'failed', decision_reason = $2 where r.id = $1 and r.state = 'approved' and r.order_id is null and not exists (select 1 from orders o where o.agent_request_id = r.id)",
+      [requestId, `order_${code}`.slice(0, 40).replace(/[^a-z_]/g, "_")]);
+  });
+}
+
+/** The renewal order for an approved renewal, claimed for the request (made under the request row lock by `withApproval`). */
+async function renewalOrder(ctx: AppContext, userId: string, r: RequestRow): Promise<OrderRow> {
   const row = await withUser(ctx.runtime, userId, async (c) => (await c.query("select * from domains where id = $1 and user_id = $2 and released_at is null", [r.domain_id, userId])).rows[0]);
   if (!row) throw notFound();
   const d = rowToDomain(row);
@@ -236,7 +278,11 @@ async function renewalCheckout(ctx: AppContext, userId: string, r: RequestRow, r
   if (exceedsSigned(order, r)) throw new HttpError(409, "price_changed", undefined, NO_STORE);
   const claimed = await ctx.cron.query("update orders set agent_request_id = $2 where id = $1 and (agent_request_id is null or agent_request_id = $2) returning id", [order.id, r.id]);
   if (!claimed.rowCount) throw new HttpError(409, "renewal_in_progress");
-  await withUser(ctx.runtime, userId, (c) => c.query("update agent_requests set order_id = $2 where id = $1 and order_id is null", [r.id, order.id]));
+  return order;
+}
+
+/** Renewals approved for an agent are paid on Checkout too: off-session charging is never used for agent purchases in v1. */
+async function renewalCheckout(ctx: AppContext, order: OrderRow, req: HandlerReq): Promise<Pay> {
   if (order.state !== "draft") return { order_id: order.id, checkout_url: null };
   let url: string | null = null;
   try { url = await startRenewalCheckout(ctx, order, { ipPrefix: req.ipPrefix, uaFamily: req.uaFamily }); }
@@ -265,6 +311,23 @@ export async function checkoutHandler(req: HandlerReq): Promise<HandlerResult> {
 }
 
 /**
+ * The approval's claim on a DNS request, in the transaction that commits the pre-write snapshot (so before the registrar is called and
+ * before any audit row of that transaction), in the one lock order: the user's agent lock, the request, the binding. The request must
+ * still be pending, unexpired and its binding live; it becomes `approved` by this assertion. `decline` locks the same row first, so
+ * whichever of the two commits second sees the other's result.
+ */
+async function claimDnsRequest(ctx: AppContext, c: PoolClient, userId: string, requestId: string, actionId: string): Promise<void> {
+  await lockUser(c, userId);
+  const r = await loadRequest(c, userId, requestId, true);
+  if (!r || r.kind !== "dns_change") throw notFound();
+  if (r.state !== "pending") throw new HttpError(409, "request_unavailable");
+  const now = ctx.clock.now();
+  if (new Date(r.expires_at) <= now) throw new HttpError(409, "request_expired");
+  if (!(await liveBinding(c, userId, r.binding_id, now, true))) throw new HttpError(409, "binding_unavailable");
+  await markApproved(ctx, c, userId, r, actionId, "approved");
+}
+
+/**
  * The person approving an agent's sensitive DNS change: the snapshot and the audit name the person; the notice for an applied change is
  * sent from `after` with the approval (null here), and the one for a write whose outcome is unknown says it may have landed.
  */
@@ -279,8 +342,12 @@ const approvalWriter = (userId: string): ZoneWriter => ({
  * POST /approvals/:id/approve-dns (`dns.sensitive.approve`). Applies exactly the zone that was signed, or nothing.
  * 1. `settle` consumes the assertion and re-checks the request, and commits: one assertion is spent on one write, whatever happens next.
  * 2. `writeZoneLocked` (the DNS tab's write safety): under the zone lock, a fresh read must still hash to the signed before-hash and the
- *    zone written is the signed after-zone; the pre-write snapshot commits before the registrar is called, so a write whose outcome is
- *    unknown keeps it for rollback; the request is marked done, audited and announced in `after`, with the snapshot marked applied.
+ *    zone written is the signed after-zone. In the transaction that commits the pre-write snapshot, before the registrar is called, the
+ *    approval claims the request (`claimDnsRequest`: pending to approved under the request row lock), so approve and decline serialise
+ *    on that row and exactly one wins: a decline that came first leaves nothing to claim and nothing is written; one that comes later
+ *    finds the request approved and gets 409, and the write goes on. A write whose outcome is unknown keeps its snapshot (`unknown`) for
+ *    rollback and the request stays approved; a refused write changed nothing and fails the request; an applied one marks the snapshot
+ *    applied and the request completed, audited and announced, in one transaction (`after`).
  */
 export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
@@ -301,8 +368,14 @@ export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult>
   try {
     w = await writeZoneLocked(ctx, userId, r.domain_id, approvalWriter(userId), (live, d) => approvedZonePlan(d.fqdn_ascii, { before_hash: p.before_hash, after_hash: p.after_hash, desired: r.params.desired })(live), {
       detail: { actor: "user" },
+      claim: (c) => claimDnsRequest(ctx, c, userId, r.id, action.id),
+      // Refused: nothing changed, so the approval ends here (the agent can propose again). Unknown: it stays approved, with its snapshot.
+      failed: async (c, outcome) => {
+        if (outcome === "refused") await c.query("update agent_requests set state = 'failed', decision_reason = 'write_refused' where id = $1 and state = 'approved' and decided_by_action_id = $2", [r.id, action.id]);
+      },
       after: async (c, done) => {
-        await markApproved(ctx, c, userId, r, action.id, "completed");
+        // Never a refusal here: the zone is written, so the snapshot must reach `applied` whatever this finds.
+        await c.query("update agent_requests set state = 'completed' where id = $1 and state = 'approved' and decided_by_action_id = $2", [r.id, action.id]);
         await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "dns.sensitive_approved", resourceKind: "agent_request", resourceId: r.id, detail: { action_id: action.id, snapshot: done.snapshotId } });
         const n = done.change?.sensitive.length ?? 0;
         await notifyDomainEvent(ctx, c, userId, {

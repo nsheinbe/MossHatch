@@ -175,9 +175,10 @@ async function takeSnapshot(ctx: AppContext, c: PoolClient, userId: string, d: D
 /**
  * Send the zone. A refusal changed nothing (a write that did not read back is put back first), so its snapshot is marked `refused` and
  * leaves the history. Any other failure may have landed: the snapshot stays for rollback marked `unknown`, the audit says so, and a change
- * that may have touched sensitive records is announced like one that did.
+ * that may have touched sensitive records is announced like one that did. `failed` (the caller's own rows for the outcome) runs first in
+ * the same transaction, before any audit row.
  */
-async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: DomainRow, live: DnsRecord[], target: DnsRecord[], snapId: string, sensitive: Sensitive[], w: ZoneWriter = sessionWriter(userId)): Promise<{ hash: string }> {
+async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: DomainRow, live: DnsRecord[], target: DnsRecord[], snapId: string, sensitive: Sensitive[], w: ZoneWriter = sessionWriter(userId), failed?: ZoneFailed): Promise<{ hash: string }> {
   const port = registrarOf(ctx);
   try { return await port.replaceZone(d.fqdn_ascii, target); }
   catch (e) {
@@ -186,6 +187,7 @@ async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: Doma
       try { await port.replaceZone(d.fqdn_ascii, live); } catch { refused = false; /* the zone is not known now: keep the snapshot */ }
     }
     await s.step(async (c) => {
+      if (failed) await failed(c, refused ? "refused" : "unknown");
       if (refused) {
         await c.query("update dns_snapshots set write_state = 'refused' where id = $1 and write_state = 'pending'", [snapId]);
         await zoneAudit(ctx, c, userId, w, "dns.write_refused", d.id, { snapshot: snapId });
@@ -211,25 +213,35 @@ async function liveZone(ctx: AppContext, d: DomainRow): Promise<DnsRecord[]> {
 /** What a writer asks for, computed from the fresh read under the lock: the zone to send, its difference from the read, the sensitive records. */
 export interface ZoneChange { desired: DnsRecord[]; diff: Diff; sensitive: Sensitive[] }
 export interface ZoneWriteResult<T> { domain: DomainRow; live: DnsRecord[]; change: ZoneChange | null; snapshotId: string | null; zoneHash: string; after: T | undefined }
+/** The caller's rows when the registrar write failed: `refused` changed nothing, `unknown` may have landed. */
+export type ZoneFailed = (c: PoolClient, outcome: "refused" | "unknown") => Promise<void>;
 
 /**
  * The DNS tab's write safety for every other writer (a recipe, a connection's removal, an agent token). One call is the whole write,
  * on one pooled connection that holds the per-domain lock from the fresh read until the follow-up commits (session-level, on the key
  * the transaction-level writers take, so the two kinds exclude each other):
- *  1. one transaction: the owner's live domain, the kill switch, the lock, a fresh read and `plan` on it; when the plan changes anything,
- *     the pre-write snapshot (`pending`, with the hash of the zone asked for) and a `dns.write_intent` row. It commits BEFORE the
- *     registrar is called, so a write whose outcome is unknown never loses its snapshot (plan 4.3b, migration 0660);
+ *  1. one transaction: the owner's live domain, the kill switch, the lock, a fresh read and `plan` on it, then `claim` (the caller's own
+ *     rows and locks that must commit with the decision to write, taken before any audit row); when the plan changes anything, the
+ *     pre-write snapshot (`pending`, with the hash of the zone asked for) and a `dns.write_intent` row. It commits BEFORE the registrar
+ *     is called, so a write whose outcome is unknown never loses its snapshot (plan 4.3b, migration 0660);
  *  2. the registrar write, outside any transaction: a refusal marks the snapshot `refused`; any other failure marks it `unknown` (kept
- *     for rollback), audits it, tells the owner when a sensitive record may have changed, and the registrar's error is rethrown;
+ *     for rollback), audits it, tells the owner when a sensitive record may have changed, and the registrar's error is rethrown; `failed`
+ *     runs in that transaction;
  *  3. the follow-up transaction: the snapshot `applied` with the hash read back, the `dns.write` row (`detail` added to it), the notice
  *     when a sensitive record changed, and `after`, the caller's own rows, in the same transaction and under the same lock.
  * When the plan is null or changes nothing, no snapshot is taken, the registrar is not called and `after` runs in step 1.
- * Errors thrown by `plan` or `after` roll their transaction back; registrar errors are the port's own (map them with `mapRegistrarError`).
+ * Errors thrown by `plan`, `claim` or `after` roll their transaction back (a refusal from `plan` or `claim` writes nothing); registrar
+ * errors are the port's own (map them with `mapRegistrarError`).
  */
 export async function writeZoneLocked<T = undefined>(
   ctx: AppContext, userId: string, domainId: string, w: ZoneWriter,
   plan: (live: DnsRecord[], d: DomainRow) => ZoneChange | null,
-  opts: { detail?: Record<string, unknown>; after?: (c: PoolClient, r: { domain: DomainRow; snapshotId: string | null; zoneHash: string; change: ZoneChange | null }) => Promise<T> } = {},
+  opts: {
+    detail?: Record<string, unknown>;
+    claim?: (c: PoolClient, r: { domain: DomainRow }) => Promise<void>;
+    failed?: ZoneFailed;
+    after?: (c: PoolClient, r: { domain: DomainRow; snapshotId: string | null; zoneHash: string; change: ZoneChange | null }) => Promise<T>;
+  } = {},
 ): Promise<ZoneWriteResult<T>> {
   return zoneSession(ctx, userId, async (s) => {
     const pre = await s.step(async (c) => {
@@ -239,6 +251,7 @@ export async function writeZoneLocked<T = undefined>(
       await s.lock(c, d.id);
       const live = await liveZone(ctx, d);
       const change = plan(live, d);
+      if (opts.claim) await opts.claim(c, { domain: d });
       if (!change || (change.diff.added.length === 0 && change.diff.removed.length === 0)) {
         const after = opts.after ? await opts.after(c, { domain: d, snapshotId: null, zoneHash: zoneHash(live), change: null }) : undefined;
         return { d, live, change: null, snapId: null, after };
@@ -247,7 +260,7 @@ export async function writeZoneLocked<T = undefined>(
     });
     const { d, live, change, snapId } = pre;
     if (!change || !snapId) return { domain: d, live, change: null, snapshotId: null, zoneHash: zoneHash(live), after: pre.after };
-    const written = await sendZone(ctx, s, userId, d, live, change.desired, snapId, change.sensitive, w);
+    const written = await sendZone(ctx, s, userId, d, live, change.desired, snapId, change.sensitive, w, opts.failed);
     const after = await s.step(async (c) => {
       await c.query("update dns_snapshots set after_hash = $2, write_state = 'applied' where id = $1 and write_state = 'pending'", [snapId, written.hash]);
       await zoneAudit(ctx, c, userId, w, "dns.write", d.id, { snapshot: snapId, added: change.diff.added.length, removed: change.diff.removed.length, sensitive: change.sensitive.length, ...opts.detail });

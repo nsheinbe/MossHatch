@@ -87,7 +87,8 @@ export function agentState(r: { kind: string; state: string }, orderState: strin
     case "declined": case "expired": case "void": case "failed": return r.state;
     case "completed": return r.kind === "dns_change" || r.kind === "scope" ? "applied" : "registered";
   }
-  if (r.kind === "dns_change" || r.kind === "scope") return "applied";
+  // An approved DNS change whose write is still out, or whose outcome the registrar did not confirm: approved, not (yet) known applied.
+  if (r.kind === "dns_change" || r.kind === "scope") return "approved";
   if (!orderState) return "approved_awaiting_payment";
   if (["draft", "checkout_open"].includes(orderState)) return "approved_awaiting_payment";
   if (["review_hold", "authorized"].includes(orderState)) return "payment_authorized";

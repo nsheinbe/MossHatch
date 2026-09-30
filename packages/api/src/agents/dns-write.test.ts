@@ -99,20 +99,45 @@ describe("ST-131 review: an approved sensitive change whose outcome is unknown k
     const mail = sensitiveMail();
     expect(mail.length).toBeGreaterThan(0);
     expect(mail.every((m) => /may have/i.test(m.text))).toBe(true);
-    // The assertion is spent (it approved one write), and the request was not marked done.
+    // The assertion is spent (it approved one write). The request stays approved by it, not marked done: the write may have landed.
     expect((await k.app.db.owner.query("select state from actions where id = $1", [s.actionId])).rows[0].state).toBe("executed");
-    expect((await requestRow(k, id)).state).toBe("pending");
+    expect(await requestRow(k, id)).toMatchObject({ state: "approved", decided_by_action_id: s.actionId });
+    expect((await bearer(k, t.token, "GET", `/api/v1/approvals/${id}`)).json.status).toBe("approved");
+    const writes = k.h.registrar.calls.replaceZone;
     const replay = await web(k, ada, "POST", `/api/v1/approvals/${id}/approve-dns`, {}, { [ACTION_HEADER]: s.actionId });
     expect([403, 409]).toContain(replay.status);
-    // A fresh approval finds the zone moved (the write landed) and writes nothing over it.
+    // Nothing can write over it: a fresh approval is refused before the passkey, and a decline finds it decided.
     const s2 = await stepUp(k, ada, "dns.sensitive.approve", `ar_${id}`);
-    expect(s2.status, JSON.stringify(s2.json)).toBe(200);
-    const writes = k.h.registrar.calls.replaceZone;
-    const again = await web(k, ada, "POST", `/api/v1/approvals/${id}/approve-dns`, {}, { [ACTION_HEADER]: s2.actionId });
-    expect(again.status, again.text).toBe(409);
-    expect(again.json.error.code).toBe("zone_changed");
+    expect(s2.status, JSON.stringify(s2.json)).toBe(409);
+    expect(s2.json.error.code).toBe("request_unavailable");
+    const dec = await web(k, ada, "POST", `/api/v1/approvals/${id}/decline`);
+    expect(dec.status, dec.text).toBe(409);
     expect(k.h.registrar.calls.replaceZone).toBe(writes);
-    expect((await requestRow(k, id)).state).toBe("void");
+    expect((await requestRow(k, id)).state).toBe("approved");
+  });
+
+  it("a write the registrar refuses changes nothing: the snapshot is refused and the request fails (the agent can propose again)", async () => {
+    const { d, t } = await setup();
+    const before = await live(d.fqdn);
+    const mx = await bearer(k, t.token, "POST", `/api/v1/agent/domains/${d.fqdn}/dns`, { records: [{ type: "MX", name: "@", value: "mx.refused.example", priority: 10 }] });
+    expect(mx.status, mx.text).toBe(202);
+    const id = mx.json.approval_id as string;
+    const s = await stepUp(k, ada, "dns.sensitive.approve", `ar_${id}`);
+    expect(s.status, JSON.stringify(s.json)).toBe(200);
+    const reg = k.h.registrar;
+    const orig = reg.replaceZone.bind(reg);
+    reg.replaceZone = async (f: string, records: DnsRecord[]) => {
+      if (f === d.fqdn) throw new RegistrarError("unavailable", "maintenance window", { retryable: true, outcomeUnknown: false });
+      return orig(f, records);
+    };
+    try {
+      const res = await web(k, ada, "POST", `/api/v1/approvals/${id}/approve-dns`, {}, { [ACTION_HEADER]: s.actionId });
+      expect(res.status, res.text).toBe(503);
+    } finally { reg.replaceZone = orig; }
+    expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(before));
+    expect((await snaps(d.id))[0]).toMatchObject({ write_state: "refused" });
+    expect(await requestRow(k, id)).toMatchObject({ state: "failed", decision_reason: "write_refused" });
+    expect((await bearer(k, t.token, "GET", `/api/v1/approvals/${id}`)).json.status).toBe("failed");
   });
 
   it("an approval that applies marks the request completed, keeps an applied snapshot, audits the approval and sends one notice", async () => {

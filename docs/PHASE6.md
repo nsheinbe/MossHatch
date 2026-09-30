@@ -11,6 +11,9 @@ Status: the publish flow, the static cards site, the pre-rendered public pages, 
 - **Legal document set** (C-72): all fourteen documents exist as files, each marked as a draft counsel has not approved, and each is published as a `document_versions` row keyed by the file's SHA-256 (`packages/api/src/account/documents.ts`).
 - **`security.txt`** (RFC 9116) on both origins, pointing to the security policy page (a draft with a safe-harbour statement).
 - **Status page** (`status/`): two static files with no script and a README naming hosts other than Vercel and AWS. It is not hosted anywhere.
+- **CSP violation reporting** (`packages/api/src/csp`, migration 1100; D-053): `POST /api/csp-report`, named by `report-uri` and by `Reporting-Endpoints`, needs no credentials and treats every report as attacker-controlled. It accepts `application/csp-report` and `application/reports+json`, caps the body at 8 KiB, rate limits per source network and overall, and keeps only the directive, the blocked origin (or a CSP keyword or scheme name) and the document path, counted per day, with no user id. Reports caused by browser extensions or about other origins are dropped, nothing is logged, and rows are deleted after 30 days.
+- **Response headers aligned with PLAN 4.3a** (D-051): `vercel.json` (web) now sends HSTS `max-age=63072000`, a CSP with `worker-src`, `manifest-src` and `upgrade-insecure-requests` and the Trusted Types directives merged in, `Cache-Control: no-store, private` on `/api/*` and `no-cache` on `/boot.js`; `apps/cards/vercel.json` now uses the plan's `Permissions-Policy`, `Referrer-Policy`, HSTS and CSP and adds `X-Frame-Options` and `Reporting-Endpoints`. Three CSP values still differ from the plan, each because the plan's value breaks something that works (D-051). ST-14 reads the header table from `PLAN.md` and checks every value on every route class.
+- **Account closure, export and erasure** (`packages/api/src/closure`, migration 1050; described in `docs/PHASE4.md`). For this phase's rows: closing an account unpublishes every card at once and queues a site rebuild (C-70); erasure runs ledger first, keeps money and audit records under opaque ids, honours a legal hold and survives a restore (C-19); the export and the erasure are the access and deletion tooling that C-48 and C-52 ask for.
 - **Money compliance built in the Phase 3 pass** that closes Phase 6 rows: the dispute-rate alarm (the own 0.5% target pages, then the Stripe, Visa and Mastercard tiers), per-operation Stripe Products and descriptor suffixes, the tax-region gate, the sales ledger with nexus alerts at 60% and 80%, and the retention purge (`stripe/disputes.ts`, `orders/tax.ts`, `ops/retention.ts`, migration 0750).
 
 ## Measured
@@ -20,15 +23,16 @@ Status: the publish flow, the static cards site, the pre-rendered public pages, 
 | Phase 6 unit and database tests (`npx vitest run`, 2026-09-30 about 17:47 UTC, code as at commit `ce79de0`) | 31 passed, 0 failed, 0 skipped: `packages/api/src/publish` 19 (publish 11, review 6, legal 2), `apps/cards` 7 (generate 4, render 3), `scripts/public-pages.test.ts` 5 |
 | Money-compliance tests behind C-19, C-40, C-43 | 31 passed: `stripe/compliance.test.ts` 10, `orders/tax.test.ts` 9, `ops/retention.test.ts` 4, `ops/kms-reconcile.test.ts` 8 |
 | Cross-cutting re-runs | `security/matrix.test.ts` 14, `foundation.test.ts` 14, `boot.test.ts` 8: all pass |
+| CSP reporting and closure (`npx vitest run packages/api/src/csp packages/api/src/closure`, 2026-09-30 about 20:12 UTC, working tree after commit `c580b74`) | 43 passed, 0 failed: `csp/csp.test.ts` 10; closure 15, export 11, erasure 4, https-notice 3 |
 | Cards build (`npm run build:cards`, sample fixtures) | 9 pages, no script, secret scan clean, links and budgets pass; stylesheet 2.30 kB (0.93 kB gzip); pages 1.4 to 2.4 kB each |
 | Web build (`npm run build`) | public pages current; sitemap 19 pages; initial JS 87.7 kB gzip (limit 130) |
-| Playwright | Not run for this report. The Phase 6 specs are `e2e/cards.spec.ts`, `e2e/publish.spec.ts` and `e2e/public.spec.ts` |
+| Playwright, projects `prod`, `cards` and `public` (Chromium, local static servers, the web build in `apps/web/dist` as it stood, 2026-09-30 about 20:17 UTC) | 33 passed, 0 failed, including `e2e/headers.prod.spec.ts` (8), `e2e/headers.cards.spec.ts` (2), `e2e/cards.spec.ts` (5) and `e2e/public.spec.ts` (5). `e2e/publish.spec.ts` was not run. `npm run build` and `npm run build:cards` were reported passing with the header change; I did not re-run them |
 
 ## Exit criteria
 
 | Criterion | State |
 |---|---|
-| ST-145 passes | Met against fakes only: unit and database tests pass with in-memory card storage and a fake Web Risk; the browser specs run against local static servers and were not run for this report |
+| ST-145 passes | Met against fakes only: unit and database tests pass with in-memory card storage and a fake Web Risk; `e2e/cards.spec.ts` passed in Chromium against a local static server built from sample fixtures; `e2e/publish.spec.ts` was not run |
 | The whole suite, ST-01 to ST-155, is green or waived in writing | **Not met.** `scripts/check-st-ids.mjs` confirms all 155 ids are due in a phase. No test names ST-153 or ST-154 (not tested), and ST-119 is a manual checklist that is owed. ST-21, ST-139 and ST-140 are CI checks (`scripts/scan.test.ts`, `scripts/check-supply-chain.mjs`) that do not carry the id in a test name. Many ids pass only against fakes (see each phase report). Nothing is waived in writing |
 | Every row tagged P6 is closed, every Counsel Y row is answered or accepted in writing, and no row is closed for the first time in Phase 6 unless tagged P6 | **Not met** (table below) |
 | Penetration-test findings closed or accepted in writing | **Not met.** No penetration test has been commissioned |
@@ -52,9 +56,9 @@ Status: the publish flow, the static cards site, the pre-rendered public pages, 
 
 | ST | Test | State |
 |---|---|---|
-| ST-145 | `packages/api/src/publish/publish.test.ts` "card portrait intake", "publish flow", "the public view and the cards role" (11 tests); `apps/cards/src/render.test.ts` "cards carry no free text or outbound links" (3); `e2e/cards.spec.ts` "the cards origin sets no cookies, runs no script and requests nothing from another origin" and "a card shows the name as text with no outbound link"; `e2e/publish.spec.ts` "publish a card with a passkey, see it in the export, and take it down" | Unit and database tests pass; browser specs not run for this report |
+| ST-145 | `packages/api/src/publish/publish.test.ts` "card portrait intake", "publish flow", "the public view and the cards role" (11 tests); `apps/cards/src/render.test.ts` "cards carry no free text or outbound links" (3); `e2e/cards.spec.ts` "the cards origin sets no cookies, runs no script and requests nothing from another origin" and "a card shows the name as text with no outbound link"; `e2e/publish.spec.ts` "publish a card with a passkey, see it in the export, and take it down" | Unit and database tests pass; `e2e/cards.spec.ts` passes (Chromium, local static server); `e2e/publish.spec.ts` not run |
 | ST-95 re-run | `publish/publish.test.ts` "the cards role reads only published, unreleased, not-taken-down cards, through the view, with no owner fields" | Passes |
-| ST-14 (cards origin) | `e2e/cards.spec.ts` "cards headers on page, stylesheet, image and text routes" | Browser spec against a local server; not run for this report |
+| ST-14 (both origins) | `e2e/cards.spec.ts` "cards headers on page, stylesheet, image and text routes"; `e2e/headers.cards.spec.ts` and `e2e/headers.prod.spec.ts`, which read the header table and the CSP row from `PLAN.md` and compare every served value on every route class | Passes in Chromium against local static servers; not checked on a Vercel deployment |
 
 ## Compliance rows for this phase
 
@@ -64,17 +68,17 @@ Built means code and tests exist for the row's "How Mosshatch meets it" cell; Pa
 |---|---|
 | C-13 registrar of record | Partly built; Counsel. The public-page footer says Mosshatch is a reseller and links `/legal/registrant-rights.html`, which names the planned registrar (Tucows, IANA 69), links ICANN's lookup and the Registrants' Benefits and Responsibilities. The app's own footer links Legal but does not name the registrar. Wording awaits counsel |
 | C-17 registrar RDAP | Not built: an upstream duty. Checking OpenSRS's RDAP output and agreeing how disclosure requests reach Mosshatch are owed |
-| C-19 retention | Built; Counsel. The purge honours `retain_until` and `legal_hold`, webhook payloads are nulled at 30 and 90 days and rows deleted at 180 (`ops/retention.test.ts`). The schedule itself awaits counsel (question 9) |
+| C-19 retention | Built; Counsel. The purge honours `retain_until` and `legal_hold`, webhook payloads are nulled at 30 and 90 days and rows deleted at 180 (`ops/retention.test.ts`). At account closure the erasure is written to the ledger outside the database first, the identifying tables and the residue are erased, and orders, payments, refunds, consents, notices, mandates and the audit chain stay under opaque ids, with the audit rows' PII column emptied and the chain still verifying; a legal hold keeps the identifying rows, and a restore followed by the replay erases the person again (`closure/erasure.test.ts`, `closure/closure.test.ts`). `transfer_log` takes a legal hold (migration 0946) and mandates are kept 3 years after the last renewal charge (D-055). The production ledger bucket does not exist (no AWS account). The schedule itself awaits counsel (question 9) |
 | C-21 abuse contact | Partly built. `/report.html` needs no sign-in and is linked from the home page (`e2e/public.spec.ts`), but reports go by email link, not a web form; the `abuse@` mailbox does not exist yet; there is no path to ask the registrar for a hold |
 | C-22 authorities' on-call route | Not built: a contract term with the registrar and a runbook for registrar-directed holds and legal requests; neither exists |
 | C-35 EU withdrawal | Counsel. Non-US billing addresses are refused by the tax-region gate, so nothing more is needed for a US launch |
 | C-40 disputes | Partly built. The 0.5% own target pages, then Stripe's 0.75% review, VAMP and ECM tiers; one descriptor prefix with per-operation suffixes; Radar rules as documented config (`stripe/compliance.test.ts`). The automatic dispute evidence pack is not built |
 | C-43 nexus ledger | Built; Counsel. Rolling 12-month gross and transaction counts per state with alerts at 60% and 80% (`orders/tax.test.ts`). The accountant has not mapped home-state presence |
 | C-46, C-47 other tax regimes | Counsel. Blocked at launch by the tax-region gate |
-| C-48 GDPR | Counsel. A privacy notice draft exists; the data map and processing record do not |
+| C-48 GDPR | Counsel. A privacy notice draft exists; the data map and processing record do not. Access and erasure requests are served in the product: the passkey-gated export and closure with erasure (`closure/export.test.ts`, `closure/erasure.test.ts`) |
 | C-50 PII protection and runbooks | Partly built. Contacts are encrypted per field (Phase 2), but still pass through the runtime role, not `mh_contacts`. Runbooks exist for Stripe, the registrar and KMS; the whole-system runbook does not; none has been rehearsed on staging |
 | C-51 NIS2 | Counsel. Engages only with EU customers |
-| C-52 CCPA | Counsel. The year-end threshold record is not built |
+| C-52 CCPA | Partly built; Counsel. The request tooling is built: export, and closure with erasure (as C-48). The year-end threshold record is not built |
 | C-54 EAA | Counsel. An accessibility statement draft exists; the EAA decision is not recorded in `DECISIONS.md` |
 | C-55 accessibility | Partly built. axe WCAG 2.2 AA runs over the public pages and cards at desktop and phone sizes (specs not run for this report); manual keyboard and screen-reader passes have not been done |
 | C-56 ADA | Counsel. The accessibility statement draft exists; no demand-letter process or insurance decision |
@@ -84,7 +88,7 @@ Built means code and tests exist for the row's "How Mosshatch meets it" cell; Pa
 | C-67 card abuse contact | Partly built; Counsel. Every card page links to `mosshatch.com/report.html#cards`, which needs no sign-in and names `abuse@` and `dmca@`; reports go by email, not a form, and neither mailbox exists yet |
 | C-68 publish screening | Built against a fake: the name screen and the daily re-scan are tested; the Web Risk adapter has never been called |
 | C-69 trade marks | Counsel. Complaints use the take-down route; clearance of both names is not done |
-| C-70 personal data in names | Partly built; Counsel. Publishing is the owner's choice and unpublish purges at once; unpublishing on account closure waits for closure itself, which is not built |
+| C-70 personal data in names | Built; Counsel. Publishing is the owner's choice and unpublish purges at once; closing an account unpublishes every card at once and queues a site rebuild (`closure/closure.test.ts`); the privacy notice draft says what a card shows. The rebuild goes through a deploy hook that has never been called. Counsel confirms the basis (question 18) |
 | C-71 indexing | Built: `noindex` until the owner opts in, and only opted-in cards in the gallery and sitemap. It uses a robots meta tag, not the `X-Robots-Tag` header the row names; cards have no outbound links, so no interstitial is needed |
 | C-72 document set | Counsel. All fourteen exist as versioned drafts |
 | C-73 legal process for secrets | Counsel. An outline page only |
@@ -135,7 +139,8 @@ Other agents reviewed these modules adversarially; each finding was reproduced b
 ## Deviations from the plan
 
 - **Card portraits** (D-043): hatchkind.com shows an SVG computed from the name; the uploaded snapshot PNG is still validated, re-encoded and stored, but never served. Assumption 15 and the plan's `snapshot_ref` had the snapshot as the card image; threat row 42 allows only computed traits and the name.
-- **Link previews**: `og:image` points at that SVG. Many link-preview services do not render SVG (Decisions).
+- **Link previews** (D-057): `og:image` points at that SVG. Many link-preview services do not render SVG.
+- **Response headers** (D-051): both `vercel.json` files follow PLAN 4.3a except three CSP values: `img-src` keeps `data:` on `web` (the hatch card portrait is a PNG data URL), `trusted-types` names the app's one policy `mosshatch`, and `cards` has no `script-src`.
 - **Public pages** (D-048): generated from `apps/web/pages` and committed, with a staleness check in the build, rather than rendered at deploy.
 - **Cards project** (D-049): production is detected by `MH_CARDS_PRODUCTION`, set only in the cards project, not by `VERCEL_ENV`.
 - **Indexing** (C-71): a robots meta tag instead of the `X-Robots-Tag` header.
@@ -144,6 +149,7 @@ Other agents reviewed these modules adversarially; each finding was reproduced b
 ## Not proven, and why
 
 - **Vercel Blob, the Vercel deploy hook and Google Web Risk**: never called. Their request shapes are marked unverified in `publish/storage.ts` and `publish/screen.ts`.
+- **CSP reports**: the endpoint is tested with report bodies built in vitest; no browser has delivered a report to a deployment. On `cards` the static host does not serve `/api/csp-report`, so that origin's reports are dropped (D-051).
 - **Deployed headers and `security.txt`**: checked against local static servers (`e2e/serve-cards.mjs`, `e2e/serve-dist.mjs`), not Vercel; whether Vercel serves `/.well-known/security.txt` as committed is unverified (D-032).
 - **The status page**: not hosted; its independence from Vercel and AWS is a README instruction.
 - **Every live path**: OpenSRS, Stripe live mode, production KMS keys and real email have never been used, so the plan's main Phase 6 risk (first live use at public launch) is untouched.
@@ -167,9 +173,9 @@ Other agents reviewed these modules adversarially; each finding was reproduced b
 3. **OpenSRS activation** after counsel's review of the MSA, and **an AWS account** for KMS, the anchor bucket and CloudTrail. Both gate the live rehearsal.
 4. **Tax-region gate on renewals and pay links**: when a region is turned off, should renewals and pay links for existing names be refused too? Recommendation: yes for new charges.
 5. **Dispute alarm**: the own 0.5% target pages as S1, and an unacknowledged S1 can start auto-safe mode (D-028). Confirm or raise the threshold.
-6. **Link previews**: accept the SVG card image, or add a raster image for previews.
+6. **Link previews** (D-057): accept the SVG card image, or add a raster image for previews.
 7. **Penetration test and retest** (D-032): commission it; nothing in this report replaces it.
-8. **Compliance**: you have approved no deferral. Not built: C-17, C-22, C-64. Partly built: C-13, C-21, C-40, C-50, C-55, C-67, C-70. Every Counsel row above needs an answer or your written acceptance.
+8. **Compliance**: you have approved no deferral. Not built: C-17, C-22, C-64. Partly built: C-13, C-21, C-40, C-50, C-52, C-55, C-67. Every Counsel row above needs an answer or your written acceptance.
 9. **Counsel**: the fourteen draft documents, the RAA 3.7.4 question, the DMCA agent (C-64), the DSA (C-65), trade-mark clearance (C-69), privacy, tax and NIS2 (C-35, C-46 to C-48, C-51), CCPA (C-52), the EAA (C-54) and the registrar on-call route (C-22).
 10. **Rotate the two Neon role passwords** that appeared in tool output.
 11. **Delete the remote leak-test branch.**
