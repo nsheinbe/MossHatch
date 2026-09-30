@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { RegistrarError, type RegisterRequest, type RegistrarPort } from "./port.ts";
+import { RegistrarError, type DnsRecord, type DsRecord, type RegisterRequest, type RegistrarPort } from "./port.ts";
+import { zoneHash } from "./dns.ts";
 import { claimRegistration, registrantFingerprint } from "./claim.ts";
 import { DeathSignal, MockRegistrarPort } from "./mock-port.ts";
 
@@ -7,14 +8,16 @@ import { DeathSignal, MockRegistrarPort } from "./mock-port.ts";
  * Reusable adapter behaviour suite (plan 4.3b, "MockRegistrar rules" 4 to 6). Each test carries a tag:
  *  - `both`: must hold for the mock and for the OpenSRS Horizon sandbox adapter;
  *  - `mock-only`: needs fault injection or seeded state the sandbox cannot give;
+ *  - `replay`: needs fault injection or out-of-band changes, which the mock and the Horizon adapter over its documented-fixture fake (FakeHorizonTransport,
+ *    backed by a MockRegistrarPort) both give; a real Horizon cannot. Uses `subject.mock` only to inject, never to call the port;
  *  - `sandbox-only`: needs the real provider (recorded responses, real funding).
  * `docs/registrar-parity.md` lists what the mock cannot model. Run it with `tags: ["both","mock-only"]` for the mock.
  */
-export type ContractTag = "both" | "mock-only" | "sandbox-only";
+export type ContractTag = "both" | "replay" | "mock-only" | "sandbox-only";
 
 export interface ContractSubject {
   adapter: RegistrarPort;
-  /** Present for the mock: fault injection, clock and state inspection. */
+  /** Present for the mock, and for the replay subject as the state behind the fake: fault injection, clock and state inspection. */
   mock?: MockRegistrarPort;
   /** A name that is available right now and unique to this call (sandbox: random label, 1-year term). */
   freshName(tld: string): string;
@@ -36,9 +39,9 @@ export function runRegistrarContract(makeAdapter: () => ContractSubject | Promis
   const needMock = (s: ContractSubject): MockRegistrarPort => { if (!s.mock) throw new Error("mock-only test needs subject.mock"); return s.mock; };
 
   describe(`registrar contract: ${opts.label ?? "adapter"}`, () => {
-    t("both", "register returns registered and the domain is ours upstream", async ({ adapter, freshName }) => {
+    t("both", "register returns registered and the domain is ours upstream", async ({ adapter, freshName, mock }) => {
       const fqdn = freshName("com"); const req = makeRegisterRequest(fqdn);
-      const sentAt = new Date();
+      const sentAt = mock?.clock.now() ?? new Date();
       const r = await adapter.register(req);
       expect(r.status).toBe("registered");
       const dom = await adapter.getDomain(fqdn);
@@ -297,6 +300,196 @@ export function runRegistrarContract(makeAdapter: () => ContractSubject | Promis
       const a = makeRegisterRequest(s.freshName("com"));
       await m.register(a);
       await expect(m.register({ ...makeRegisterRequest(s.freshName("com")), regUsername: a.regUsername })).rejects.toMatchObject({ code: "profile_exists" });
+    });
+
+
+    // ---- Phase 3 additions ------------------------------------------------------------------------------------------
+    const reg = async (s: ContractSubject, tld = "com") => { const fqdn = s.freshName(tld); const req = makeRegisterRequest(fqdn); await s.adapter.register(req); return { fqdn, req }; };
+    const rec = (type: DnsRecord["type"], name: string, value: string, extra: Partial<DnsRecord> = {}): DnsRecord => ({ type, name, value, ...extra });
+    const DS: DsRecord = { keyTag: 12345, algorithm: 13, digestType: 2, digest: "ab".repeat(32) };
+
+    t("both", "setLock round-trips and getDomain reports it", async (s) => {
+      const { fqdn } = await reg(s);
+      await s.adapter.setLock(fqdn, false);
+      expect((await s.adapter.getDomain(fqdn))?.locked).toBe(false);
+      await s.adapter.setLock(fqdn, true);
+      expect((await s.adapter.getDomain(fqdn))?.locked).toBe(true);
+      await expect(s.adapter.setLock(s.freshName("com"), false)).rejects.toMatchObject({ kind: "rejected" }); // not ours
+    });
+
+    t("both", "setNameservers changes them, and refuses a signed domain moving to unsigned DNS", async (s) => {
+      const { fqdn } = await reg(s);
+      await s.adapter.setNameservers(fqdn, ["ns1.example-dns.net", "ns2.example-dns.net"]);
+      expect((await s.adapter.getDomain(fqdn))?.nameservers).toEqual(["ns1.example-dns.net", "ns2.example-dns.net"]);
+      await expect(s.adapter.setNameservers(fqdn, ["ns1.a.net"])).rejects.toMatchObject({ kind: "rejected" });
+      await s.adapter.addDs(fqdn, DS);
+      expect((await s.adapter.getDomain(fqdn))?.dsPresent).toBe(true);
+      await expect(s.adapter.setNameservers(fqdn, ["ns1.other-dns.net", "ns2.other-dns.net"])).rejects.toMatchObject({ kind: "rejected", code: "dnssec_would_break" });
+      await s.adapter.setNameservers(fqdn, ["ns1.other-dns.net", "ns2.other-dns.net"], { targetSigned: true });
+    });
+
+    t("both", "DS records add (idempotently) and remove; .io has no DNSSEC", async (s) => {
+      const { fqdn } = await reg(s);
+      await s.adapter.addDs(fqdn, DS); await s.adapter.addDs(fqdn, DS);
+      expect(await s.adapter.getDs(fqdn)).toEqual([DS]);
+      await s.adapter.removeDs(fqdn, DS);
+      expect(await s.adapter.getDs(fqdn)).toEqual([]);
+      expect((await s.adapter.getDomain(fqdn))?.dsPresent).toBe(false);
+      const io = await reg(s, "io");
+      await expect(s.adapter.addDs(io.fqdn, DS)).rejects.toMatchObject({ kind: "rejected", code: "dnssec_unsupported" });
+    });
+
+    t("both", "issueAuthCode returns a fresh code each time; rerandomize invalidates it; .io codes come from a person", async (s) => {
+      const { fqdn } = await reg(s);
+      const a = await s.adapter.issueAuthCode(fqdn); const b = await s.adapter.issueAuthCode(fqdn);
+      expect(a.code).toMatch(/^[A-Za-z0-9]{20}$/); expect(b.code).not.toBe(a.code);
+      if (s.mock) { expect(s.mock.authCodeMatches(fqdn, a.code)).toBe(false); expect(s.mock.authCodeMatches(fqdn, b.code)).toBe(true); }
+      expect(await s.adapter.rerandomizeAuthCode(fqdn)).toBeUndefined();
+      if (s.mock) expect(s.mock.authCodeMatches(fqdn, b.code)).toBe(false);
+      const io = await reg(s, "io");
+      await expect(s.adapter.issueAuthCode(io.fqdn)).rejects.toMatchObject({ kind: "rejected", code: "code_by_support" });
+    });
+
+    t("both", "replaceZone replaces everything: removed records and whole types disappear, an empty list clears the zone, the hash is stable", async (s) => {
+      const { fqdn } = await reg(s);
+      const full = [rec("A", "", "192.0.2.1"), rec("A", "www", "192.0.2.2"), rec("MX", "", "mail.example.net", { priority: 10 }), rec("TXT", "", "v=spf1 -all"), rec("CNAME", "app", "target.example.net")];
+      const r1 = await s.adapter.replaceZone(fqdn, full);
+      expect(r1.hash).toBe(zoneHash(full));
+      expect((await s.adapter.getDns(fqdn)).records).toHaveLength(5);
+      const r2 = await s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.9")]);
+      const z = await s.adapter.getDns(fqdn);
+      expect(z.hosted).toBe(true);
+      expect(z.records).toEqual([rec("A", "", "192.0.2.9")]);
+      expect(r2.hash).toBe(zoneHash(z.records));
+      await s.adapter.replaceZone(fqdn, []);
+      expect((await s.adapter.getDns(fqdn)).records).toEqual([]);
+    });
+
+    t("both", "replaceZone refuses unsupported types, over-long TXT and a zone that is not hosted here", async (s) => {
+      const { fqdn } = await reg(s);
+      await expect(s.adapter.replaceZone(fqdn, [{ type: "CAA" as never, name: "", value: "0 issue x" }])).rejects.toMatchObject({ code: "unsupported_record_type" });
+      await expect(s.adapter.replaceZone(fqdn, [rec("TXT", "", "x".repeat(255))])).rejects.toMatchObject({ code: "txt_too_long" });
+      await s.adapter.setNameservers(fqdn, ["ns1.elsewhere.net", "ns2.elsewhere.net"]);
+      expect(await s.adapter.getDns(fqdn)).toEqual({ hosted: false, records: [] });
+      await expect(s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.1")])).rejects.toMatchObject({ code: "dns_not_hosted" });
+    });
+
+    t("both", "setAutoRenew toggles auto_renew; getBalance is Money and equals the funding status", async (s) => {
+      const { fqdn } = await reg(s);
+      expect((await s.adapter.getDomain(fqdn))?.autoRenew).toBe(false);
+      await s.adapter.setAutoRenew(fqdn, true);
+      expect((await s.adapter.getDomain(fqdn))?.autoRenew).toBe(true);
+      await s.adapter.setAutoRenew(fqdn, false);
+      expect((await s.adapter.getDomain(fqdn))?.autoRenew).toBe(false);
+      const b = await s.adapter.getBalance();
+      expect(typeof b.balance.minor).toBe("bigint");
+      expect(b.available.minor).toBe(b.balance.minor - b.held.minor);
+      expect((await s.adapter.getFundingStatus() as { minor: bigint }).minor).toBe(b.available.minor);
+    });
+
+    t("both", "listDomains pages through the inventory", async (s) => {
+      const made = [await reg(s), await reg(s), await reg(s)].map((x) => x.fqdn);
+      const seen: string[] = []; let cursor: string | undefined; let pages = 0;
+      do { const r = await s.adapter.listDomains({ ...(cursor ? { cursor } : {}), limit: 2 }); seen.push(...r.rows.map((x) => x.fqdn)); cursor = r.next; pages++; } while (cursor && pages < 20);
+      for (const f of made) expect(seen).toContain(f);
+      expect(new Set(seen).size).toBe(seen.length);
+      expect(pages).toBeGreaterThanOrEqual(2);
+    });
+
+    t("both", "updateContact reports a registrant change and does not apply it at once; other edits apply", async (s) => {
+      const { fqdn, req } = await reg(s);
+      const before = (await s.adapter.getDomain(fqdn))?.ownerEmailHash;
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      const same = await s.adapter.updateContact(fqdn, { ...req.registrant, phone: "+1.5555550199" });
+      expect(same).toEqual({ status: "applied", registrantChange: false, verificationRequired: false, transferLock60d: false });
+      const chg = await s.adapter.updateContact(fqdn, { ...req.registrant, email: "new-owner@example.test" });
+      expect(chg).toEqual({ status: "pending_approval", registrantChange: true, verificationRequired: true, transferLock60d: true });
+      expect((await s.adapter.getDomain(fqdn))?.ownerEmailHash).toBe(before);
+    });
+
+    t("both", "cancelTransfer with nothing to cancel says so; cancelTransferAway is not offered", async (s) => {
+      const { fqdn } = await reg(s);
+      expect(await s.adapter.cancelTransfer(fqdn)).toEqual({ cancelled: false });
+      expect(s.adapter.capabilities().cancelTransferAway).toBe(false);
+    });
+
+    t("replay", "out-of-band changes show up in getDomain (the detector's inputs): lock, nameservers, DS, owner email hash, auto_renew, let_expire, privacy service", async (s) => {
+      const m = needMock(s); const { fqdn } = await reg(s);
+      const base = (await s.adapter.getDomain(fqdn))!;
+      m.oob.setLock(fqdn, false); m.oob.setNameservers(fqdn, ["ns1.evil.net", "ns2.evil.net"]); m.oob.addDs(fqdn, DS);
+      m.oob.changeOwnerEmail(fqdn, "thief@example.test"); m.oob.setAutoRenew(fqdn, true); m.oob.letExpire(fqdn, true); m.oob.setPrivacyService(fqdn, true);
+      const now = (await s.adapter.getDomain(fqdn))!;
+      expect(now.locked).toBe(false); expect(base.locked).toBe(true);
+      expect(now.nameservers).toEqual(["ns1.evil.net", "ns2.evil.net"]);
+      expect(now.dsPresent).toBe(true); expect(base.dsPresent).toBe(false);
+      expect(now.ownerEmailHash).not.toBe(base.ownerEmailHash);
+      expect(now.autoRenew).toBe(true); expect(now.letExpire).toBe(true); expect(base.letExpire).toBe(false);
+      expect(now.privacyServiceEnabled).toBe(true); expect(base.privacyServiceEnabled).toBe(false);
+    });
+
+    t("replay", "a transfer away shows in getTransfersAway and getDomain; Stop re-locks and re-randomises but the transfer remains", async (s) => {
+      const m = needMock(s); const { fqdn } = await reg(s);
+      await s.adapter.setLock(fqdn, false);
+      const code = (await s.adapter.issueAuthCode(fqdn)).code;
+      m.oob.startTransferAway(fqdn, { status: "pending_owner", gainingRegistrar: "other" });
+      const away = await s.adapter.getTransfersAway({ statuses: ["pending_owner"] });
+      expect(away.map((x) => x.fqdn)).toContain(fqdn);
+      expect(await s.adapter.getTransfersAway({ statuses: ["pending_registry"] })).toEqual([]);
+      const dom = await s.adapter.getDomain(fqdn);
+      expect(dom).toMatchObject({ state: "transferring_out", transferAwayInProgress: true });
+      const stop = await s.adapter.stopTransferAway(fqdn);
+      expect(stop).toEqual({ relocked: true, codeRerandomized: true, pendingTransferRemains: true });
+      expect((await s.adapter.getDomain(fqdn))?.locked).toBe(true);
+      expect(m.authCodeMatches(fqdn, code)).toBe(false);
+    });
+
+    t("replay", "forced_pending is accepted_pending, never registered; releasing the order completes it", async (s) => {
+      const m = needMock(s); const fqdn = s.freshName("com");
+      m.faults.set("forcedPending", { times: 1 });
+      const r = await s.adapter.register(makeRegisterRequest(fqdn));
+      expect(r).toMatchObject({ status: "accepted_pending", reason: "forced_pending" });
+      expect(await s.adapter.getDomain(fqdn)).toBeNull();
+      expect(m.releasePending(r.registrarOrderId)).toBe(true);
+      expect((await s.adapter.getDomain(fqdn))?.state).toBe("active");
+    });
+
+    t("replay", "async250 completes on the clock", async (s) => {
+      const m = needMock(s); const fqdn = s.freshName("dev");
+      m.faults.set("async250", { times: 1 });
+      expect(await s.adapter.register(makeRegisterRequest(fqdn))).toMatchObject({ status: "accepted_pending", reason: "async" });
+      expect(await s.adapter.getDomain(fqdn)).toBeNull();
+      m.advance(61_000);
+      expect((await s.adapter.getDomain(fqdn))?.state).toBe("active");
+    });
+
+    t("replay", "dnsWriteIgnored (the write is accepted and dropped) is caught by the read-back", async (s) => {
+      const m = needMock(s); const { fqdn } = await reg(s);
+      await s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.1")]);
+      m.faults.set("dnsWriteIgnored", { times: 1 });
+      await expect(s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.77")])).rejects.toMatchObject({ kind: "rejected", code: "dns_readback_mismatch" });
+      expect((await s.adapter.getDns(fqdn)).records).toEqual([rec("A", "", "192.0.2.1")]); // unchanged: the caller's snapshot is still the truth
+    });
+
+    t("replay", "expiry, deletion into redemption, and restore for .com/.dev/.studio only", async (s) => {
+      const m = needMock(s); const a = await reg(s, "com"); const b = await reg(s, "app");
+      m.advance(366 * 86_400_000 + 1000);
+      expect((await s.adapter.getDomain(a.fqdn))?.state).toBe("expired");
+      m.advance(40 * 86_400_000);
+      expect(await s.adapter.getDomain(a.fqdn)).toBeNull(); // GET returns nothing during redemption (S17)
+      const del = await s.adapter.getDeletedDomains();
+      expect(del.map((x) => x.fqdn)).toEqual(expect.arrayContaining([a.fqdn, b.fqdn]));
+      await expect(s.adapter.restore(b.fqdn)).rejects.toMatchObject({ kind: "rejected", code: "restore_unsupported" });
+      expect(await s.adapter.restore(a.fqdn)).toMatchObject({ status: "restored" });
+      expect((await s.adapter.getDomain(a.fqdn))?.state).toBe("active");
+      await expect(s.adapter.restore(a.fqdn)).rejects.toMatchObject({ kind: "rejected" });
+    });
+
+    t("mock-only", "per-type overwrite leaves stale types after a naive write; whole-zone does not (why replaceZone sends every type)", async (s) => {
+      const m = needMock(s); const { fqdn } = await reg(s);
+      await m.replaceZone(fqdn, [rec("A", "", "192.0.2.1"), rec("MX", "", "mail.example.net", { priority: 10 })]);
+      m.rawSetZone(fqdn, { A: [rec("A", "", "192.0.2.5")] }); // a payload that names only A
+      const kinds = (await m.getDns(fqdn)).records.map((r) => r.type);
+      expect(kinds.includes("MX")).toBe(m.dnsOverwrite === "per_type");
     });
 
     t("sandbox-only", "Horizon rejects registering the same name twice, even across resellers", async ({ adapter, freshName }) => {

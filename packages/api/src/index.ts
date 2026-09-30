@@ -21,3 +21,4 @@ export * as jobEngine from "./jobs/engine.ts";
 export * as orders from "./orders/index.ts";
 export * as stripeAdapters from "./stripe/index.ts";
 export { syncDocuments } from "./account/documents.ts";
+export * as registrarRpc from "./registrar-rpc/index.ts";

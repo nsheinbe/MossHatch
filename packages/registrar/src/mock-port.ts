@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
 import { fnv1a } from "@mosshatch/core";
 import {
-  RegistrarError,
-  type Availability, type AvailabilityKind, type DomainStatus, type Money, type Quote, type RegisterRequest, type RegisterResult,
-  type RegistrarCapabilities, type RegistrarPort, type UpstreamOrder,
+  DNS_RECORD_TYPES, RegistrarError,
+  type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
+  type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult,
+  type RegistrarCapabilities, type RegistrarPort, type TransferAway, type TransferAwayStatus, type UpstreamOrder,
 } from "./port.ts";
+import { randomAuthCode } from "./authcode.ts";
+import { canonicalZone, validateZone, zoneHash } from "./dns.ts";
 import { registrantFingerprint } from "./claim.ts";
 import { SAMPLE_WHOLESALE_CENTS } from "./mock.ts";
 
@@ -16,6 +20,14 @@ export { claimRegistration, registrantFingerprint, CLAIM_SKEW_MS, type ClaimResu
  * clock (`advance`), never through timers. The Phase 1 `MockRegistrar` (UI sample prices) is a separate class.
  */
 
+/** Days after expiry until the name is deleted into redemption, and the redemption length (TLD chart: grace 40, redemption 30 for all six; docs/research/reg-opensrs.md 6). */
+export const GRACE_DAYS = 40;
+export const REDEMPTION_DAYS = 30;
+const DAY = 86_400_000;
+export type DnsOverwriteMode = "whole_zone" | "per_type";
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+export const emailHash = (email: string) => sha(email.trim().toLowerCase());
+
 export const MOCK_EXTENSIONS = ["com", "ai", "dev", "io", "app", "studio"] as const;
 const MIN_TERM: Record<string, number> = { ai: 2 };
 const MAX_TERM = 10;
@@ -26,7 +38,11 @@ export const ASYNC_COMPLETE_MS = 60_000;
 
 export type FaultName =
   | "timeoutAfterAccept" | "workerDeath" | "duplicateSubmit" | "sameNameTwoUsers" | "insufficientFunds" | "async250"
-  | "registryMaintenance" | "renewDraft" | "defaultPeriod2" | "rateLimited" | "unknownAvailability";
+  | "registryMaintenance" | "renewDraft" | "defaultPeriod2" | "rateLimited" | "unknownAvailability"
+  /** Like insufficientFunds but only `releasePending` or `processPending` completes the order (OpenSRS `forced_pending`). */
+  | "forcedPending"
+  /** The zone write is accepted and silently dropped, so only the read-back can notice. */
+  | "dnsWriteIgnored";
 export interface FaultOptions {
   /** Fire this many times, then switch off. Default: until cleared. */
   times?: number;
@@ -55,6 +71,7 @@ export interface MockCapabilities extends RegistrarCapabilities {
   lookupBatchSize: 1;
   idempotencyKey: false;
   dnsMode: "replace_all";
+  dnsOverwrite: DnsOverwriteMode;
   dnsTtl: false;
   dnsCaa: false;
   minTermYears: Record<string, number>;
@@ -64,9 +81,12 @@ export interface MockCapabilities extends RegistrarCapabilities {
   registerPeriodDefault: 2;
 }
 
-export interface MockUpstreamOrder extends UpstreamOrder { years: number; registrantFingerprint: string; costMinor: bigint; pendingReason?: "forced_pending" | "async"; completeAt?: Date }
+export interface MockUpstreamOrder extends UpstreamOrder { registrant?: Registrant; years: number; registrantFingerprint: string; costMinor: bigint; pendingReason?: "forced_pending" | "async"; completeAt?: Date }
 interface MockDomain {
   fqdn: string; profileUsername: string; registrantFingerprint: string; createdAt: Date; expiresAt: Date; orderId: string; locked: boolean; nameservers: string[]; foreign: boolean;
+  registrant?: Registrant; pendingRegistrant?: Registrant;
+  autoRenew: boolean; letExpire: boolean; privacy?: "redacted_default" | "exposed"; privacyService?: boolean;
+  ds: DsRecord[]; zone: Map<DnsRecordType, DnsRecord[]>; authHash?: string;
 }
 interface FaultState { opts: FaultOptions; remaining: number | null }
 
@@ -92,9 +112,15 @@ export class MockRegistrarPort implements RegistrarPort {
   private lookupCache = new Map<string, { a: Availability; expires: number }>();
   private quoteOverrides = new Map<string, bigint>();
   private kindOverrides = new Map<string, AvailabilityKind>();
+  private deleted: DeletedDomain[] = [];
+  private transfersAway: TransferAway[] = [];
+  private transfersIn = new Set<string>();
+  readonly dnsOverwrite: DnsOverwriteMode;
 
   /** Call counters, by adapter method: `calls.register` is the number of times the caller invoked it. */
-  readonly calls = { checkAvailability: 0, checkAvailabilityNoCache: 0, quote: 0, register: 0, renew: 0, getDomain: 0, getOrdersByDomain: 0, cancelPendingOrder: 0, getFundingStatus: 0, health: 0 };
+  readonly calls = { checkAvailability: 0, checkAvailabilityNoCache: 0, quote: 0, register: 0, renew: 0, getDomain: 0, getOrdersByDomain: 0, cancelPendingOrder: 0, getFundingStatus: 0, health: 0,
+    setLock: 0, setNameservers: 0, issueAuthCode: 0, rerandomizeAuthCode: 0, getDns: 0, replaceZone: 0, getDs: 0, addDs: 0, removeDs: 0, updateContact: 0,
+    getTransfersAway: 0, cancelTransfer: 0, stopTransferAway: 0, setAutoRenew: 0, listDomains: 0, getDeletedDomains: 0, restore: 0, getBalance: 0 };
   /** What actually reached the upstream (differs from `calls` under `duplicateSubmit`). */
   readonly upstream = { registerSubmissions: 0, registerApplied: 0, renewApplied: 0, duplicateRejected: 0 };
   /** Every debit of the funding balance, in order. */
@@ -111,8 +137,9 @@ export class MockRegistrarPort implements RegistrarPort {
     has: (name: FaultName, fqdn?: string): boolean => { const f = this.faultMap.get(name); return !!f && (f.remaining === null || f.remaining > 0) && (!f.opts.fqdn || f.opts.fqdn === fqdn); },
   };
 
-  constructor(opts: { clock?: MockClock; funding?: bigint; wholesalePerYear?: Record<string, bigint> } = {}) {
+  constructor(opts: { clock?: MockClock; funding?: bigint; wholesalePerYear?: Record<string, bigint>; dnsOverwrite?: DnsOverwriteMode } = {}) {
     this.clock = opts.clock ?? new ManualClock();
+    this.dnsOverwrite = opts.dnsOverwrite ?? "whole_zone";
     this.balance = opts.funding ?? 1_000_000n;
     this.wholesale = opts.wholesalePerYear ?? Object.fromEntries(Object.entries(SAMPLE_WHOLESALE_CENTS).map(([k, v]) => [k, BigInt(v)]));
   }
@@ -126,6 +153,12 @@ export class MockRegistrarPort implements RegistrarPort {
   /** Complete due asynchronous orders. Every adapter method calls this first, so advancing a shared clock is enough. */
   tick(): void {
     const now = this.clock.now().getTime();
+    for (const [f, d] of [...this.domains]) { // expiry -> grace -> deleted (redemption) -> gone
+      if (d.foreign || d.expiresAt.getTime() + GRACE_DAYS * DAY > now) continue;
+      const deletedAt = new Date(d.expiresAt.getTime() + GRACE_DAYS * DAY);
+      this.domains.delete(f); this.deleted.push({ fqdn: f, deletedAt, redemptionEndsAt: new Date(deletedAt.getTime() + REDEMPTION_DAYS * DAY) });
+    }
+    this.deleted = this.deleted.filter((x) => x.redemptionEndsAt.getTime() > now);
     for (const o of this.orderList) {
       if (o.status === "waiting" && o.completeAt && o.completeAt.getTime() <= now) this.complete(o);
     }
@@ -142,7 +175,7 @@ export class MockRegistrarPort implements RegistrarPort {
     const d = fqdn.toLowerCase(); const now = this.clock.now();
     const id = this.nextId();
     this.orderList.push({ registrarOrderId: id, fqdn: d, type: "new", status: "completed", orderDate: now, profileUsername: `other-${id}`, years, registrantFingerprint: "someone else", costMinor: 0n });
-    this.domains.set(d, { fqdn: d, profileUsername: `other-${id}`, registrantFingerprint: "someone else", createdAt: now, expiresAt: addYears(now, years), orderId: id, locked: true, nameservers: [], foreign: true });
+    this.domains.set(d, { fqdn: d, profileUsername: `other-${id}`, registrantFingerprint: "someone else", createdAt: now, expiresAt: addYears(now, years), orderId: id, locked: true, nameservers: [], foreign: true, autoRenew: false, letExpire: false, ds: [], zone: new Map() });
   }
   addMaintenanceWindow(starts: Date, ends: Date) { this.windows.push({ starts, ends }); }
   /** Force a kind for a name (seeded table override for tests). */
@@ -161,8 +194,8 @@ export class MockRegistrarPort implements RegistrarPort {
       mode: "mock", profile: "mock:opensrs", dnsHosting: true, dnssec: false, webhooks: false, idempotentRegister: false, sandbox: false,
       authCodeModel: "api", authCodeOverrides: { io: "person" },
       restore: { com: true, dev: true, studio: true, ai: false, io: false, app: false },
-      funding: true, inventory: true, events: false,
-      lookupBatchSize: 1, idempotencyKey: false, dnsMode: "replace_all", dnsTtl: false, dnsCaa: false,
+      funding: true, inventory: true, events: false, cancelTransferAway: false,
+      lookupBatchSize: 1, idempotencyKey: false, dnsMode: "replace_all", dnsOverwrite: this.dnsOverwrite, dnsTtl: false, dnsCaa: false,
       minTermYears: { ...MIN_TERM }, maxTermYears: MAX_TERM, outboundTransfer: "emailed_approval", registerPeriodDefault: 2,
     };
   }
@@ -243,7 +276,7 @@ export class MockRegistrarPort implements RegistrarPort {
     const order: MockUpstreamOrder = { registrarOrderId: id, fqdn: d, type: "renew", status: "pending", orderDate: now, profileUsername: dom.profileUsername, years, registrantFingerprint: dom.registrantFingerprint, costMinor: cost };
     this.orderList.push(order);
     if (this.consumeFault("renewDraft", d)) throw rejected("renew_failed", "renewal failed and left a draft order");
-    if (this.consumeFault("insufficientFunds", d) || this.balance < cost) { order.pendingReason = "forced_pending"; return { status: "accepted_pending" as const, registrarOrderId: id }; }
+    if (this.consumeFault("insufficientFunds", d) || this.consumeFault("forcedPending", d) || this.balance < cost) { order.pendingReason = "forced_pending"; return { status: "accepted_pending" as const, registrarOrderId: id }; }
     if (this.consumeFault("async250", d)) { order.status = "waiting"; order.pendingReason = "async"; order.completeAt = new Date(now.getTime() + ASYNC_COMPLETE_MS); return { status: "accepted_pending" as const, registrarOrderId: id }; }
     this.complete(order);
     const out = { status: "renewed" as const, registrarOrderId: id, expiresAt: dom.expiresAt };
@@ -258,10 +291,13 @@ export class MockRegistrarPort implements RegistrarPort {
     const dom = this.domains.get(d);
     if (!dom) return null;
     const expired = dom.expiresAt.getTime() <= this.clock.now().getTime();
+    const away = this.transfersAway.some((t) => t.fqdn === d && (t.status === "pending_admin" || t.status === "pending_owner" || t.status === "pending_registry"));
+    const noPrivacy = this.tldOf(d) === "ai" || this.tldOf(d) === "io";
     return {
-      fqdn: d, state: expired ? "expired" : "active", registryStatuses: dom.locked ? ["clientTransferProhibited"] : ["ok"], expiresAt: new Date(dom.expiresAt),
-      locked: dom.locked, nameservers: [...dom.nameservers], autoRenew: false, privacyStatus: this.tldOf(d) === "ai" || this.tldOf(d) === "io" ? "not_available" : "redacted_default",
-      dsPresent: false, profileUsername: dom.profileUsername, registrarOrderId: dom.orderId, createdAt: new Date(dom.createdAt),
+      fqdn: d, state: away ? "transferring_out" : expired ? "expired" : "active", registryStatuses: dom.locked ? ["clientTransferProhibited"] : ["ok"], expiresAt: new Date(dom.expiresAt),
+      locked: dom.locked, nameservers: [...dom.nameservers], autoRenew: dom.autoRenew, privacyStatus: noPrivacy ? "not_available" : (dom.privacy ?? "redacted_default"),
+      dsPresent: dom.ds.length > 0, profileUsername: dom.profileUsername, registrarOrderId: dom.orderId, createdAt: new Date(dom.createdAt),
+      ...(dom.registrant ? { ownerEmailHash: emailHash(dom.registrant.email) } : {}), letExpire: dom.letExpire, transferAwayInProgress: away, privacyServiceEnabled: dom.privacyService ?? false,
     };
   }
 
@@ -284,6 +320,191 @@ export class MockRegistrarPort implements RegistrarPort {
     return sample(this.balance);
   }
 
+
+  // ---- Phase 3 methods -------------------------------------------------------------------------------------------
+  private own(fqdn: string): MockDomain {
+    const d = fqdn.trim().toLowerCase(); this.tldOf(d); this.guardCall(d);
+    const dom = this.domains.get(d);
+    if (!dom || dom.foreign) throw rejected("not_found", "domain not found");
+    return dom;
+  }
+  private afterWrite(d: string) {
+    if (this.consumeFault("workerDeath", d)) throw new DeathSignal("register", d);
+    if (this.consumeFault("timeoutAfterAccept", d)) throw new RegistrarError("unknown", "request timed out after submit", { retryable: false, outcomeUnknown: true, code: "timeout" });
+  }
+
+  async setLock(fqdn: string, locked: boolean): Promise<void> {
+    this.calls.setLock++; this.tick();
+    const dom = this.own(fqdn); dom.locked = locked; this.afterWrite(dom.fqdn);
+  }
+  async setNameservers(fqdn: string, nameservers: string[], opts: { targetSigned?: boolean } = {}): Promise<void> {
+    this.calls.setNameservers++; this.tick();
+    const dom = this.own(fqdn);
+    if (nameservers.length < 2 || nameservers.length > 13 || nameservers.some((n) => !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(n))) throw rejected("bad_nameservers", "2 to 13 valid hostnames are required");
+    if (dom.ds.length > 0 && !opts.targetSigned) throw rejected("dnssec_would_break", "DS records exist and the target DNS is not signed");
+    dom.nameservers = nameservers.map((n) => n.toLowerCase()); this.afterWrite(dom.fqdn);
+  }
+  async issueAuthCode(fqdn: string): Promise<{ code: string; issuedAt: Date }> {
+    this.calls.issueAuthCode++; this.tick();
+    const dom = this.own(fqdn);
+    if (this.tldOf(dom.fqdn) === "io") throw rejected("code_by_support", ".io codes are set by OpenSRS support (auth code model: person)");
+    const code = randomAuthCode(); dom.authHash = sha(code);
+    this.afterWrite(dom.fqdn); // a timeout here happens after the code is set and must not leak it
+    return { code, issuedAt: this.clock.now() };
+  }
+  async rerandomizeAuthCode(fqdn: string): Promise<void> {
+    this.calls.rerandomizeAuthCode++; this.tick();
+    const dom = this.own(fqdn);
+    if (this.tldOf(dom.fqdn) === "io") throw rejected("code_by_support", ".io codes are set by OpenSRS support");
+    dom.authHash = sha(randomAuthCode()); this.afterWrite(dom.fqdn);
+  }
+  /** Test inspection: does this code match what is set upstream? The mock keeps only a hash. */
+  authCodeMatches(fqdn: string, code: string): boolean { const d = this.domains.get(fqdn.toLowerCase()); return !!d?.authHash && d.authHash === sha(code); }
+  /** What the Horizon fake sends through: the caller (the adapter) generated the code, the upstream stores it. */
+  setAuthInfo(fqdn: string, code: string): void { const dom = this.own(fqdn); dom.authHash = sha(code); }
+
+  private hosted(dom: MockDomain) { return dom.nameservers.length > 0 && dom.nameservers.every((n) => n.endsWith(".systemdns.com")); }
+  async getDns(fqdn: string): Promise<DnsZone> {
+    this.calls.getDns++; this.tick();
+    const dom = this.own(fqdn);
+    if (!this.hosted(dom)) return { hosted: false, records: [] };
+    return { hosted: true, records: canonicalZone([...dom.zone.values()].flat()) };
+  }
+  /** SET_DNS_ZONE as the upstream applies it: types present in the payload are replaced; under `whole_zone` all other types are cleared too. */
+  rawSetZone(fqdn: string, payload: Partial<Record<DnsRecordType, DnsRecord[]>>): void {
+    const dom = this.own(fqdn);
+    if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
+    if (this.consumeFault("dnsWriteIgnored", dom.fqdn)) return;
+    if (this.dnsOverwrite === "whole_zone") dom.zone = new Map();
+    for (const t of DNS_RECORD_TYPES) { const list = payload[t]; if (list) dom.zone.set(t, list.map((r) => ({ ...r }))); }
+  }
+  async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+    this.calls.replaceZone++; this.tick();
+    validateZone(records);
+    const dom = this.own(fqdn);
+    if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
+    const want = canonicalZone(records);
+    const payload: Partial<Record<DnsRecordType, DnsRecord[]>> = {};
+    for (const t of DNS_RECORD_TYPES) payload[t] = want.filter((r) => r.type === t); // every type, empty included: correct under either overwrite mode
+    this.rawSetZone(dom.fqdn, payload);
+    const back = canonicalZone([...dom.zone.values()].flat());
+    if (zoneHash(back) !== zoneHash(want)) throw rejected("dns_readback_mismatch", "the zone read back does not match what was written");
+    return { hash: zoneHash(back), records: back };
+  }
+
+  async getDs(fqdn: string): Promise<DsRecord[]> { this.calls.getDs++; this.tick(); return this.own(fqdn).ds.map((x) => ({ ...x })); }
+  private checkDs(dom: MockDomain, ds: DsRecord) {
+    if (this.tldOf(dom.fqdn) === "io") throw rejected("dnssec_unsupported", "DNSSEC is not available for .io");
+    if (!Number.isInteger(ds.keyTag) || ds.keyTag < 0 || ds.keyTag > 65535 || !Number.isInteger(ds.algorithm) || !Number.isInteger(ds.digestType) || !/^[0-9a-f]{20,128}$/i.test(ds.digest)) throw rejected("bad_ds", "DS record is malformed");
+  }
+  private sameDs = (a: DsRecord, b: DsRecord) => a.keyTag === b.keyTag && a.algorithm === b.algorithm && a.digestType === b.digestType && a.digest.toLowerCase() === b.digest.toLowerCase();
+  async addDs(fqdn: string, ds: DsRecord): Promise<void> {
+    this.calls.addDs++; this.tick(); const dom = this.own(fqdn); this.checkDs(dom, ds);
+    if (!dom.ds.some((x) => this.sameDs(x, ds))) dom.ds.push({ ...ds });
+    this.afterWrite(dom.fqdn);
+  }
+  async removeDs(fqdn: string, ds: DsRecord): Promise<void> {
+    this.calls.removeDs++; this.tick(); const dom = this.own(fqdn); this.checkDs(dom, ds);
+    dom.ds = dom.ds.filter((x) => !this.sameDs(x, ds)); this.afterWrite(dom.fqdn);
+  }
+
+  async updateContact(fqdn: string, registrant: Registrant): Promise<ContactChangeResult> {
+    this.calls.updateContact++; this.tick();
+    const dom = this.own(fqdn); const cur = dom.registrant;
+    const lc = (s: string) => s.trim().toLowerCase();
+    const nameChanged = !cur || lc(cur.name) !== lc(registrant.name), emailChanged = !cur || lc(cur.email) !== lc(registrant.email);
+    const registrantChange = nameChanged || emailChanged;
+    if (registrantChange) { dom.pendingRegistrant = { ...registrant }; this.afterWrite(dom.fqdn); return { status: "pending_approval", registrantChange: true, verificationRequired: emailChanged, transferLock60d: true }; }
+    dom.registrant = { ...registrant }; this.afterWrite(dom.fqdn);
+    return { status: "applied", registrantChange: false, verificationRequired: false, transferLock60d: false };
+  }
+  /** Both parties approved the trade (or the Designated Agent did): the contact changes. */
+  approveContactChange(fqdn: string): void { const dom = this.own(fqdn); if (dom.pendingRegistrant) { dom.registrant = dom.pendingRegistrant; delete dom.pendingRegistrant; } }
+
+  async getTransfersAway(opts: { statuses?: TransferAwayStatus[]; since?: Date } = {}): Promise<TransferAway[]> {
+    this.calls.getTransfersAway++; this.tick(); this.guardCall("");
+    return this.transfersAway.filter((t) => (!opts.statuses || opts.statuses.includes(t.status)) && (!opts.since || t.requestedAt >= opts.since)).map((t) => ({ ...t }));
+  }
+  /** Seed a transfer-in this reseller started (Horizon cannot run one; Phase 5 owns the flow). */
+  seedTransferIn(fqdn: string) { this.transfersIn.add(fqdn.toLowerCase()); }
+  async cancelTransfer(fqdn: string): Promise<{ cancelled: boolean }> {
+    this.calls.cancelTransfer++; this.tick(); const d = fqdn.trim().toLowerCase(); this.guardCall(d);
+    return { cancelled: this.transfersIn.delete(d) };
+  }
+  async stopTransferAway(fqdn: string) {
+    this.calls.stopTransferAway++;
+    await this.setLock(fqdn, true); await this.rerandomizeAuthCode(fqdn).catch((e) => { if (!(e instanceof RegistrarError && e.code === "code_by_support")) throw e; });
+    const d = fqdn.trim().toLowerCase();
+    return { relocked: true as const, codeRerandomized: true as const, pendingTransferRemains: this.transfersAway.some((t) => t.fqdn === d && t.status.startsWith("pending")) };
+  }
+
+  async setAutoRenew(fqdn: string, enabled: boolean): Promise<void> {
+    this.calls.setAutoRenew++; this.tick();
+    const dom = this.own(fqdn); dom.autoRenew = enabled; dom.letExpire = false; this.afterWrite(dom.fqdn);
+  }
+
+  async listDomains(opts: { cursor?: string; limit?: number } = {}): Promise<{ rows: InventoryRow[]; next?: string }> {
+    this.calls.listDomains++; this.tick(); this.guardCall("");
+    const all = [...this.domains.values()].filter((d) => !d.foreign).sort((a, b) => (a.fqdn < b.fqdn ? -1 : 1));
+    const start = opts.cursor ? Number(opts.cursor) : 0; const limit = Math.min(opts.limit ?? 40, 100);
+    if (!Number.isInteger(start) || start < 0) throw rejected("bad_cursor", "cursor is not valid");
+    const rows = all.slice(start, start + limit).map((d) => ({ fqdn: d.fqdn, expiresAt: new Date(d.expiresAt) }));
+    return start + limit < all.length ? { rows, next: String(start + limit) } : { rows };
+  }
+  async getDeletedDomains(): Promise<DeletedDomain[]> { this.calls.getDeletedDomains++; this.tick(); this.guardCall(""); return this.deleted.map((x) => ({ ...x })); }
+  async restore(fqdn: string) {
+    this.calls.restore++; this.tick();
+    const d = fqdn.trim().toLowerCase(); const tld = this.tldOf(d); this.guardCall(d);
+    if (!this.capabilities().restore[tld]) throw rejected("restore_unsupported", `.${tld} restores go through OpenSRS support`);
+    const del = this.deleted.find((x) => x.fqdn === d);
+    if (!del) throw rejected("not_in_redemption", "domain is not in redemption");
+    const fee = this.restorePrice[tld]!;
+    const id = this.nextId(); const now = this.clock.now();
+    if (this.balance < fee) { this.orderList.push({ registrarOrderId: id, fqdn: d, type: "renew", status: "pending", orderDate: now, years: 1, registrantFingerprint: "", costMinor: fee, pendingReason: "forced_pending" }); return { status: "accepted_pending" as const, registrarOrderId: id }; }
+    this.balance -= fee; this.debits.push({ orderId: id, minor: fee });
+    this.deleted = this.deleted.filter((x) => x !== del);
+    // UNVERIFIED: the docs give the restore fee but not the expiry after a restore; the mock uses one year from now.
+    this.domains.set(d, { fqdn: d, profileUsername: "restored", registrantFingerprint: "", createdAt: now, expiresAt: addYears(now, 1), orderId: id, locked: true, nameservers: ["ns1.systemdns.com", "ns2.systemdns.com", "ns3.systemdns.com"], foreign: false, autoRenew: false, letExpire: false, ds: [], zone: new Map() });
+    this.orderList.push({ registrarOrderId: id, fqdn: d, type: "renew", status: "completed", orderDate: now, years: 1, registrantFingerprint: "", costMinor: fee });
+    return { status: "restored" as const, registrarOrderId: id };
+  }
+  async getBalance(): Promise<Balance> {
+    this.calls.getBalance++; this.tick(); this.guardCall("");
+    // The mock does not allocate funds for in-progress orders (OpenSRS does, KB 201000063400): listed in the parity gaps.
+    return { balance: sample(this.balance), held: sample(0n), available: sample(this.balance) };
+  }
+  /** PROCESS_PENDING: complete a forced-pending order now (the caller topped up or an operator released it). */
+  releasePending(registrarOrderId: string): boolean {
+    const o = this.orderList.find((x) => x.registrarOrderId === registrarOrderId);
+    if (!o || o.status !== "pending") return false;
+    this.complete(o); return (o.status as string) === "completed";
+  }
+
+  /**
+   * Out-of-band change simulator for the unattributed-change detector: each method changes upstream state the way a stolen login, a
+   * registrant self-service session or a support agent would, without counting as an adapter call and without consuming faults.
+   */
+  readonly oob = {
+    setLock: (fqdn: string, locked: boolean) => { this.mustDomain(fqdn).locked = locked; },
+    setNameservers: (fqdn: string, ns: string[]) => { this.mustDomain(fqdn).nameservers = ns.map((n) => n.toLowerCase()); },
+    addDs: (fqdn: string, ds: DsRecord) => { this.mustDomain(fqdn).ds.push({ ...ds }); },
+    removeAllDs: (fqdn: string) => { this.mustDomain(fqdn).ds = []; },
+    changeOwnerEmail: (fqdn: string, email: string) => { const d = this.mustDomain(fqdn); if (d.registrant) d.registrant = { ...d.registrant, email }; },
+    setAutoRenew: (fqdn: string, on: boolean) => { this.mustDomain(fqdn).autoRenew = on; },
+    letExpire: (fqdn: string, on = true) => { this.mustDomain(fqdn).letExpire = on; },
+    setPrivacy: (fqdn: string, state: "redacted_default" | "exposed") => { this.mustDomain(fqdn).privacy = state; },
+    setPrivacyService: (fqdn: string, on: boolean) => { this.mustDomain(fqdn).privacyService = on; },
+    startTransferAway: (fqdn: string, o: { status?: TransferAwayStatus; gainingRegistrar?: string } = {}) => {
+      this.mustDomain(fqdn); this.transfersAway.push({ fqdn: fqdn.toLowerCase(), status: o.status ?? "pending_owner", requestedAt: this.clock.now(), ...(o.gainingRegistrar ? { gainingRegistrar: o.gainingRegistrar } : {}) });
+    },
+    setTransferAwayStatus: (fqdn: string, status: TransferAwayStatus) => {
+      const t = this.transfersAway.find((x) => x.fqdn === fqdn.toLowerCase() && x.status.startsWith("pending")); if (!t) throw new Error("no pending transfer");
+      t.status = status; if (status === "completed") this.domains.delete(t.fqdn);
+    },
+    editZone: (fqdn: string, records: DnsRecord[]) => { const d = this.mustDomain(fqdn); d.zone = new Map(); for (const r of canonicalZone(records)) d.zone.set(r.type, [...(d.zone.get(r.type) ?? []), r]); },
+  };
+  private mustDomain(fqdn: string): MockDomain { const d = this.domains.get(fqdn.toLowerCase()); if (!d) throw new Error("oob: no such domain"); return d; }
+
   /** Restore fee table (mock fixture from the rate card in docs/research/reg-opensrs.md). */
   restoreFee(tld: string): bigint | undefined { return this.restorePrice[tld]; }
 
@@ -296,6 +517,7 @@ export class MockRegistrarPort implements RegistrarPort {
     return tld;
   }
   private checkTerm(tld: string, years: number) {
+    if (years === undefined || years === null) throw rejected("period_required", "period must be sent explicitly (OpenSRS would default it to 2)");
     if (!Number.isInteger(years) || years < (MIN_TERM[tld] ?? 1) || years > MAX_TERM) throw rejected("invalid_period", `term of ${years} years is not allowed for .${tld}`);
   }
   private maintenanceUntil(): Date | undefined {
@@ -348,9 +570,9 @@ export class MockRegistrarPort implements RegistrarPort {
     if (!prof) this.profiles.set(req.regUsername, { password: req.regPassword, createdAt: this.clock.now() });
     const id = this.nextId(); const now = this.clock.now();
     const cost = this.wholesale[this.tldOf(d)]! * BigInt(years);
-    const order: MockUpstreamOrder = { registrarOrderId: id, fqdn: d, type: "new", status: "pending", orderDate: now, profileUsername: req.regUsername, years, registrantFingerprint: registrantFingerprint(req.registrant), costMinor: cost };
+    const order: MockUpstreamOrder = { registrarOrderId: id, fqdn: d, type: "new", status: "pending", orderDate: now, profileUsername: req.regUsername, years, registrantFingerprint: registrantFingerprint(req.registrant), registrant: { ...req.registrant }, costMinor: cost };
     this.orderList.push(order);
-    if (this.faults.has("insufficientFunds", d) || this.balance < cost) { this.consumeFault("insufficientFunds", d); order.pendingReason = "forced_pending"; return { status: "accepted_pending", registrarOrderId: id, reason: "forced_pending" }; }
+    if (this.faults.has("insufficientFunds", d) || this.faults.has("forcedPending", d) || this.balance < cost) { this.consumeFault("insufficientFunds", d); this.consumeFault("forcedPending", d); order.pendingReason = "forced_pending"; return { status: "accepted_pending", registrarOrderId: id, reason: "forced_pending" }; }
     if (this.consumeFault("async250", d)) { order.status = "waiting"; order.pendingReason = "async"; order.completeAt = new Date(now.getTime() + ASYNC_COMPLETE_MS); return { status: "accepted_pending", registrarOrderId: id, reason: "async" }; }
     this.complete(order);
     return { status: "registered", registrarOrderId: id, expiresAt: new Date(this.domains.get(d)!.expiresAt) };
@@ -363,7 +585,8 @@ export class MockRegistrarPort implements RegistrarPort {
     const now = this.clock.now();
     if (o.type === "new") {
       if (this.domains.has(o.fqdn)) { o.status = "cancelled"; this.balance += o.costMinor; return; }
-      this.domains.set(o.fqdn, { fqdn: o.fqdn, profileUsername: o.profileUsername!, registrantFingerprint: o.registrantFingerprint, createdAt: now, expiresAt: addYears(now, o.years), orderId: o.registrarOrderId, locked: true, nameservers: ["ns1.systemdns.com", "ns2.systemdns.com", "ns3.systemdns.com"], foreign: false });
+      this.domains.set(o.fqdn, { fqdn: o.fqdn, profileUsername: o.profileUsername!, registrantFingerprint: o.registrantFingerprint, createdAt: now, expiresAt: addYears(now, o.years), orderId: o.registrarOrderId, locked: true, nameservers: ["ns1.systemdns.com", "ns2.systemdns.com", "ns3.systemdns.com"], foreign: false,
+        registrant: o.registrant, autoRenew: false, letExpire: false, ds: [], zone: new Map() });
       this.upstream.registerApplied++;
     } else if (o.type === "renew") {
       const dom = this.domains.get(o.fqdn)!;

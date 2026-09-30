@@ -1,4 +1,5 @@
 import type { Config, Mode } from "../ports.ts";
+import { registrarScopeReasons, type RegistrarScopeReason } from "../registrar-rpc/scope.ts";
 import type { Money } from "@mosshatch/registrar/port";
 
 /**
@@ -9,7 +10,7 @@ import type { Money } from "@mosshatch/registrar/port";
 export type ModeErrorReason =
   | "live_key_with_non_live_registrar" | "test_key_with_live_registrar" | "live_outside_production" | "no_stripe_key_in_production" | "no_stripe_key_with_live_registrar"
   | "vercel_env_mismatch" | "db_host_environment_mismatch" | "kms_alias_environment_mismatch" | "sample_amount_at_live_checkout"
-  | "stripe_key_unrecognized" | "config_missing";
+  | "stripe_key_unrecognized" | "config_missing" | RegistrarScopeReason;
 export class ModeError extends Error {
   constructor(public reasons: ModeErrorReason[]) { super(`mode guard: ${reasons.join(",")}`); this.name = "ModeError"; }
 }
@@ -86,7 +87,8 @@ function hostOf(url: string | undefined): string | undefined {
  * Build Config from environment variables and run the mode guard. Values are never logged or put in errors.
  * Variables: MH_MODE (local|preview|staging|production; default derived from VERCEL_ENV, else local), VERCEL_ENV, MH_ORIGIN, MH_RP_ID,
  * MH_ALLOWED_ORIGINS (comma list), CRON_SECRET (32+ characters), STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
- * MH_REGISTRAR_MODE (mock|sandbox|live; default mock), DATABASE_URL (host hint only), MH_KMS_ALIAS (hint only).
+ * MH_REGISTRAR_MODE (mock|sandbox|live; default mock), DATABASE_URL (host hint only), MH_KMS_ALIAS (hint only),
+ * MH_SCOPE (`registrar` only in the registrar project), REGISTRAR_RPC_URL (host compared with the environment); OPENSRS_* / REGISTRAR_LIVE_* credentials are refused outside the registrar scope.
  */
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const vercelEnv = env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview" || env.VERCEL_ENV === "development" ? env.VERCEL_ENV : undefined;
@@ -101,6 +103,9 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   const cronSecret = env.CRON_SECRET;
   if (!origin || !cronSecret || cronSecret.length < 32) throw new ModeError(["config_missing"]);
   assertModeConsistency({ stripeKeyKind, registrarMode, mode, vercelEnv, dbHost: hostOf(env.DATABASE_URL), kmsAlias: env.MH_KMS_ALIAS });
+  // ST-117: reseller credentials exist only in the `registrar` scope (MH_SCOPE=registrar), live ones only in production, none in preview.
+  const scopeReasons = registrarScopeReasons(env, mode);
+  if (scopeReasons.length) throw new ModeError(scopeReasons);
   let rpId = env.MH_RP_ID;
   if (!rpId) { try { rpId = new URL(origin).hostname; } catch { throw new ModeError(["config_missing"]); } }
   const allowedOrigins = env.MH_ALLOWED_ORIGINS ? env.MH_ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean) : [origin];

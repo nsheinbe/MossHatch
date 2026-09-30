@@ -14,6 +14,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./port": "./src/port.ts",
-    "./mock-port": "./src/mock-port.ts"
+    "./mock-port": "./src/mock-port.ts",
+    "./opensrs": "./src/opensrs/index.ts",
+    "./dns": "./src/dns.ts",
+    "./contract": "./src/contract.ts"
   }
 }

@@ -55,6 +55,15 @@ export interface DomainStatus {
   profileUsername?: string;
   registrarOrderId?: string;
   createdAt?: Date;
+  /** Phase 3 additions (all optional so Phase 2 callers compile unchanged). */
+  /** SHA-256 hex of the lower-cased owner email; the detector compares hashes and never sees the address. */
+  ownerEmailHash?: string;
+  /** OpenSRS `let_expire` flag (separate from auto_renew). */
+  letExpire?: boolean;
+  /** `transfer_away_in_progress` from `GET type=status`. */
+  transferAwayInProgress?: boolean;
+  /** True when the paid WHOIS/contact privacy service is switched on (the product does not sell it, so a change is worth noticing). */
+  privacyServiceEnabled?: boolean;
 }
 
 export interface UpstreamOrder { registrarOrderId: string; fqdn: string; type: "new" | "renew" | "transfer"; status: "pending" | "waiting" | "completed" | "cancelled"; orderDate: Date; profileUsername?: string }
@@ -65,7 +74,38 @@ export interface RegistrarCapabilities {
   authCodeModel: "api" | "emailed" | "person";
   restore: Record<string, boolean>;
   funding: boolean; inventory: boolean; events: boolean;
+  /** True only when the provider has an API to end a pending outbound transfer. OpenSRS: false (the owner's decline link or Tucows support ends it). */
+  cancelTransferAway: boolean;
 }
+
+export type Registrant = RegisterRequest["registrant"];
+
+export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT";
+export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "SRV", "TXT"];
+/** `name` is the label relative to the zone apex ("" is the apex). No TTL and no CAA/NS: OpenSRS SystemDNS has neither (docs/research/reg-opensrs.md 2). */
+export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number }
+export interface DnsZone { hosted: boolean; records: DnsRecord[] }
+
+export interface DsRecord { keyTag: number; algorithm: number; digestType: number; digest: string }
+
+export interface ContactChangeResult {
+  /** `pending_approval`: an ICANN Change of Registrant (trade) started and the contact has not changed yet. */
+  status: "applied" | "pending_approval";
+  /** First name, last name (organization) or email of the registrant changed. */
+  registrantChange: boolean;
+  /** An email change triggers registrant email verification; failing it suspends the domain. */
+  verificationRequired: boolean;
+  /** A registrant change starts the 60-day inter-registrar transfer lock unless the registrant opted out. */
+  transferLock60d: boolean;
+}
+
+export type TransferAwayStatus = "pending_admin" | "pending_owner" | "pending_registry" | "completed" | "cancelled";
+export interface TransferAway { fqdn: string; status: TransferAwayStatus; requestedAt: Date; gainingRegistrar?: string }
+
+export interface InventoryRow { fqdn: string; expiresAt: Date }
+export interface DeletedDomain { fqdn: string; deletedAt: Date; redemptionEndsAt: Date }
+export interface Balance { balance: Money; held: Money; available: Money }
+
 
 export interface RegistrarPort {
   capabilities(): RegistrarCapabilities;
@@ -80,5 +120,46 @@ export interface RegistrarPort {
   /** Cancel a pending or waiting upstream order (PROCESS_PENDING cancel). */
   cancelPendingOrder(registrarOrderId: string): Promise<{ cancelled: boolean }>;
   getFundingStatus(): Promise<Money | "unsupported">;
-  /** Lock, nameservers, restore, transfer, DNS and DNSSEC methods arrive in Phase 3 and 5; the contract test suite grows with them. */
+
+  // ---- Phase 3 ----------------------------------------------------------------------------------------------------
+  /** `MODIFY data=status lock_state`. Unlocking is the risky direction and is counted by the velocity fuse. */
+  setLock(fqdn: string, locked: boolean): Promise<void>;
+  /** Refuses (`dnssec_would_break`) when a DS record exists and the target DNS is not signed. */
+  setNameservers(fqdn: string, nameservers: string[], opts?: { targetSigned?: boolean }): Promise<void>;
+  /**
+   * Generates a fresh random code, sets it upstream and returns it ONCE. The port never stores or logs it and never reads a code back
+   * (`GET type=domain_auth_info` is not on the allow-list). `SEND_AUTHCODE` is never called.
+   */
+  issueAuthCode(fqdn: string): Promise<{ code: string; issuedAt: Date }>;
+  /** Sets a new random code nobody sees (re-lock, the 24-hour re-randomise, Stop). */
+  rerandomizeAuthCode(fqdn: string): Promise<void>;
+  /** Reads the zone. `hosted` is false when the nameservers are not the provider's (SystemDNS): the DNS tab is then read-only. */
+  getDns(fqdn: string): Promise<DnsZone>;
+  /**
+   * Replaces the whole zone with `records`, correct whether the provider overwrites the whole zone or only the types it is sent:
+   * every type is sent, empty ones as empty, then the zone is read back and compared. A mismatch throws `dns_readback_mismatch`.
+   * The caller holds the per-domain lock and keeps the pre-write snapshot.
+   */
+  replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
+  getDs(fqdn: string): Promise<DsRecord[]>;
+  addDs(fqdn: string, ds: DsRecord): Promise<void>;
+  removeDs(fqdn: string, ds: DsRecord): Promise<void>;
+  /** Changes the owner contact. A registrant change is reported, never hidden (C-07). */
+  updateContact(fqdn: string, registrant: Registrant): Promise<ContactChangeResult>;
+  /** `GET_TRANSFERS_AWAY`; the hostile-transfer poll asks for pending statuses only. */
+  getTransfersAway(opts?: { statuses?: TransferAwayStatus[]; since?: Date }): Promise<TransferAway[]>;
+  /** Cancels a transfer-in the reseller started (`CANCEL_TRANSFER`). There is no such call for outbound transfers. */
+  cancelTransfer(fqdn: string): Promise<{ cancelled: boolean }>;
+  /** "Stop": re-locks and re-randomises the code. A pending outbound transfer is NOT ended by this; `pendingTransferRemains` says so. */
+  stopTransferAway(fqdn: string): Promise<{ relocked: true; codeRerandomized: true; pendingTransferRemains: boolean }>;
+  /** Forces `auto_renew` (and sends `let_expire=0` explicitly). Renewal is driven by Mosshatch, so callers normally pass false. */
+  setAutoRenew(fqdn: string, enabled: boolean): Promise<void>;
+  /** Inventory for the unattributed-change detector; `cursor` is opaque. */
+  listDomains(opts?: { cursor?: string; limit?: number }): Promise<{ rows: InventoryRow[]; next?: string }>;
+  /** Names in redemption (`GET_DELETED_DOMAINS`); `getDomain` returns null for them. */
+  getDeletedDomains(): Promise<DeletedDomain[]>;
+  /** Redemption restore (`REDEEM`); only extensions with `capabilities().restore[tld]`. */
+  restore(fqdn: string): Promise<{ status: "restored" | "accepted_pending"; registrarOrderId?: string }>;
+  /** `GET_BALANCE`. `getFundingStatus()` is `available`. */
+  getBalance(): Promise<Balance>;
 }
