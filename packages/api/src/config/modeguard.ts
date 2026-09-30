@@ -1,6 +1,7 @@
 import type { Config, Mode } from "../ports.ts";
 import { registrarScopeReasons, type RegistrarScopeReason } from "../registrar-rpc/scope.ts";
 import type { Money } from "@mosshatch/registrar/port";
+import { openproviderGuardReasons, type OpenproviderGuardReason } from "./openprovider-guard.ts";
 
 /**
  * Mode guard (PLAN.md 4.3b "Environments and what each may touch", rule 1; ST-150).
@@ -8,6 +9,7 @@ import type { Money } from "@mosshatch/registrar/port";
  * Anything else throws. Error messages carry reason codes only, never a key, host or alias.
  */
 export type ModeErrorReason =
+  | OpenproviderGuardReason
   | "live_key_with_non_live_registrar" | "test_key_with_live_registrar" | "live_outside_production" | "no_stripe_key_in_production" | "no_stripe_key_with_live_registrar"
   | "vercel_env_mismatch" | "db_host_environment_mismatch" | "kms_alias_environment_mismatch" | "sample_amount_at_live_checkout"
   | "stripe_key_unrecognized" | "config_missing" | RegistrarScopeReason;
@@ -106,6 +108,9 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   // ST-117: reseller credentials exist only in the `registrar` scope (MH_SCOPE=registrar), live ones only in production, none in preview.
   const scopeReasons = registrarScopeReasons(env, mode);
   if (scopeReasons.length) throw new ModeError(scopeReasons);
+  // Openprovider: OPENPROVIDER_* only in the registrar scope; sandbox credentials refused in production, production ones outside it; MH_REGISTRAR_PROVIDER must parse.
+  const openproviderReasons = openproviderGuardReasons(env, mode, registrarMode);
+  if (openproviderReasons.length) throw new ModeError(openproviderReasons);
   let rpId = env.MH_RP_ID;
   if (!rpId) { try { rpId = new URL(origin).hostname; } catch { throw new ModeError(["config_missing"]); } }
   const allowedOrigins = env.MH_ALLOWED_ORIGINS ? env.MH_ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean) : [origin];

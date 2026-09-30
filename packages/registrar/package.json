@@ -16,6 +16,7 @@
     "./port": "./src/port.ts",
     "./mock-port": "./src/mock-port.ts",
     "./opensrs": "./src/opensrs/index.ts",
+    "./openprovider": "./src/openprovider/index.ts",
     "./dns": "./src/dns.ts",
     "./contract": "./src/contract.ts"
   }

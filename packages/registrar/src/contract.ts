@@ -14,6 +14,8 @@ import { DeathSignal, MockRegistrarPort } from "./mock-port.ts";
  * `docs/registrar-parity.md` lists what the mock cannot model. Run it with `tags: ["both","mock-only"]` for the mock.
  */
 export type ContractTag = "both" | "replay" | "mock-only" | "sandbox-only";
+/** A test a provider cannot pass for a documented, provider-specific reason (the reason is printed in the skipped test name). `name` is a prefix. */
+export interface ContractExclusion { name: string; reason: string }
 
 export interface ContractSubject {
   adapter: RegistrarPort;
@@ -30,10 +32,12 @@ export function makeRegisterRequest(fqdn: string, years = 1, over: Partial<Regis
   return { fqdn, years, regUsername: `mhu${String(seq).padStart(6, "0")}${Math.floor(Math.random() * 1e6)}`.slice(0, 20), regPassword: `pw-${Math.random().toString(36).slice(2)}xxxxxxxxxx`.slice(0, 20), registrant: { ...REGISTRANT }, ...over };
 }
 
-export function runRegistrarContract(makeAdapter: () => ContractSubject | Promise<ContractSubject>, opts: { tags: ContractTag[]; label?: string }): void {
+export function runRegistrarContract(makeAdapter: () => ContractSubject | Promise<ContractSubject>, opts: { tags: ContractTag[]; label?: string; exclude?: ContractExclusion[] }): void {
   const want = new Set<ContractTag>(opts.tags);
   const t = (tag: ContractTag, name: string, fn: (s: ContractSubject) => Promise<void>) => {
     if (!want.has(tag)) { it.skip(`[${tag}] ${name}`, () => undefined); return; }
+    const ex = opts.exclude?.find((x) => name.startsWith(x.name));
+    if (ex) { it.skip(`[${tag}] ${name} (excluded: ${ex.reason})`, () => undefined); return; }
     it(`[${tag}] ${name}`, async () => { await fn(await makeAdapter()); });
   };
   const needMock = (s: ContractSubject): MockRegistrarPort => { if (!s.mock) throw new Error("mock-only test needs subject.mock"); return s.mock; };
