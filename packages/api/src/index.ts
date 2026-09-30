@@ -28,3 +28,4 @@ export * as publish from "./publish/index.ts";
 export * as vault from "./vault/index.ts";
 export * as transfers from "./transfers/index.ts";
 export * as bindings from "./bindings/index.ts";
+export * as recipes from "./recipes/index.ts";

@@ -131,3 +131,91 @@ test("C-53 canary: searching sends nothing anywhere", async ({ page }) => {
   expect(after.filter((r) => !r.startsWith("GET ") || /canary/i.test(r))).toEqual([]);
   await expect(page.getByRole("link", { name: "commitments" })).toBeVisible();
 });
+
+// Phase 3 (C-13, C-26 to C-29, C-53, C-59, C-60, C-62): the fee page and the .ai/.io addenda are static pages under the strict CSP, axe clean.
+test("fee page and registry addenda: static HTML under the CSP, axe clean at desktop and phone sizes", async ({ page, browser }) => {
+  const pages = ["/fees.html", "/legal/tld-addendum-ai.html", "/legal/tld-addendum-io.html"];
+  const ctx = await browser.newContext({ javaScriptEnabled: false });
+  const nojs = await ctx.newPage();
+  for (const url of pages) {
+    const res = await nojs.goto(url);
+    expect(res!.status(), url).toBe(200);
+    expect(res!.headers()["content-security-policy"], url).toContain("default-src 'none'");
+    await expect(nojs.locator("h1"), url).toBeVisible();
+    expect(await nojs.locator("script").count(), url).toBe(0);
+  }
+  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toHaveCount(0);   // last page is the .io addendum
+  await nojs.goto("/fees.html");
+  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toBeVisible();
+  await expect(nojs.getByText("Tucows Domains Inc. (IANA ID 69)", { exact: false }).first()).toBeVisible();
+  await ctx.close();
+  const violations: string[] = [];
+  page.on("console", (m) => { if (/Content Security Policy/i.test(m.text())) violations.push(m.text()); });
+  for (const size of [{ width: 1280, height: 720 }, { width: 375, height: 740 }]) {
+    await page.setViewportSize(size);
+    for (const url of pages) {
+      await page.goto(url);
+      const r = await axe(page).analyze();
+      expect(r.violations.map((v) => `${url} ${v.id}: ${v.nodes[0]?.html.slice(0, 80)}`)).toEqual([]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${url} no sideways scroll`).toBe(true);
+    }
+  }
+  expect(violations).toEqual([]);
+});
+
+test("ST-38 Trusted Types is enforced with zero violations", async ({ page }) => {
+  const bad = watch(page);
+  await page.addInitScript(() => {
+    (window as unknown as { __tt: string[] }).__tt = [];
+    document.addEventListener("securitypolicyviolation", (e) => (window as unknown as { __tt: string[] }).__tt.push(`${e.violatedDirective} ${e.blockedURI}`));
+  });
+  const res = await page.goto("/");
+  const csp = res!.headers()["content-security-policy"];
+  expect(csp).toContain("require-trusted-types-for 'script'");
+  expect(csp).toContain("trusted-types mosshatch");
+  await page.waitForSelector("html[data-booted='1']");
+  await page.waitForFunction(() => document.querySelector("canvas.world"));
+  await page.waitForTimeout(3000);
+  await cancelDemo(page);
+  await page.fill("#name-input", "lanternfern");
+  await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
+  await page.getByRole("button", { name: "My grove" }).click();
+  await page.getByRole("button", { name: "Preview a sample grove" }).click();
+  await expect(page.locator(".tag").first()).toBeVisible();
+  await page.waitForTimeout(300);
+  // Everything the app did so far raised no violation of any kind.
+  expect(await page.evaluate(() => (window as unknown as { __tt: string[] }).__tt)).toEqual([]);
+  const probe = await page.evaluate(() => {
+    const out: string[] = [];
+    try { document.createElement("div").innerHTML = "<b>x</b>"; out.push("innerHTML allowed"); } catch (e) { out.push((e as Error).name); }
+    try { const s = document.createElement("script"); s.src = "/assets/x.js"; out.push("script src allowed"); } catch (e) { out.push((e as Error).name); }
+    const tt = (window as unknown as { trustedTypes?: { createPolicy(n: string, r: object): unknown } }).trustedTypes;
+    try { tt!.createPolicy("default", { createHTML: (s: string) => s }); out.push("default policy allowed"); } catch (e) { out.push((e as Error).name); }
+    try { tt!.createPolicy("mosshatch", {}); out.push("second mosshatch policy allowed"); } catch (e) { out.push((e as Error).name); }
+    return out;
+  });
+  expect(probe).toEqual(["TypeError", "TypeError", "TypeError", "TypeError"]);
+  // The probes above are refused by design, and reported as Trusted Types violations (so the reporting path works).
+  await page.waitForTimeout(300);
+  const reported = await page.evaluate(() => (window as unknown as { __tt: string[] }).__tt);
+  expect(reported.length).toBeGreaterThan(0);
+  expect(reported.filter((r) => !/trusted-types|require-trusted-types-for/.test(r))).toEqual([]);
+  expect(bad.filter((b) => !/Trusted Type|TrustedHTML|TrustedScriptURL|trusted-types|Trusted Types/i.test(b))).toEqual([]);
+});
+
+test("ST-70 /device ignores a code in the URL, and the page is accessible", async ({ page }) => {
+  const bad = watch(page);
+  const calls: string[] = [];
+  page.on("request", (r) => { if (r.url().includes("/api/")) calls.push(r.url()); });
+  await page.goto("/device?user_code=BCDF-GHJK");
+  await page.waitForSelector("html[data-booted='1']");
+  const input = page.getByLabel("Code from your terminal");
+  await expect(input).toBeVisible({ timeout: 15000 });
+  await expect(input).toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Approve a command-line sign-in" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Look up" })).toBeDisabled();
+  expect(calls.filter((u) => /oauth\/device/.test(u))).toEqual([]);
+  const r = await axe(page).include(".panel.device").analyze();
+  expect(r.violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 80)}`)).toEqual([]);
+  expect(bad).toEqual([]);
+});

@@ -18,7 +18,8 @@ export interface GenerateOpts {
 export async function loadCards(o: GenerateOpts): Promise<{ cards: Card[]; sample: boolean; portraits: Map<string, Buffer> }> {
   const url = o.env.CARDS_EXPORT_URL;
   if (!url) {
-    if (o.env.VERCEL_ENV === "production") throw new CardDataError("CARDS_EXPORT_URL is required for a production build; the samples are for previews");
+    // Keyed on a cards-only variable (set in the `cards` Vercel project's Production environment), never on VERCEL_ENV, so no other project trips it.
+    if (o.env.MH_CARDS_PRODUCTION === "1") throw new CardDataError("CARDS_EXPORT_URL is required for a production cards build; the samples are for previews");
     const raw = JSON.parse(fs.readFileSync(path.join(o.appDir, "fixtures/cards.json"), "utf8"));
     return { cards: validateExport({ version: raw.version, cards: raw.cards }), sample: true, portraits: new Map() };
   }

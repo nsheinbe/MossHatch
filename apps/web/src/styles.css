@@ -192,3 +192,9 @@ table.data td.val { word-break: break-all; }
 .tag-btn:hover { border-color: var(--lantern); }
 .panel.ledger { position: fixed; z-index: 20; top: 72px; left: 50%; transform: translateX(-50%); width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 96px); overflow: auto; }
 @media (max-width: 720px) { .panel.ledger { max-height: calc(100vh - 160px); } }
+/* Phase 4: device approval (lazy chunk) */
+.panel.device { max-width: 640px; }
+.panel.device code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.panel.device fieldset { border: 0; padding: 0; margin: 8px 0; }
+.panel.device legend { font-weight: 700; margin-bottom: 4px; }
+.linklike { background: none; border: 0; padding: 0; text-decoration: underline; font: inherit; }

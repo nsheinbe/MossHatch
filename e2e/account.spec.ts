@@ -235,6 +235,19 @@ test("domain management: transfer code shown once, Stop a hostile transfer, DNSS
   await page.getByRole("region", { name: "Your order" }).getByRole("button", { name: "Close" }).click();
   let panel = await openDomain(page, label);
 
+  // ---- A transfer nobody asked for (before any code was issued, so nothing explains it): needs attention, Stop re-locks and replaces the code (ST-125) ------------------------------------
+  const sim = await request.get(`/__dev/transfer-away?fqdn=${encodeURIComponent(fqdn)}`);
+  expect((await sim.json()).unrequested).toBe(1);
+  await panel.getByRole("button", { name: "Close" }).click();
+  panel = await openDomain(page, label);
+  const banner = panel.getByRole("alert").filter({ hasText: "Needs you" });
+  await expect(banner).toBeVisible({ timeout: 20_000 });
+  await clean(page, "hostile transfer banner");
+  await banner.getByRole("button", { name: "Stop this transfer" }).click();
+  await expect(panel.getByText("Stopped. The name is locked again and its code was replaced.", { exact: false })).toBeVisible({ timeout: 20_000 });
+  await clean(page, "after stop");
+  await expect(panel.getByText("Transfer lock", { exact: true }).locator("xpath=following-sibling::dd")).toHaveText("On", { timeout: 20_000 });
+
   // ---- Unlock with the passkey, get the code once, re-hide it, lock again (ST-120, ST-122) ------------------------------------------
   const xfer = panel.getByRole("group", { name: "Transfer to another registrar" });
   await xfer.getByRole("button", { name: "Unlock for transfer" }).click();
@@ -258,18 +271,6 @@ test("domain management: transfer code shown once, Stop a hostile transfer, DNSS
   await xfer.getByRole("button", { name: "Lock it again" }).click();
   await expect(xfer.getByText("Locked again.", { exact: false })).toBeVisible({ timeout: 20_000 });
   await expect(panel.getByText("Transfer lock", { exact: true }).locator("xpath=following-sibling::dd")).toHaveText("On");
-
-  // ---- A transfer nobody asked for: needs attention, Stop re-locks and replaces the code (ST-125) ------------------------------------
-  const sim = await request.get(`/__dev/transfer-away?fqdn=${encodeURIComponent(fqdn)}`);
-  expect((await sim.json()).unrequested).toBe(1);
-  await panel.getByRole("button", { name: "Close" }).click();
-  panel = await openDomain(page, label);
-  const banner = panel.getByRole("alert").filter({ hasText: "Needs you" });
-  await expect(banner).toBeVisible({ timeout: 20_000 });
-  await clean(page, "hostile transfer banner");
-  await banner.getByRole("button", { name: "Stop this transfer" }).click();
-  await expect(panel.getByText("Stopped. The name is locked again and its code was replaced.", { exact: false })).toBeVisible({ timeout: 20_000 });
-  await clean(page, "after stop");
 
   // ---- DNS tab: DNSSEC first, then a nameserver change that keeps DNSSEC working (C-20, ST-122) -----------------------------------------
   await panel.getByRole("tab", { name: "DNS" }).click();

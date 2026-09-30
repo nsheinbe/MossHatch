@@ -90,7 +90,7 @@ test("ST-145 publish a card with a passkey, see it in the export, and take it do
   await page.waitForSelector("html[data-booted='1']");
   await page.keyboard.press("Escape");
   await signUp(page, request, `carder${Date.now()}@example.org`);
-  const label = `card-fern-${Date.now().toString(36)}`;
+  const label = `free-card-${Date.now().toString(36)}`;
   await buy(page, request, baseURL!, label);
   await page.getByRole("button", { name: "Hatch another" }).click();
   await page.getByRole("region", { name: "Your order" }).getByRole("button", { name: "Close" }).click();

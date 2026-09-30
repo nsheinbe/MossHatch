@@ -67,7 +67,7 @@ export const authorisationDoc = async () => (await api<{ documents: { kind: stri
 // ---- step-up: prepare, passkey, commit ------------------------------------------------------------------------------------------------
 
 export interface Prepared { actionId: string; summary: string; options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }
-export type StepUpType = "card.publish" | "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change";
+export type StepUpType = "card.publish" | "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change" | "device.approve";
 
 /** Step one: the server works out exactly what will be signed and says it in words. Nothing is signed yet. */
 export async function prepareStepUp(type: StepUpType, target: string, userInput?: unknown): Promise<Prepared> {

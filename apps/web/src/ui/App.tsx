@@ -16,6 +16,8 @@ import { whoAmI } from "../lib/account";
 
 const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
+// The CLI device-approval page (/device). The code is typed by the person; the URL is never read for it.
+const DeviceApprove = lazy(() => import("./DeviceApprove"));
 
 function hasWebGL2(): boolean {
   try { return !!document.createElement("canvas").getContext("webgl2"); } catch { return false; }
@@ -25,6 +27,7 @@ export function App() {
   const [gl] = useState(hasWebGL2);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
+  const [device, setDevice] = useState(() => location.pathname === "/device");
   const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, set } = useUi();
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -55,6 +58,7 @@ export function App() {
       <Header />
       {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
+      {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
       <HatchSheet />
       <CardPanel />
       <AccountPanel />

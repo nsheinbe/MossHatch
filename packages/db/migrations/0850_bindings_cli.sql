@@ -134,11 +134,11 @@ grant all on binding_refresh_tokens, device_requests, binding_revoke_links, reci
 -- Bearer idle limit (30 days without use, own target) and last-used, checked on every bearer request.
 create or replace function auth_binding_touch(p_id uuid, p_now timestamptz, p_idle interval)
 returns boolean language plpgsql security definer set search_path = public, pg_temp as $$
-declare v_last timestamptz;
+declare v_last timestamptz; v_used timestamptz;
 begin
-  select coalesce(last_used_at, created_at) into v_last from bindings where id = p_id and revoked_at is null;
+  select coalesce(last_used_at, created_at), last_used_at into v_last, v_used from bindings where id = p_id and revoked_at is null;
   if v_last is null or v_last <= p_now - p_idle then return false; end if;
-  if v_last < p_now - interval '60 seconds' then update bindings set last_used_at = p_now where id = p_id; end if;
+  if v_used is null or v_used < p_now - interval '60 seconds' then update bindings set last_used_at = p_now where id = p_id; end if;
   return true;
 end $$;
 

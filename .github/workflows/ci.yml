@@ -31,5 +31,6 @@ jobs:
       - run: npx vitest run
       - run: node scripts/check-st-ids.mjs
       - run: npm run build   # includes the bundle scan and size budgets
+      - run: npm run build:cards   # hatchkind.com (separate Vercel project): secret scan, no-script, links and budgets
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test

@@ -32,9 +32,13 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/transfers\/:id/, param: "id", id: () => ids.transfer! },
   // Vault (Phase 4): the reveal takes the secret id.
   { match: /^\/api\/v1\/secrets\/:id/, param: "id", id: () => ids.secret! },
+  // Tokens and recipes (Phase 4): A's binding, A's recipe plan and A's connection.
+  { match: /^\/api\/v1\/bindings\/:id/, param: "id", id: () => ids.binding! },
+  { match: /^\/api\/v1\/recipe-applications\/:id/, param: "id", id: () => ids.recipeApplication! },
+  { match: /^\/api\/v1\/connections\/:id/, param: "id", id: () => ids.connection! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
-const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/];
+const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
 /** Routes with no path parameter: tenant comes from the credential only, so the check is "B never sees A's data". */
 const isParam = (r: Route) => r.path.includes(":");
 
@@ -58,6 +62,10 @@ beforeAll(async () => {
   ids.domain = (await h.app.db.owner.query("select id from domains where user_id = $1 and fqdn_ascii = $2", [a.userId, names.domain])).rows[0].id;
   ids.secret = (await h.app.db.owner.query("insert into secrets (user_id, domain_id, env, name) values ($1,$2,'prod','ALICE_FIXTURE') returning id", [a.userId, ids.domain])).rows[0].id;
   ids.transfer = (await h.app.db.owner.query("insert into transfers_in (user_id, order_id, fqdn_ascii, tld, years, idempotency_key, request_hash) values ($1,$2,'alice-transfer.com','com',1,'matrix-t','\\x00') returning id", [a.userId, ids.order])).rows[0].id;
+  const ma = mintToken("cli");
+  ids.binding = (await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, scopes, expires_at) values ($1,'cli','a',$2,$3,$4, now() + interval '30 days') returning id", [a.userId, ma.prefix, ma.hash, JSON.stringify([{ capability: "secrets.read", domain_id: ids.domain, env: "dev" }])])).rows[0].id;
+  ids.recipeApplication = (await h.app.db.owner.query("insert into recipe_applications (user_id, domain_id, recipe_id, recipe_version, plan, plan_hash, needs_approval, created_by_kind, expires_at, created_at) values ($1,$2,'postgres-neon',1,'{}',$3,false,'user', now() + interval '1 hour', now()) returning id", [a.userId, ids.domain, sha256("matrix-plan")])).rows[0].id;
+  ids.connection = (await h.app.db.owner.query("insert into connections (user_id, domain_id, service) values ($1,$2,'neon') returning id", [a.userId, ids.domain])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;

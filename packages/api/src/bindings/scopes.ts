@@ -12,6 +12,8 @@ import type { Principal } from "../http/types.ts";
 export const CAPABILITIES = [
   "domains.read", "dns.read", "dns.write", "nest.names", "secrets.read", "secrets.write",
   "recipes.plan", "recipes.apply", "register.propose", "renew.propose", "transfer.status",
+  // C-34: an agent may turn auto-renew off (never on); used by the domains module's DELETE /domains/:id/auto-renew.
+  "mandate.off",
 ] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 export const ENVS = ["dev", "preview", "prod"] as const;

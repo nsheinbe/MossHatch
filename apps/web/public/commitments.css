@@ -22,3 +22,4 @@ table.fees { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
 table.fees caption { text-align: left; padding-bottom: 8px; color: rgba(241, 234, 216, 0.85); }
 table.fees th, table.fees td { border-bottom: 1px solid rgba(241, 234, 216, 0.25); padding: 8px 10px 8px 0; text-align: left; vertical-align: top; }
 .site-foot { margin-top: 40px; font-size: 0.9rem; color: rgba(241, 234, 216, 0.85); }
+.table-wrap:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }

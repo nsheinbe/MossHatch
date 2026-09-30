@@ -20,6 +20,7 @@ import { publishFromEnv } from "./publish/wiring.ts";
 import { installPublish } from "./publish/service.ts";
 import { installDomainsFromEnv, registrarFromEnv } from "./domains/boot-wiring.ts";
 import { installVaultFromEnv } from "./vault/wiring.ts";
+import { installRecipesFromEnv } from "./recipes/wiring.ts";
 
 export class NotConfigured extends Error {
   override name = "NotConfigured";
@@ -75,5 +76,6 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   // Phase 3: the domains services (the posture job's end-user probe). The domain and domain-management jobs are registered by buildRouter.
   installDomainsFromEnv(ctx, env);
   installVaultFromEnv(ctx, env, config.mode);
+  installRecipesFromEnv(ctx, config.mode);
   return { router, ctx };
 }

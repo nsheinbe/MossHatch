@@ -66,7 +66,17 @@ export function registerOrderRoutes(router: Router): Router {
         const sid = r.url.searchParams.get("session_id") ?? "";
         const known = sid && (o.sessionId === sid || (await r.ctx.cron.query("select 1 from order_operations where order_id = $1 and kind = 'checkout_session' and detail->>'session_id' = $2", [o.id, sid])).rowCount);
         if (!known) throw new HttpError(404, "not_found");
-        try { await advance(machine(r.ctx), o.id, { maxSteps: 8 }); } catch { /* the job path retries; the page shows the state as it is */ }
+        try {
+          if (o.kind === "renew" && o.state === "draft" && o.sessionId === sid) {
+            // A renewal paid on Checkout: the return page reconciles exactly as the webhook would (read the Session, then the PaymentIntent).
+            const sess = await ordersSvc(r.ctx).stripe.retrieveSession(sid);
+            if (sess.status === "complete" && sess.payment_status === "paid" && sess.payment_intent) {
+              const { renewalCheckoutPaid, advanceRenewal } = await import("../domains/renewals.ts");
+              await renewalCheckoutPaid(r.ctx, o.id, sid, sess.payment_intent);
+              await advanceRenewal(machine(r.ctx), o.id);
+            }
+          } else await advance(machine(r.ctx), o.id, { maxSteps: 8 });
+        } catch { /* the job path retries; the page shows the state as it is */ }
         const now = (await loadOrder(r.ctx.cron, o.id)) ?? o;
         return json(await viewFor(r.ctx, userId, now));
       },

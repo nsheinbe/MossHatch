@@ -276,3 +276,21 @@ describe("C-31: a person who did not tick the box at checkout can save the card 
     expect((await domainRow(x, dom.id)).auto_renew).toBe(true);
   });
 });
+
+describe("Renew now on Checkout: the return page reconciles without waiting for the webhook", () => {
+  it("GET /orders/:id/return reads the Session and PaymentIntent, charges the order once and renews it", async () => {
+    const x = await per.make();
+    const o = await makeOwner(x, "rnreturn@example.com");
+    const dom = await buyDomain(x, o, "free-rnreturn.dev", { autoRenew: false });
+    const click = await x.app.call("POST", `/api/v1/domains/${dom.id}/renew`, { cookie: o.cookie, body: {} });
+    const sid = await sessionOf(x, click.json.order_id);
+    x.stripe.takeEvents(); x.stripe.payCheckout(sid); x.stripe.takeEvents();          // the webhooks never arrive
+    const back = await x.app.call("GET", `/api/v1/orders/${click.json.order_id}/return?session_id=${sid}`, { cookie: o.cookie });
+    expect(back.status).toBe(200);
+    expect(["renewed", "renewing_upstream"]).toContain(back.json.state);
+    const again = await x.app.call("GET", `/api/v1/orders/${click.json.order_id}/return?session_id=${sid}`, { cookie: o.cookie });
+    expect(again.json.state).toBe("renewed");
+    expect((await x.app.db.owner.query("select count(*)::int n from payments where order_id = $1", [click.json.order_id])).rows[0].n).toBe(1);
+    expect(x.registrar.calls.renew).toBe(1);
+  });
+});
