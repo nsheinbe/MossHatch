@@ -28,8 +28,9 @@ function withDb(url: string, db: string, user?: string): string {
 async function ensureLoginRoles(admin: pg.Client) {
   for (const [login, group] of [["mh_runtime_login", "mh_runtime"], ["mh_cron_login", "mh_cron"]] as const) {
     try {
-      await admin.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = '${login}') then create role ${login} login password '${PASS}'; end if; end $$`);
+      await admin.query(`do $$ begin if not exists (select 1 from pg_roles where rolname = '${login}') then create role ${login} login ${login === 'mh_cron_login' ? 'bypassrls' : ''} password '${PASS}'; end if; end $$`);
     } catch { /* another worker created it first */ }
+    try { await admin.query(`alter role ${login} ${login === 'mh_cron_login' ? 'bypassrls' : 'nobypassrls'}`); } catch { /* concurrent */ }
     try { await admin.query(`grant ${group} to ${login}`); } catch { /* group not created yet; migration creates it, we retry below */ }
   }
 }

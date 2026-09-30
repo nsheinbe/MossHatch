@@ -5,7 +5,10 @@ export type { Pool, PoolClient };
 
 // bigint columns arrive as strings by default; money helpers parse them explicitly with BigInt().
 export function connect(connectionString: string, opts: { max?: number } = {}): Pool {
-  return new pg.Pool({ connectionString, max: opts.max ?? 10 });
+  const pool = new pg.Pool({ connectionString, max: opts.max ?? 10 });
+  // An idle client dropped by the server (failover, forced drop in tests) must not crash the process; the next query reconnects.
+  pool.on("error", () => undefined);
+  return pool;
 }
 
 /**
