@@ -24,5 +24,8 @@
     "@playwright/test": "1.56.1",
     "typescript": "7.0.2",
     "vitest": "5.0.2"
+  },
+  "dependencies": {
+    "@mosshatch/api": "*"
   }
 }
