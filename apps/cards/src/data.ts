@@ -1,3 +1,5 @@
+import { CARD_TRAIT_RE, SPECIES, SPECIES_NAMES, TIERS, type Species, type Tier } from "@mosshatch/core";
+
 /**
  * The cards the site is built from. Source, in order: `CARDS_EXPORT_URL` (the web project's GET /api/v1/cards/public, which reads
  * only the `public_cards` view and answers only the build's key, `CARDS_EXPORT_KEY`), else the sample fixtures. A production
@@ -14,8 +16,8 @@ export const CARDS_KEY_HEADER = "x-mh-cards-key";
 export interface Card {
   slug: string;
   species: string;
-  family: "fox" | "moth" | "beetle" | "koi";
-  rarity: "common" | "uncommon" | "rare";
+  family: Species;
+  rarity: Tier;
   traits: string[];
   hatched_on: string;
   image: { url: string; sha256: string; width: number; height: number } | null;
@@ -25,12 +27,12 @@ export interface Card {
 
 /** Mirrors EXPORT_KEYS in packages/api/src/publish/export.ts. A key outside this list fails the build. */
 export const CARD_KEYS = ["slug", "species", "family", "rarity", "traits", "hatched_on", "image", "indexable", "published_at"] as const;
-const SPECIES = new Set(["Ember Fox", "Lantern Moth", "Tinkerbeetle", "Clockwork Koi"]);
-const FAMILIES = new Set(["fox", "moth", "beetle", "koi"]);
-const RARITIES = new Set(["common", "uncommon", "rare"]);
+const SPECIES_SET = new Set<string>(SPECIES_NAMES);
+const FAMILIES = new Set<string>(SPECIES);
+const RARITIES = new Set<string>(TIERS);
 export const SLUG_RE = /^(?=.{4,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 /** The only phrases a trait can be: computed on the server from the name, never typed by anyone. */
-export const TRAIT_RE = /^(?:(?:common|uncommon|rare) coat|(?:long|short) (?:ears|tail)|\d spots?)$/;
+export const TRAIT_RE = CARD_TRAIT_RE;
 
 export class CardDataError extends Error {}
 
@@ -40,7 +42,7 @@ export function validateCard(raw: unknown, i: number): Card {
   const r = raw as Record<string, unknown>;
   for (const k of Object.keys(r)) if (!(CARD_KEYS as readonly string[]).includes(k)) throw bad(`unexpected key ${k}`);
   if (typeof r.slug !== "string" || !SLUG_RE.test(r.slug)) throw bad("slug");
-  if (typeof r.species !== "string" || !SPECIES.has(r.species)) throw bad("species");
+  if (typeof r.species !== "string" || !SPECIES_SET.has(r.species)) throw bad("species");
   if (typeof r.family !== "string" || !FAMILIES.has(r.family)) throw bad("family");
   if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) throw bad("rarity");
   if (!Array.isArray(r.traits) || r.traits.length < 1 || r.traits.length > 8 || !r.traits.every((t) => typeof t === "string" && TRAIT_RE.test(t))) throw bad("traits");

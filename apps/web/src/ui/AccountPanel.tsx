@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI } from "../lib/account";
+import { currentInvite, openWaitlist } from "../lib/waitlist";
 
 type Step = "choose" | "code" | "codes";
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
@@ -16,6 +17,8 @@ export function AccountPanel() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [data, setData] = useState<"export" | "close" | null>(null);
+  // Invite-only rollout: without an invite, sign-up shows the waitlist instead (the server answers 403 invite_required).
+  const [needInvite, setNeedInvite] = useState(() => import.meta.env.VITE_INVITE_ONLY === "1" && !currentInvite());
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
@@ -26,7 +29,12 @@ export function AccountPanel() {
   }, [accountOpen, set]);
   if (!accountOpen) return null;
 
-  const run = async (fn: () => Promise<void>) => { setBusy(true); setMsg(null); try { await fn(); } catch (e) { setMsg(explain(e)); } finally { setBusy(false); } };
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true); setMsg(null);
+    try { await fn(); }
+    catch (e) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); } else setMsg(explain(e)); }
+    finally { setBusy(false); }
+  };
   const refresh = async () => set({ account: await whoAmI() });
 
   if (account) {
@@ -77,11 +85,18 @@ export function AccountPanel() {
               <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); await refresh(); set({ accountOpen: false }); })}>Sign in with a passkey</button>
             </div>
             <hr className="rule" />
+            {needInvite ? (
+              <div role="group" aria-label="Invite only">
+                <p>Mosshatch is letting people in a few at a time. New accounts need an invite: join the waitlist and we will email you one when it is your turn.</p>
+                <div className="row-actions"><button type="button" className="btn secondary" onClick={() => openWaitlist({ email, source: "signup" })}>Join the waitlist</button></div>
+              </div>
+            ) : (
             <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await signupStart(email); setStep("code"); }); }}>
               <label htmlFor="acct-email">New here? Your email</label>
               <input id="acct-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="text-input" />
               <div className="row-actions"><button type="submit" className="btn secondary" disabled={busy}>Email me a code</button></div>
             </form>
+            )}
           </>
         )}
         {step === "code" && (

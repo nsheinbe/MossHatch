@@ -22,6 +22,9 @@ import { installDomainsFromEnv, registrarFromEnv } from "./domains/boot-wiring.t
 import { installVaultFromEnv } from "./vault/wiring.ts";
 import { installRecipesFromEnv } from "./recipes/wiring.ts";
 import { installClosureFromEnv } from "./closure/services.ts";
+import { inviteOnlyFromEnv } from "./waitlist/gate.ts";
+// The waitlist is served by api/index.ts before (and without) the full boot, so it works while production refuses to start.
+export { handleWaitlist } from "./waitlist/http.ts";
 
 export class NotConfigured extends Error {
   override name = "NotConfigured";
@@ -79,5 +82,7 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   installVaultFromEnv(ctx, env, config.mode);
   installRecipesFromEnv(ctx, config.mode);
   installClosureFromEnv(ctx, env);
+  // Invite-only sign-up (the waitlist rollout): MH_INVITE_ONLY, on by default in staging and production.
+  (ctx.services as Record<string, unknown>).inviteOnly = inviteOnlyFromEnv(env, config.mode);
   return { router, ctx };
 }

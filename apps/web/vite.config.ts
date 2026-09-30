@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { formatUsd, usd, feePerYear } from "@mosshatch/core";
 import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
+import { siteMode, transformHome } from "../../scripts/site-mode.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
@@ -23,6 +24,11 @@ function staticPrices(): Plugin {
         .replace("<!--ASOF-->", asOf);
     },
   };
+}
+
+/** Demo or live (scripts/site-mode.mjs): the title, description, canonical URL and share tags, and in demo mode the preview banner. */
+function siteMeta(): Plugin {
+  return { name: "mosshatch-site-meta", transformIndexHtml: (html, ctx) => (ctx.path === "/debug.html" ? html : transformHome(html, siteMode(process.env))) };
 }
 
 /** Strip comments and indentation from GLSL imported with ?raw (keeps line breaks for #directives). */
@@ -144,7 +150,7 @@ function devApi(): Plugin {
 const withDebug = process.env.MOSSHATCH_DEBUG_ENTRY === "1";
 
 export default defineConfig({
-  plugins: [glslMinify(), react(), staticPrices(), devApi()],
+  plugins: [glslMinify(), react(), staticPrices(), siteMeta(), devApi()],
   build: {
     target: "es2022",
     modulePreload: { polyfill: false },

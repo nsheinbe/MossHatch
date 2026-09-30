@@ -25,3 +25,10 @@ export function stream(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+/** "moonfern.co.uk" -> label "moonfern", tld "co.uk". */
+export function splitDomain(domain: string): { label: string; tld: string } {
+  const d = normalizeDomain(domain);
+  const i = d.indexOf(".");
+  return i < 0 ? { label: d, tld: "" } : { label: d.slice(0, i), tld: d.slice(i + 1) };
+}

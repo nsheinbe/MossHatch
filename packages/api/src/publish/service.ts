@@ -1,4 +1,4 @@
-import { deriveTraits } from "@mosshatch/core";
+import { cardTraits, deriveTraits } from "@mosshatch/core";
 import type { PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
@@ -37,7 +37,7 @@ export function cardFacts(fqdnAscii: string): CardFacts {
   const t = deriveTraits(fqdnAscii);
   return {
     slug: t.domain, species: t.speciesName, family: t.family, rarity: t.rarity,
-    traits: [`${t.rarity} coat`, `${t.earLength > 1.1 ? "long" : "short"} ears`, `${t.tailLength > 1.15 ? "long" : "short"} tail`, `${t.spots} ${t.spots === 1 ? "spot" : "spots"}`],
+    traits: cardTraits(t.spec),
   };
 }
 

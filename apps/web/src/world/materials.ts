@@ -51,10 +51,11 @@ export interface HatchLook {
 }
 
 /** The hatch material. `creature` enables vertex-animated parts; `instanced` enables instanceMatrix. */
-export function hatchMaterial(shared: Shared, opts: { creature?: boolean; look?: HatchLook; transparent?: boolean } = {}): THREE.ShaderMaterial {
+export function hatchMaterial(shared: Shared, opts: { creature?: boolean; egg?: boolean; look?: HatchLook; transparent?: boolean } = {}): THREE.ShaderMaterial {
   const l = opts.look ?? {};
   const defines: Record<string, string> = {};
   if (opts.creature) defines.CREATURE = "";
+  if (opts.egg) defines.EGG = "";
   const m = new THREE.ShaderMaterial({
     defines,
     uniforms: {
@@ -63,6 +64,10 @@ export function hatchMaterial(shared: Shared, opts: { creature?: boolean; look?:
       uAttn: { value: l.attn ?? 0 }, uShed: { value: l.shed ?? 0 }, uGlow: { value: l.glow ?? 0 },
       uAlpha: { value: l.alpha ?? 1 }, uTint: { value: l.tint ?? 0 },
       uPose: { value: new THREE.Vector4() }, uPose2: { value: new THREE.Vector4(0, 1, 0, 0) }, uWave: { value: 0 },
+      uPose3: { value: new THREE.Vector4() }, uHeadPivot: { value: new THREE.Vector3() },
+      uRimCol: { value: new THREE.Color(0, 0, 0) }, uRimK: { value: 0 }, uIri: { value: 0 },
+      uShellA: { value: new THREE.Color(TOKENS.shell) }, uShellB: { value: new THREE.Color(TOKENS.shell) }, uShellPat: { value: 0 },
+      uCrack: { value: 0 }, uCrackKind: { value: 0 },
     },
     vertexShader: hatchVert,
     fragmentShader: common + hatchFrag,

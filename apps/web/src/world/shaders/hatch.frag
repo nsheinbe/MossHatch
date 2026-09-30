@@ -19,6 +19,16 @@ uniform float uShed;
 uniform float uGlow;
 uniform float uAlpha;
 uniform float uTint;    // 0..1 lavender tint for traveling
+uniform vec3 uRimCol;   // tier rim colour
+uniform float uRimK;    // tier rim strength
+uniform float uIri;     // iridescent rim strength
+#ifdef EGG
+uniform vec3 uShellA;
+uniform vec3 uShellB;
+uniform float uShellPat; // 0 plain, 1 speckle, 2 band, 3 zigzag, 4 dapple
+uniform float uCrack;    // 0..1 crack progress
+uniform float uCrackKind; // 0 veins, 1 spiral, 2 zigzag, 3 burst, 4 ring
+#endif
 varying vec3 vN;
 varying vec3 vW;
 varying vec3 vC;
@@ -55,6 +65,28 @@ void main() {
   float dark = 1.0 - lit;
 
   vec3 base = vC;
+#ifdef EGG
+  // The shell: its colour and pattern come from the extension (egg object space: centre y 0.3, radius about 0.24 x 0.31).
+  vec3 q = vObj - vec3(0.0, 0.3, 0.0);
+  float ang = atan(q.z, q.x);
+  float mark = 0.0;
+  if (uShellPat > 0.5 && uShellPat < 1.5) mark = step(0.78, vnoise(vObj * 26.0));
+  else if (uShellPat < 2.5 && uShellPat > 1.5) mark = step(abs(q.y - 0.07), 0.03) + step(abs(q.y + 0.05), 0.018);
+  else if (uShellPat < 3.5 && uShellPat > 2.5) mark = step(abs(q.y - abs(fract(ang * 0.955) - 0.5) * 0.12 + 0.02), 0.022);
+  else if (uShellPat > 3.5) mark = smoothstep(0.6, 0.66, vnoise(vObj * 8.0 + 3.0));
+  base = mix(uShellA, uShellB, clamp(mark, 0.0, 1.0));
+  // Cracks grow with uCrack in one of five shapes and glow from inside.
+  float cw = 0.012 + 0.006 * uCrack;
+  float cl = 0.0;
+  float yTop = q.y / 0.31;               // -1 bottom .. 1 top
+  float a01 = ang / 6.2832 + 0.5;
+  if (uCrackKind < 0.5) cl = step(abs(vnoise(vObj * 11.0) - 0.5), cw * 3.0) * step(1.0 - uCrack * 1.6, yTop);
+  else if (uCrackKind < 1.5) cl = step(abs(fract(a01 * 2.0 + yTop * 1.5) - 0.5), cw * 5.0) * step(1.0 - uCrack * 2.0, yTop);
+  else if (uCrackKind < 2.5) cl = step(abs(q.y - 0.02 - (abs(fract(a01 * 7.0) - 0.5) - 0.25) * 0.08), cw) * step(a01, uCrack * 1.05);
+  else if (uCrackKind < 3.5) cl = step(abs(fract(a01 * 9.0) - 0.5), cw * 6.0) * step(1.0 - uCrack * 1.4, yTop) * step(0.0, yTop + 0.2);
+  else cl = step(abs(q.y - 0.09), cw) * step(a01, uCrack * 1.05) + step(abs(q.y + 0.02), cw) * step(a01, uCrack * 1.05 - 0.4);
+  cl = clamp(cl, 0.0, 1.0) * step(0.001, uCrack);
+#endif
   // Moss: noise x upward normal x age.
   float mn = vnoise(vObj * 3.2 + vec3(3.1, 0.0, 7.7)) * 0.65 + vnoise(vObj * 9.0) * 0.35;
   float mossMask = uMoss * smoothstep(0.25, 0.85, n.y) * smoothstep(0.35, 0.7, mn + uMoss * 0.25);
@@ -88,6 +120,11 @@ void main() {
   // Rim light: warm from lanterns, cool from the moon.
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0);
   col += rim * (uLCol * 0.22 * clamp(lan, 0.0, 1.0) + vec3(0.35, 0.45, 0.75) * 0.14);
+  // Tier looks: a moonlit or lantern rim, and a slow rainbow sheen for iridescent coats.
+  float rimT = pow(1.0 - max(dot(n, V), 0.0), 2.0);
+  col += rimT * uRimCol * uRimK;
+  vec3 iri = 0.5 + 0.5 * cos(6.2832 * (vec3(0.0, 0.33, 0.67) + vObj.y * 1.6 + dot(n, V) * 1.2 + uTime * 0.08));
+  col += rimT * iri * uIri * 0.6;
 
   // Attention pulse and shedding shimmer
   float pulse = 0.5 + 0.5 * sin(uTime * 3.2);
@@ -97,6 +134,9 @@ void main() {
 
   col = mix(col, uInk, ink * 0.88);
   col += vEmit * uLCol * 0.9 + uGlow * vec3(1.0, 0.72, 0.36);
+#ifdef EGG
+  col = mix(col, uLCol * (1.2 + uCrack), cl);
+#endif
   col = mix(col, uFogCol, fog);
   gl_FragColor = vec4(col, uAlpha);
 }

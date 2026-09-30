@@ -47,7 +47,7 @@ export function Grove() {
   void sample;
   const w = handle.world;
   const mine = w?.groveCreatures() ?? [];
-  const names = real ? live.map((l) => ({ domain: l.fqdn, state: l.state })) : mine.map((c) => ({ domain: c.traits.domain, state: c.state }));
+  const names = real ? live.map((l) => ({ domain: l.fqdn, state: l.state })) : mine.map((c) => ({ domain: c.id, state: c.state }));
 
   // Bound to the account's real domains when a backend is connected and someone is signed in. Otherwise this stays the Phase 1 practice grove.
   useEffect(() => {
@@ -65,7 +65,7 @@ export function Grove() {
           ...out.domains.map((d: DomainSummary): Live => ({ key: d.id, id: d.id, fqdn: d.fqdn, state: stateOf(d).state, age: d.age_days })),
           ...out.eggs.map((e): Live => ({ key: e.order_id, fqdn: e.fqdn, state: deriveCreatureState(eggFacts()).state, age: 0 })),
         ];
-        const have = new Map(wd.groveCreatures().map((c) => [c.traits.domain, c]));
+        const have = new Map(wd.groveCreatures().map((c) => [c.id, c]));
         for (const n of [...realNames]) if (!want.some((x) => x.fqdn === n)) { wd.removeGrove(n); realNames.delete(n); }
         for (const x of want) {
           const c = have.get(x.fqdn);

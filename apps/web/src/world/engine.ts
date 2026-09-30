@@ -1,21 +1,23 @@
 import * as THREE from "three";
-import { deriveTraits, type CreatureState } from "@mosshatch/core";
+import { deriveCreatureSpec, type CreatureSpec, type CreatureState, type Particle } from "@mosshatch/core";
 import { makeShared, type Shared } from "./materials";
 import { buildScenery, POOL_R, type Scenery } from "./scenery";
 import { Bursts, Lanterns, makeAmbient, makeSky, Pool } from "./atmosphere";
 import { CameraRig, type ViewName } from "./rig";
 import { Adaptive, pickTier, type Tier } from "./quality";
-import { Creature } from "./creatures/creature";
+import { Creature, getKit, type CreatureFx } from "./creatures/creature";
+
+export { installKit, loadKit } from "./creatures/creature";
 import { Decor } from "./creatures/decor";
 import { Egg } from "./eggs";
 
-export interface Spec { domain: string; available: boolean }
+export interface Spec { domain: string; available: boolean; /** A stored spec; derived from the name when absent. */ spec?: CreatureSpec }
 
 export interface Hooks {
   /** Sound and flash hooks; the engine never touches audio or DOM directly. */
   onTick?(i: number): void;
   onFlash?(): void;
-  onBorn?(traits: ReturnType<typeof deriveTraits>): void;
+  onBorn?(spec: CreatureSpec): void;
   onLand?(): void;
   onDrop?(): void;
 }
@@ -24,6 +26,7 @@ export interface Stats { calls: number; triangles: number; dpr: number; creature
 
 const _v3 = new THREE.Vector3();
 const _v3b = new THREE.Vector3();
+const _col = new THREE.Color();
 
 /** The imperative three.js world. React owns the overlay only. */
 export class World {
@@ -60,6 +63,12 @@ export class World {
   private lastPointerRipple = 0;
   private w = 1;
   private h = 1;
+  /** Particle hooks handed to creatures. */
+  readonly fx: CreatureFx = {
+    z: (p) => this.bursts.emit(p, _v3b.set(0.12, 0.35, 0), Z_COL, 26, 2.4, 2, 0),
+    flake: (p) => this.bursts.emit(p, _v3b.set((Math.random() - 0.5) * 0.3, 0.1, (Math.random() - 0.5) * 0.3), FLAKE_COL, 9, 1.4, 0, -0.1),
+    burst: (kind, hue, p, count) => this.emitStyle(kind, hue, p, count),
+  };
 
   constructor(readonly canvas: HTMLCanvasElement, opts: { calm: boolean; bare?: boolean }) {
     this.tier = pickTier();
@@ -131,11 +140,23 @@ export class World {
     this.ray.setFromCamera(new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1), this.rig.camera);
     const meshes = [...this.grove, ...this.sleepers, ...this.free].map((c) => c.mesh);
     const hit = this.ray.intersectObjects(meshes, false)[0];
-    if (hit) { const c = hit.object.userData.creature as Creature; c.hop(); return c; }
+    if (hit) { const c = hit.object.userData.creature as Creature; c.react(this.fx); return c; }
     return null;
   }
 
   ripple(x: number, z: number, s = 1) { this.pool.ripple(x, z, s); }
+
+  /** Emit `count` particles in one of the spec's particle styles. */
+  emitStyle(kind: Particle, hue: number, p: THREE.Vector3, count: number, spread = 1) {
+    const kit = getKit();
+    if (!kit || this.calm) return;
+    const st = kit.PARTICLE_STYLE[kind];
+    const color = _col.setHSL(hue / 360, 0.75, st.light);
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2, sp = Math.random() * st.speed * spread;
+      this.bursts.emit(p, _v3b.set(Math.cos(a) * sp, st.up * (0.4 + Math.random() * 0.6) * spread, Math.sin(a) * sp), color, st.size * (0.7 + Math.random() * 0.6), st.life * (0.7 + Math.random() * 0.5), st.kind, st.gravity);
+    }
+  }
   /** A drop for each keystroke, near where the eggs will rise. */
   keystroke() {
     this.pool.ripple((Math.random() - 0.5) * 2.4, 0.4 + Math.random() * 1.2, 0.8);
@@ -150,7 +171,7 @@ export class World {
     const avail = specs.filter((s) => s.available);
     const taken = specs.filter((s) => !s.available);
     avail.forEach((s, i) => {
-      const e = new Egg(this.shared, s.domain, i, avail.length, now);
+      const e = new Egg(this.shared, s.domain, s.spec ?? deriveCreatureSpec(s.domain), i, avail.length, now);
       this.eggs.push(e); this.scene.add(e.mesh);
       setTimeout(() => this.pool.ripple(e.home.x, e.home.z, 1.1), 60 + i * 160);
       setTimeout(() => this.hooks.onDrop?.(), 60 + i * 160);
@@ -158,10 +179,10 @@ export class World {
     taken.forEach((s, i) => {
       const n = taken.length;
       const x = n === 1 ? 0 : -3.2 + (6.4 * i) / (n - 1);
-      const tr = deriveTraits(s.domain);
-      const koi = tr.family === "koi";
+      const spec = s.spec ?? deriveCreatureSpec(s.domain);
+      const koi = spec.species === "koi";
       const z = koi ? -1.9 : -(POOL_R + 1.2) - Math.abs(x) * 0.04;
-      const c = new Creature(this.shared, { domain: s.domain, state: "sleeping", ageDays: 900, x: koi ? Math.max(-1.6, Math.min(1.6, x * 0.5)) : x, z, heading: Math.PI + (Math.random() - 0.5) * 0.6, wander: false });
+      const c = new Creature(this.shared, { id: s.domain, spec, state: "sleeping", ageDays: 900, x: koi ? Math.max(-1.6, Math.min(1.6, x * 0.5)) : x, z, heading: Math.PI + (Math.random() - 0.5) * 0.6, wander: false });
       this.sleepers.push(c); this.scene.add(c.mesh);
     });
   }
@@ -172,34 +193,34 @@ export class World {
   private anchorFor(domain: string, out: THREE.Vector3): THREE.Vector3 | null {
     const e = this.eggs.find((x) => x.domain === domain);
     if (e) return e.chipAnchor(out);
-    const s = this.sleepers.find((x) => x.traits.domain === domain);
+    const s = this.sleepers.find((x) => x.id === domain);
     if (s) return s.tagPosition(out);
-    const g = [...this.grove, ...this.free].find((x) => x.traits.domain === domain);
+    const g = [...this.grove, ...this.free].find((x) => x.id === domain);
     if (g) return g.tagPosition(out);
     return null;
   }
 
   /** Add a creature to the grove (session-local in Phase 1). */
-  addToGrove(domain: string, state: CreatureState, ageDays: number, at?: { x: number; z: number }): Creature {
+  addToGrove(domain: string, state: CreatureState, ageDays: number, at?: { x: number; z: number }, spec?: CreatureSpec): Creature {
     const a = Math.random() * Math.PI * 2, r = 4.4 + Math.random() * 2.8;
-    const c = new Creature(this.shared, { domain, state, ageDays, x: at?.x ?? Math.cos(a) * r, z: at?.z ?? Math.sin(a) * r * 0.8 });
+    const c = new Creature(this.shared, { id: domain, spec: spec ?? deriveCreatureSpec(domain), state, ageDays, x: at?.x ?? Math.cos(a) * r, z: at?.z ?? Math.sin(a) * r * 0.8 });
     this.grove.push(c); this.scene.add(c.mesh);
     return c;
   }
   /** Take a finished hatch creature into the grove so it wanders. */
-  adopt(c: Creature) { c.wander = true; c.birth = 1; this.grove.push(c); }
+  adopt(c: Creature) { c.wander = true; c.birth = 1; c.birthTilt = 0; c.setAlpha(1); this.grove.push(c); }
   removeGrove(domain: string) {
-    const i = this.grove.findIndex((c) => c.traits.domain === domain);
+    const i = this.grove.findIndex((c) => c.id === domain);
     if (i >= 0) { const [c] = this.grove.splice(i, 1); this.scene.remove(c!.mesh); c!.dispose(); }
   }
   clearGrove() { for (const c of this.grove) { this.scene.remove(c.mesh); c.dispose(); } this.grove = []; }
   groveCreatures() { return this.grove; }
-  setGroveState(domain: string, s: CreatureState) { this.grove.find((c) => c.traits.domain === domain)?.setState(s); }
+  setGroveState(domain: string, s: CreatureState) { this.grove.find((c) => c.id === domain)?.setState(s); }
   /** Debug layout: an explicit grid of creatures, with no wandering. */
-  layoutFixed(items: { domain: string; state: CreatureState; ageDays: number; x: number; z: number }[]) {
+  layoutFixed(items: { domain: string; spec?: CreatureSpec; state: CreatureState; ageDays: number; x: number; z: number; heading?: number }[]) {
     this.clearGrove();
     for (const it of items) {
-      const c = new Creature(this.shared, { ...it, wander: false, heading: 0 });
+      const c = new Creature(this.shared, { id: it.domain, spec: it.spec ?? deriveCreatureSpec(it.domain), state: it.state, ageDays: it.ageDays, x: it.x, z: it.z, wander: false, heading: it.heading ?? 0 });
       this.grove.push(c); this.scene.add(c.mesh);
     }
   }
@@ -218,7 +239,7 @@ export class World {
     if (!this.seq) return;
     this.seq.abort();
     this.seq = null;
-    for (const e of this.eggs) { e.visible = true; e.sink = 0; e.wobble = 0; e.glow = 0.06; }
+    for (const e of this.eggs) { e.visible = true; e.sink = 0; e.wobble = 0; e.glow = e.baseGlow; e.crack = 0; e.alpha = 1; }
     this.setView("find");
   }
 
@@ -226,7 +247,7 @@ export class World {
   snapshot(c: Creature, w = 512, h = 640): string {
     const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
     const cam = new THREE.PerspectiveCamera(30, w / h, 0.1, 100);
-    const p = c.pos, sz = c.traits.size;
+    const p = c.pos, sz = c.spec.size;
     cam.position.set(p.x + 0.55 * sz, p.y + 0.85 * sz, p.z + 2.9 * sz);
     cam.lookAt(p.x, p.y + 0.55 * sz, p.z);
     const prev = this.renderer.getRenderTarget();
@@ -294,9 +315,7 @@ export class World {
     }
 
     const all = [...this.grove, ...this.sleepers, ...this.free];
-    const emitZ = (p: THREE.Vector3) => this.bursts.emit(p, _v3b.set(0.12, 0.35, 0), Z_COL, 26, 2.4, 2, 0);
-    const emitFlake = (p: THREE.Vector3) => this.bursts.emit(p, _v3b.set((Math.random() - 0.5) * 0.3, 0.1, (Math.random() - 0.5) * 0.3), FLAKE_COL, 9, 1.4, 0, -0.1);
-    for (const c of all) if (!(this.seq && this.seq.owns(c))) c.update(dt, t, this.calm, pw, emitZ, emitFlake);
+    for (const c of all) if (!(this.seq && this.seq.owns(c))) c.update(dt, t, this.calm, pw, this.fx);
     for (const e of this.eggs) e.update(t, this.calm);
     this.decor.update(all, t);
     if (this.seq) { if (this.seq.update(dt, t)) this.seq = null; }
@@ -347,33 +366,45 @@ export class World {
 
 const Z_COL = new THREE.Color("#8fa3c8");
 const FLAKE_COL = new THREE.Color("#3a9a98");
-const SHELL_COL = new THREE.Color("#f1ead8");
-const LANT_COL = new THREE.Color("#ffb257");
 
-/** The Hatch: dolly, wobble, crack, flash, shards, beam, birth, hop to the bank, land. */
+/**
+ * The Hatch, driven by the spec's choreography: wobble while the shell cracks in its pattern, burst in its particle style, the
+ * emergence move, then a hop (or glide) to the bank. In calm mode the motion is replaced by fades: no wobble, shake, burst or hop.
+ */
 class Sequence {
   private t = 0;
   private creature: Creature;
-  private ticks = [0.9, 1.5, 1.95, 2.2];
+  private ticks: number[];
   private tickI = 0;
   private burst = false;
   private landed = false;
   private beam: THREE.Mesh | null = null;
   private from = new THREE.Vector3();
   private to = new THREE.Vector3();
-  private hopStart = 0;
+  private hopStart = -1;
   private done = false;
-  private savedView: ViewName;
+  private pre: number;
+  private em: number;
+  private calm: boolean;
+  private spec: CreatureSpec;
+  private landedAt: number | undefined;
 
-  constructor(private w: World, private egg: Egg, private domain: string, private demo: boolean, private resolve: (c: Creature) => void) {
-    this.savedView = w.rig.view;
-    this.creature = new Creature(w.shared, { domain, state: "thriving", ageDays: 0, x: egg.home.x, z: egg.home.z, wander: false });
+  constructor(private w: World, private egg: Egg, domain: string, private demo: boolean, private resolve: (c: Creature) => void) {
+    this.spec = egg.spec;
+    const D = this.spec.choreography.hatch.duration;
+    this.pre = D * 0.68;
+    this.em = D - this.pre;
+    this.ticks = [0.37, 0.62, 0.81, 0.92].map((f) => f * this.pre);
+    this.calm = w.calm;
+    this.creature = new Creature(w.shared, { id: domain, spec: this.spec, state: "thriving", ageDays: 0, x: egg.home.x, z: egg.home.z, wander: false });
     this.creature.birth = 0;
     this.creature.mesh.visible = false;
     w._scene.add(this.creature.mesh);
     w.setView("hatch", _v3.set(egg.home.x, 0.4, egg.home.z));
     for (const e of w._eggs) if (e !== egg) e.visible = true;
-    // Beam
+    const a = Math.atan2(egg.home.x, 1.2);
+    this.to.set(Math.sin(a) * (POOL_R + 0.9) + egg.home.x * 0.2, 0, POOL_R + 0.9);
+    if (this.calm) return;
     const bm = new THREE.ShaderMaterial({
       uniforms: { uA: { value: 0 } },
       vertexShader: `varying float vY; varying vec3 vN; varying vec3 vV; void main(){ vY = position.y; vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position,1.0); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
@@ -384,13 +415,13 @@ class Sequence {
     this.beam.position.set(egg.home.x, 0, egg.home.z);
     this.beam.visible = false; this.beam.frustumCulled = false; this.beam.renderOrder = 8;
     w._scene.add(this.beam);
-    // The other eggs sink away.
   }
 
   abort() {
     this.w._scene.remove(this.creature.mesh);
     this.creature.dispose();
     if (this.beam) this.w._scene.remove(this.beam);
+    this.egg.alpha = 1; this.egg.crack = 0;
     this.done = true;
   }
 
@@ -398,79 +429,100 @@ class Sequence {
 
   update(dt: number, now: number): boolean {
     this.t += dt;
-    const t = this.t, w = this.w, egg = this.egg;
+    const t = this.t, w = this.w, egg = this.egg, c = this.creature, calm = this.calm;
+    const ch = this.spec.choreography.hatch;
     // Other eggs sink quietly.
     for (const e of w._eggs) if (e !== egg) e.sink = Math.min(1, e.sink + dt * 0.8);
-    if (t < 2.4) {
-      const k = t / 2.4;
-      egg.wobble = k * k;
-      egg.glow = 0.06 + k * 0.9;
+    if (t < this.pre) {
+      const k = t / this.pre;
+      egg.wobble = calm ? 0 : k * k;
+      egg.glow = egg.baseGlow + k * 0.9;
+      egg.crack = Math.min(1, k * 1.1);
       while (this.tickI < this.ticks.length && t >= this.ticks[this.tickI]!) {
-        w.hooks.onTick?.(this.tickI); w.rig.shake(0.25 + this.tickI * 0.15);
-        if (!w.calm) for (let i = 0; i < 4; i++) w._bursts.emit(_v3.set(egg.home.x, 0.4, egg.home.z), _v3b.set((Math.random() - 0.5) * 0.8, 0.6 + Math.random(), (Math.random() - 0.5) * 0.8), LANT_COL, 12, 0.7, 0, 3);
+        w.hooks.onTick?.(this.tickI);
+        if (!calm) {
+          w.rig.shake(0.25 + this.tickI * 0.15);
+          w.emitStyle(ch.particles.kind, ch.particles.hue, _v3.set(egg.home.x, 0.4, egg.home.z), 4, 0.5);
+        }
         this.tickI++;
       }
     } else if (!this.burst) {
       this.burst = true;
-      egg.visible = false;
       w.hooks.onFlash?.();
-      w.rig.shake(1.4);
-      w._pool.ripple(egg.home.x, egg.home.z, 2.6);
-      w._pool.ripple(egg.home.x, egg.home.z, 1.4);
-      const p = _v3.set(egg.home.x, 0.45, egg.home.z);
-      const n = w.calm ? 8 : 26;
-      for (let i = 0; i < n; i++) {
-        const a = Math.random() * Math.PI * 2, s = 1.2 + Math.random() * 2.2;
-        w._bursts.emit(p, _v3b.set(Math.cos(a) * s, 1.4 + Math.random() * 2.2, Math.sin(a) * s), SHELL_COL, 9 + Math.random() * 6, 1.1, 1, 6);
+      c.mesh.visible = true;
+      c.heading = Math.PI * 0.1;
+      if (calm) {
+        c.birth = 1;
+        c.pos.copy(this.to);
+        c.heading = 0.25;
+        c.setAlpha(0);
+      } else {
+        egg.visible = false;
+        w.rig.shake(1.4);
+        w._pool.ripple(egg.home.x, egg.home.z, 2.6);
+        w._pool.ripple(egg.home.x, egg.home.z, 1.4);
+        const p = _v3.set(egg.home.x, 0.45, egg.home.z);
+        const shell = _col.setHSL(ch.shell.base.h / 360, ch.shell.base.s, ch.shell.base.l);
+        for (let i = 0; i < 20; i++) {
+          const a = Math.random() * Math.PI * 2, sp = 1.2 + Math.random() * 2.2;
+          w._bursts.emit(p, _v3b.set(Math.cos(a) * sp, 1.4 + Math.random() * 2.2, Math.sin(a) * sp), shell, 9 + Math.random() * 6, 1.1, 1, 6);
+        }
+        w.emitStyle(ch.particles.kind, ch.particles.hue, p, 30);
+        if (this.beam) this.beam.visible = true;
+        c.birth = 0.001;
+        c.pos.set(egg.home.x, 0.1, egg.home.z);
       }
-      if (!w.calm) for (let i = 0; i < 30; i++) {
-        const a = Math.random() * Math.PI * 2, s = Math.random() * 1.8;
-        w._bursts.emit(p, _v3b.set(Math.cos(a) * s, 1 + Math.random() * 3, Math.sin(a) * s), LANT_COL, 14, 1.4, 0, 2.5);
-      }
-      if (this.beam) this.beam.visible = !w.calm;
-      this.creature.mesh.visible = true;
-      this.creature.birth = 0.001;
-      this.creature.pos.set(egg.home.x, 0.1, egg.home.z);
-      this.creature.heading = Math.PI * 0.1;
-      this.creature.mesh.position.copy(this.creature.pos);
-      w.hooks.onBorn?.(this.creature.traits);
+      c.mesh.position.copy(c.pos);
+      w.hooks.onBorn?.(this.spec);
     }
     if (this.burst) {
-      const bt = t - 2.4;
-      if (this.beam) { (this.beam.material as THREE.ShaderMaterial).uniforms.uA!.value = Math.max(0, 1 - bt / 1.4); if (bt > 1.4) this.beam.visible = false; }
-      const c = this.creature;
-      if (bt < 0.7) {
-        // overshoot: 0 -> 1.25 -> 1
-        const k = bt / 0.7;
-        c.birth = k < 0.6 ? (k / 0.6) * 1.25 : 1.25 - ((k - 0.6) / 0.4) * 0.25;
-        c.pos.set(egg.home.x, -0.02 + Math.sin(Math.min(1, k) * Math.PI) * 0.1, egg.home.z);
-      } else if (!this.landed) {
-        if (bt < 0.7 + 0.05) {
-          this.from.set(egg.home.x, 0, egg.home.z);
-          const a = Math.atan2(egg.home.x, 1.2);
-          this.to.set(Math.sin(a) * (POOL_R + 0.9) + egg.home.x * 0.2, 0, POOL_R + 0.9);
-          this.hopStart = bt;
-          c.heading = Math.atan2(this.to.x - this.from.x, this.to.z - this.from.z);
-        }
-        const hk = Math.min(1, (bt - this.hopStart) / 0.95);
-        c.pos.x = this.from.x + (this.to.x - this.from.x) * hk;
-        c.pos.z = this.from.z + (this.to.z - this.from.z) * hk;
-        c.pos.y = Math.sin(hk * Math.PI) * 1.1;
-        c.birth = 1;
-        if (hk >= 1) {
+      const bt = t - this.pre;
+      if (calm) {
+        egg.alpha = Math.max(0, 1 - bt / 0.6);
+        c.setAlpha(Math.min(1, bt / Math.max(0.8, this.em)));
+        if (!this.landed && bt >= Math.max(0.8, this.em)) {
           this.landed = true;
-          c.pos.y = 0;
+          c.setAlpha(1);
+          egg.visible = false; egg.alpha = 1;
           w.hooks.onLand?.();
-          w.rig.shake(0.5);
-          for (let i = 0; i < 10; i++) w._bursts.emit(_v3.set(c.pos.x, 0.05, c.pos.z), _v3b.set((Math.random() - 0.5) * 1.4, 0.4 + Math.random() * 0.6, (Math.random() - 0.5) * 1.4), DUST_COL, 20, 0.8, 0, 1.5);
-          c.heading = 0.25; // face the camera
           w.rig.setView("detail", _v3.set(c.pos.x, c.pos.y, c.pos.z), 0);
+        }
+      } else {
+        if (this.beam) { (this.beam.material as THREE.ShaderMaterial).uniforms.uA!.value = Math.max(0, 1 - bt / 1.4); if (bt > 1.4) this.beam.visible = false; }
+        if (bt < this.em) {
+          const e = getKit()!.emergePose(ch.emerge, bt / this.em);
+          c.birth = Math.max(0.001, e.scale);
+          c.birthTilt = e.tilt;
+          c.pos.set(egg.home.x, e.y, egg.home.z);
+        } else if (!this.landed) {
+          if (this.hopStart < 0) {
+            this.from.set(egg.home.x, c.pos.y, egg.home.z);
+            this.hopStart = bt;
+            c.heading = Math.atan2(this.to.x - this.from.x, this.to.z - this.from.z);
+            c.birthTilt = 0;
+          }
+          const glide = c.locomotion === "fly" || this.spec.species === "spiritfox";
+          const hk = Math.min(1, (bt - this.hopStart) / 0.95);
+          c.pos.x = this.from.x + (this.to.x - this.from.x) * hk;
+          c.pos.z = this.from.z + (this.to.z - this.from.z) * hk;
+          c.pos.y = this.from.y * (1 - hk) + Math.sin(hk * Math.PI) * (glide ? 0.6 : 1.1);
+          c.birth = 1;
+          if (hk >= 1) {
+            this.landed = true;
+            c.pos.y = 0;
+            w.hooks.onLand?.();
+            w.rig.shake(0.5);
+            w.emitStyle("dust", 40, _v3.set(c.pos.x, 0.05, c.pos.z), 10, 0.6);
+            c.heading = 0.25; // face the camera
+            w.rig.setView("detail", _v3.set(c.pos.x, c.pos.y, c.pos.z), 0);
+          }
         }
       }
       c.mesh.position.copy(c.pos);
       c.mesh.rotation.y = c.heading;
       c.mesh.scale.setScalar(Math.max(0.001, c.birth));
       c.uniforms.uPose2!.value.set(0, 1, Math.sin(now * 2), 0);
+      c.uniforms.uPose3!.value.set(0, 0, c.birthTilt, 0);
       if (this.landed && !this.done) {
         this.landedAt ??= t;
         if (t - this.landedAt > 0.9) {
@@ -482,9 +534,7 @@ class Sequence {
         }
       }
     }
-    void this.demo; void this.domain; void this.savedView;
+    void this.demo;
     return false;
   }
-  private landedAt: number | undefined;
 }
-const DUST_COL = new THREE.Color("#b6a98a");

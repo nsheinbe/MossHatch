@@ -47,7 +47,7 @@ export class Decor {
     let ns = 0, nc = 0, nr = 0;
     for (const c of list) {
       const s = c.state;
-      const sz = c.traits.size;
+      const sz = c.spec.size;
       if (s === "armored" && ns < MAX) {
         dummy.position.set(c.pos.x, c.pos.y + 0.5 * sz, c.pos.z);
         dummy.rotation.set(0, t * 0.6 + ns, 0);

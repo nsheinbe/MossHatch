@@ -1,35 +1,71 @@
 import * as THREE from "three";
-import { deriveTraits, fnv1a, mossFromAge, stream, type CreatureState, type Traits } from "@mosshatch/core";
+import { fnv1a, mossFromAge, sanitizeSpec, specKey, SPECIES_INFO, stream, type CreatureSpec, type CreatureState, type Idle, type Particle, type Reaction } from "@mosshatch/core";
 import { hatchMaterial, type Shared } from "../materials";
-import { buildCreatureGeometry } from "./build";
 import { groundHeight, POOL_R } from "../scenery";
+import type * as KitModule from "./kit";
+import type { Move, Pose } from "./moves";
 
-const geometryCache = new Map<string, THREE.BufferGeometry>();
-function geometryFor(t: Traits) {
-  let g = geometryCache.get(t.domain);
-  if (!g) { g = buildCreatureGeometry(t); geometryCache.set(t.domain, g); }
+export type Kit = typeof KitModule;
+
+/** The creature kit (builders and motion library) is its own lazy chunk; the host loads it next to the engine. */
+let kit: Kit | null = null;
+let kitPromise: Promise<Kit> | null = null;
+const waiting = new Set<Creature>();
+export function installKit(k: Kit) {
+  kit = k;
+  for (const c of waiting) c.attach();
+  waiting.clear();
+}
+export function loadKit(): Promise<Kit> {
+  if (kit) return Promise.resolve(kit);
+  return (kitPromise ??= import("./kit").then((k) => { installKit(k); return k; }));
+}
+export function getKit(): Kit | null { return kit; }
+
+interface Built { geometry: THREE.BufferGeometry; headPivot: THREE.Vector3; height: number }
+const cache = new Map<string, Built>();
+function built(spec: CreatureSpec): Built {
+  // Geometry depends on looks only; motion and text are left out of the key.
+  const key = specKey({ ...spec, speciesName: "", bio: "", choreography: { ...spec.choreography, idle: [], react: "hop", pitch: 1 } });
+  let g = cache.get(key);
+  if (!g) { g = kit!.buildCreature(spec); cache.set(key, g); }
   return g;
 }
+const EMPTY = new THREE.BufferGeometry();
 
-const SPEED: Record<string, number> = { fox: 0.9, beetle: 0.55, moth: 1.1, koi: 0.6 };
+const SPEED: Record<string, number> = { fox: 0.9, hare: 1.0, beetle: 0.55, hedgehog: 0.5, owl: 0.5, koi: 0.6, moth: 1.1, salamander: 0.6, spiritfox: 0.8 };
+const MOONRIM = new THREE.Color(0.55, 0.66, 1.0);
 const _v = new THREE.Vector3();
+const _c = new THREE.Color();
 
 export interface CreatureInit {
-  domain: string;
+  /** The id the world finds this creature by (the domain name); never used for looks. */
+  id: string;
+  spec: CreatureSpec;
   state: CreatureState;
   ageDays: number;
   x?: number; z?: number; heading?: number;
   wander?: boolean;
 }
 
+export interface CreatureFx {
+  z?(p: THREE.Vector3): void;
+  flake?(p: THREE.Vector3): void;
+  /** A small burst in the named particle style and hue. */
+  burst?(kind: Particle, hue: number, p: THREE.Vector3, count: number): void;
+}
+
 export class Creature {
-  readonly traits: Traits;
+  readonly id: string;
+  readonly spec: CreatureSpec;
   readonly mesh: THREE.Mesh;
   state: CreatureState;
   wander: boolean;
   /** Position on the ground plane; y is derived. */
   pos = new THREE.Vector3();
   heading = 0;
+  /** Tag height above the feet. */
+  height = 1;
   private target = new THREE.Vector3();
   private waitLeft = 0;
   private speed: number;
@@ -38,38 +74,70 @@ export class Creature {
   private rnd: () => number;
   private nextBlink = 2;
   private blinkT = -1;
-  private hopT = -1;
-  private hopBase = 0;
   private look = 0;
   private curl = 0;
   private eyes = 1;
   private moving = 0;
   private koiAngle: number;
+  private action: { move: Move; t: number; kind: Idle | Reaction } | null = null;
+  private nextIdle: number;
+  private pose!: Pose;
+  private moteClock = 0;
   /** 0..1 birth scale used by the hatch sequence. */
   birth = 1;
+  /** Extra tilt and height offset used by the hatch sequence. */
+  birthTilt = 0;
   moss: number;
   private zClock = 0;
+  readonly locomotion: "walk" | "fly" | "swim";
 
   constructor(private shared: Shared, init: CreatureInit) {
-    this.traits = deriveTraits(init.domain);
+    this.id = init.id;
+    this.spec = sanitizeSpec(init.spec);
     this.state = init.state;
     this.wander = init.wander ?? true;
-    this.rnd = stream(fnv1a(init.domain + ":life"));
+    this.rnd = stream(fnv1a(init.id + ":life"));
     this.phase = this.rnd() * 10;
-    this.speed = SPEED[this.traits.family] ?? 0.8;
+    this.speed = SPEED[this.spec.species] ?? 0.8;
+    this.locomotion = SPECIES_INFO[this.spec.species].locomotion;
     this.moss = mossFromAge(init.ageDays);
     this.koiAngle = this.rnd() * Math.PI * 2;
+    this.nextIdle = 1 + this.rnd() * 3;
     this.mat = hatchMaterial(shared, { creature: true, look: { moss: this.moss } });
-    this.mesh = new THREE.Mesh(geometryFor(this.traits), this.mat);
+    const u = this.mat.uniforms;
+    const e = this.spec.effect;
+    if (e === "moonrim") { u.uRimCol!.value.copy(MOONRIM); u.uRimK!.value = 0.32; }
+    if (e === "iridescent") { u.uIri!.value = 1; u.uRimCol!.value.copy(_c.setHSL(this.spec.accent.h / 360, 0.7, 0.6)); u.uRimK!.value = 0.15; }
+    if (e === "glow") { u.uRimCol!.value.copy(_c.setHSL(this.spec.accent.h / 360, 0.8, 0.7)); u.uRimK!.value = 0.55; u.uGlow!.value = 0.04; }
+    this.mesh = new THREE.Mesh(EMPTY, this.mat);
     this.mesh.frustumCulled = false;
     this.mesh.userData.creature = this;
     this.pos.set(init.x ?? 0, 0, init.z ?? 0);
     this.heading = init.heading ?? this.rnd() * 6;
+    if (kit) this.attach(); else { waiting.add(this); void loadKit(); }
     this.pickTarget();
-    this.apply(true);
+    this.apply();
+  }
+
+  /** Swap in the real geometry once the kit is here. */
+  attach() {
+    const b = built(this.spec);
+    this.mesh.geometry = b.geometry;
+    this.height = b.height;
+    this.mat.uniforms.uHeadPivot!.value.copy(b.headPivot);
+    this.pose = kit!.newPose();
   }
 
   get uniforms() { return this.mat.uniforms; }
+  /** Fade the whole creature (used instead of motion in calm mode). */
+  setAlpha(a: number) {
+    const f = a < 0.999;
+    if (this.mat.transparent !== f) { this.mat.transparent = f; this.mat.depthWrite = !f; this.mat.needsUpdate = true; }
+    this.mat.uniforms.uAlpha!.value = a;
+  }
+  get material() { return this.mat; }
+  /** Kept for older callers: the size factor from the spec. */
+  get size() { return this.spec.size; }
 
   setState(s: CreatureState) { this.state = s; }
 
@@ -83,18 +151,28 @@ export class Creature {
   /** Send the creature toward a ground point (used when a demo creature walks into the trees). */
   goTo(x: number, z: number) { this.target.set(x, 0, z); this.waitLeft = 0; }
 
-  hop() { if (this.hopT < 0) { this.hopT = 0; this.hopBase = this.pos.y; } }
+  /** The reaction to a tap, from the spec. */
+  react(fx?: CreatureFx) {
+    if (!kit) return;
+    const kind = this.spec.choreography.react;
+    const move = kit.REACTIONS[kind];
+    this.action = { move, t: 0, kind };
+    if (move.burst && fx?.burst) fx.burst(move.burst, this.spec.accent.h, _v.set(this.pos.x, this.pos.y + this.height * 0.6, this.pos.z), 10);
+  }
+  /** Older name for a tap reaction. */
+  hop() { this.react(); }
 
   /** World position the overlay projects a tag onto. */
-  tagPosition(out: THREE.Vector3) { return out.set(this.pos.x, this.mesh.position.y + 1.25 * this.traits.size, this.pos.z); }
+  tagPosition(out: THREE.Vector3) { return out.set(this.pos.x, this.mesh.position.y + this.height + 0.1, this.pos.z); }
 
-  update(dt: number, t: number, calm: boolean, pointerWorld: THREE.Vector3 | null, emitZ?: (p: THREE.Vector3) => void, emitFlake?: (p: THREE.Vector3) => void) {
+  update(dt: number, t: number, calm: boolean, pointerWorld: THREE.Vector3 | null, fx: CreatureFx = {}) {
+    if (!kit) return;
     const s = this.state;
     const sleeping = s === "sleeping";
     const drowsy = s === "drowsy";
     const slow = sleeping ? 0 : drowsy ? 0.45 : s === "traveling" ? 0.25 : 1;
-    const isKoi = this.traits.family === "koi";
-    const isMoth = this.traits.family === "moth";
+    const isKoi = this.locomotion === "swim";
+    const flies = this.locomotion === "fly";
     let moving = 0;
 
     if (this.wander && slow > 0 && this.birth >= 1) {
@@ -110,7 +188,7 @@ export class Creature {
       } else {
         const dx = this.target.x - this.pos.x, dz = this.target.z - this.pos.z;
         const d = Math.hypot(dx, dz);
-        if (d < 0.15) { this.waitLeft = 1 + this.rnd() * 4; this.pickTarget(); this.waitLeft = 1 + this.rnd() * 3; }
+        if (d < 0.15) { this.pickTarget(); this.waitLeft = 1 + this.rnd() * 3; }
         else {
           const want = Math.atan2(dx, dz);
           let da = want - this.heading;
@@ -122,11 +200,29 @@ export class Creature {
           moving = Math.min(1, v / 0.6);
           // Keep out of the pool.
           const r = Math.hypot(this.pos.x, this.pos.z);
-          if (!isMoth && r < POOL_R + 0.5) { this.pos.x *= (POOL_R + 0.5) / r; this.pos.z *= (POOL_R + 0.5) / r; this.pickTarget(); }
+          if (!flies && r < POOL_R + 0.5) { this.pos.x *= (POOL_R + 0.5) / r; this.pos.z *= (POOL_R + 0.5) / r; this.pickTarget(); }
         }
       }
     }
     this.moving += (moving - this.moving) * Math.min(1, dt * 5);
+
+    // Idle moves from the spec, while standing still and awake.
+    const p = kit.zeroPose(this.pose);
+    if (!this.action && !sleeping && this.birth >= 1 && this.moving < 0.2) {
+      this.nextIdle -= dt;
+      if (this.nextIdle <= 0) {
+        const kind = kit.pickIdle(this.spec.choreography.idle, this.rnd());
+        this.action = { move: kit.IDLE_MOVES[kind], t: 0, kind };
+        this.nextIdle = 2.5 + this.rnd() * 4;
+      }
+    }
+    if (this.action) {
+      this.action.t += dt;
+      const k = this.action.t / this.action.move.dur;
+      if (k >= 1) this.action = null;
+      else this.action.move.run(p, k, t);
+    }
+    if (calm) { p.lift = 0; p.spin = 0; p.squash *= 0.3; p.tail *= 0.4; p.wing *= 0.4; p.yaw *= 0.6; p.pitch *= 0.6; }
 
     // Blink
     this.nextBlink -= dt;
@@ -144,30 +240,26 @@ export class Creature {
       if (Math.hypot(pointerWorld.x - this.pos.x, pointerWorld.z - this.pos.z) < 5) lookT = Math.max(-0.7, Math.min(0.7, da));
     }
     this.look += (lookT - this.look) * Math.min(1, dt * 4);
-
     this.curl += ((sleeping ? 1 : 0) - this.curl) * Math.min(1, dt * 3);
 
-    // Hop
-    let hopY = 0;
-    if (this.hopT >= 0) {
-      this.hopT += dt;
-      const k = this.hopT / 0.5;
-      hopY = Math.sin(Math.min(1, k) * Math.PI) * 0.4;
-      if (k >= 1) this.hopT = -1;
-    }
+    // Hares hop as they go.
+    const gait = this.spec.species === "hare" && !calm ? Math.abs(Math.sin(t * 7)) * 0.1 * this.moving : 0;
 
     const u = this.mat.uniforms;
     const breath = Math.sin((t + this.phase) * (sleeping ? 1.1 : 1.8));
     const ph = t + this.phase;
     const calmK = calm ? 0.5 : 1;
+    const wingIdle = flies ? Math.sin(ph * (sleeping ? 2 : 20)) * (sleeping ? 0.1 : 0.75) * calmK + 0.15 : 0;
     u.uPose!.value.set(
-      Math.sin(ph * 2.1 * slow) * 0.3 * (0.4 + slow) * calmK,
-      this.look,
-      Math.sin(ph * 0.7) * 0.08 + (this.hopT >= 0 ? 0.3 : 0),
-      isMoth ? Math.sin(ph * (sleeping ? 2 : 20)) * (sleeping ? 0.1 : 0.75) + 0.15 : 0,
+      Math.sin(ph * 2.1 * slow) * 0.3 * (0.4 + slow) * calmK + p.tail,
+      this.look + p.yaw,
+      Math.sin(ph * 0.7) * 0.08 + p.ear,
+      wingIdle + p.wing,
     );
-    u.uPose2!.value.set(Math.sin(ph * 9) * 0.55 * this.moving, this.eyes * blink, breath, this.curl);
-    u.uWave!.value = isKoi ? 0.09 * (0.4 + this.moving * 0.6) * (sleeping ? 0.2 : 1) : 0;
+    u.uPose2!.value.set(Math.sin(ph * 9) * 0.55 * this.moving, this.eyes * blink * p.eyes, breath, Math.max(this.curl, p.curl));
+    u.uPose3!.value.set(p.pitch, p.squash, p.tilt + this.birthTilt, p.lift + gait);
+    const waves = isKoi || this.spec.species === "salamander";
+    u.uWave!.value = waves ? (isKoi ? 0.09 * (0.4 + this.moving * 0.6) : 0.06 * this.moving) * (sleeping ? 0.2 : 1) + p.wave : p.wave;
 
     // State look
     const blend = Math.min(1, dt * 4);
@@ -180,25 +272,28 @@ export class Creature {
     u.uMoss!.value = this.moss;
 
     // Vertical placement
-    let y = isKoi ? (sleeping ? -0.16 : -0.34) : isMoth ? 0.15 + Math.sin(ph * 1.6) * 0.07 : groundHeight(this.pos.x, this.pos.z);
-    y += hopY;
+    const hover = this.spec.species === "spiritfox" && !sleeping ? 0.08 + Math.sin(ph * 1.3) * 0.04 * calmK : 0;
+    const y = isKoi ? (sleeping ? -0.16 : -0.34) : flies ? 0.15 + Math.sin(ph * 1.6) * 0.07 * calmK : groundHeight(this.pos.x, this.pos.z) + hover;
     this.pos.y = y;
-    this.apply(false);
+    this.apply(p.spin);
 
-    // Particles for states
+    // Particles for states and the legendary glow.
     if (!calm) {
       this.zClock += dt;
-      if ((sleeping || drowsy) && emitZ && this.zClock > (sleeping ? 1.4 : 2.6)) { this.zClock = 0; emitZ(_v.set(this.pos.x, y + 1.0 * this.traits.size, this.pos.z)); }
-      if (s === "shedding" && emitFlake && this.rnd() < dt * 8) emitFlake(_v.set(this.pos.x + (this.rnd() - 0.5) * 0.4, y + 0.3 + this.rnd() * 0.5, this.pos.z + (this.rnd() - 0.5) * 0.4));
+      if ((sleeping || drowsy) && fx.z && this.zClock > (sleeping ? 1.4 : 2.6)) { this.zClock = 0; fx.z(_v.set(this.pos.x, y + this.height * 0.8, this.pos.z)); }
+      if (s === "shedding" && fx.flake && this.rnd() < dt * 8) fx.flake(_v.set(this.pos.x + (this.rnd() - 0.5) * 0.4, y + 0.3 + this.rnd() * 0.5, this.pos.z + (this.rnd() - 0.5) * 0.4));
+      if (this.spec.effect === "glow" && fx.burst && !sleeping) {
+        this.moteClock += dt;
+        if (this.moteClock > 0.7) { this.moteClock = 0; fx.burst("motes", this.spec.accent.h, _v.set(this.pos.x + (this.rnd() - 0.5) * 0.5, y + this.height * (0.3 + this.rnd() * 0.5), this.pos.z + (this.rnd() - 0.5) * 0.5), 1); }
+      }
     }
   }
 
-  private apply(_init: boolean) {
-    const sc = this.birth * (1 + Math.max(0, this.birth - 1) * 0);
+  private apply(spin = 0) {
     this.mesh.position.copy(this.pos);
-    this.mesh.rotation.y = this.heading;
-    this.mesh.scale.setScalar(Math.max(0.001, sc));
+    this.mesh.rotation.y = this.heading + spin;
+    this.mesh.scale.setScalar(Math.max(0.001, this.birth));
   }
 
-  dispose() { this.mat.dispose(); }
+  dispose() { waiting.delete(this); this.mat.dispose(); }
 }

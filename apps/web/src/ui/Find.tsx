@@ -5,6 +5,7 @@ import { search, searchLive } from "../lib/find";
 import { sound } from "../audio/synth";
 import { Chip } from "./Chips";
 import { useArrivalDemo } from "./demo";
+import { isDemo } from "../lib/site";
 
 const narrowQuery = "(max-width: 720px)";
 
@@ -22,6 +23,7 @@ export function useNarrow() {
 export function Find() {
   const { query, results, alternatives, demo, dealOpen, hatchPhase, apiReady, set } = useUi();
   const narrow = useNarrow();
+  const preview = isDemo(apiReady);
   const token = useRef(0);
   const timer = useRef<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -73,7 +75,7 @@ export function Find() {
 
       {alternatives.length > 0 && (
         <div className="alternatives" role="group" aria-label="Open alternatives">
-          <p className="lead">That name is taken. These are open:</p>
+          <p className="lead">{preview ? "That name is taken in this simulation. These are open (simulated):" : "That name is taken. These are open:"}</p>
           {alternatives.map((a) => (
             <button key={a} type="button" className="link-btn" onClick={() => set({ query: a.slice(0, a.indexOf(".")) })}>{a}</button>
           ))}
@@ -86,7 +88,7 @@ export function Find() {
           <div className="body">
             <p>One flat price per year. It is what the registry charges plus one small fee, and it renews at the same price.</p>
             <p>WHOIS privacy is free. No add-ons. Nothing is pre-checked.</p>
-            <p className="notice">Prices here are sample prices for this preview.</p>
+            <p className="notice">{preview ? "Prices and availability here are simulated for this preview. Nothing is registered, reserved or charged." : "Prices here are sample prices for this preview."}</p>
             <button type="button" className="btn secondary" onClick={() => set({ dealOpen: false })}>Got it</button>
           </div>
         </div>

@@ -223,3 +223,42 @@ textarea.text-input { min-height: 88px; padding: 10px 16px; border-radius: 16px;
 .xfer-steps li[data-status="later"], .xfer-steps li[data-status="stopped"] { color: rgba(241, 234, 216, 0.8); }
 .xfer-steps li[data-status="stopped"] { text-decoration: line-through; }
 .rescue-offer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; text-shadow: 0 1px 8px var(--ink); }
+.tier { margin-bottom: 0; }
+.tier-uncommon strong { color: #b9c8ff; }
+.tier-rare strong { color: #f0c8ff; }
+.tier-legendary strong { color: var(--lantern); }
+
+/* Demo mode (the public preview): the permanent banner, the layout below it, the practice notice and the waitlist dialog.
+   `--bh` is the banner's height: a default here for the page without scripts, measured by WaitlistHost when scripts run. */
+:root { --bh: 0px; }
+html[data-site="demo"] { --bh: 56px; }
+@media (max-width: 720px) { html[data-site="demo"] { --bh: 104px; } }
+.demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 40; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 14px; padding: 8px max(16px, env(safe-area-inset-left)); background: #1c2547; border-bottom: 2px solid var(--lantern); color: var(--shell); font-size: 0.95rem; line-height: 1.35; text-align: center; }
+.demo-banner p { margin: 0; }
+.demo-banner-cta { display: inline-flex; align-items: center; min-height: 40px; padding: 0 16px; border-radius: 20px; background: var(--lantern); color: var(--ink); font-weight: 700; text-decoration: none; white-space: nowrap; }
+.demo-banner-cta:hover { filter: brightness(1.06); }
+html[data-site="demo"] .site-header { top: var(--bh); }
+html[data-site="demo"] .hero { top: calc(clamp(72px, 12vh, 140px) + var(--bh)); }
+/* With results on screen the tagline gives way, so the alternatives keep their place below the header (clear of the chips). */
+html[data-site="demo"] .find.has-results .hero { display: none; }
+html[data-site="demo"] .side { top: calc(72px + var(--bh)); max-height: calc(100vh - 96px - var(--bh)); }
+html[data-site="demo"] .panel.ledger { top: calc(72px + var(--bh)); }
+html[data-site="demo"] .static-find { padding-top: calc(96px + var(--bh)); }
+@media (max-width: 720px) {
+  html[data-site="demo"] .hero { top: calc(64px + var(--bh)); }
+  html[data-site="demo"] .alternatives { top: calc(150px + var(--bh)); }
+  html[data-site="demo"] .side { top: auto; max-height: calc(62vh - var(--bh)); }
+}
+.practice-note { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--lantern); border-radius: 12px; background: rgba(28, 37, 71, 0.8); }
+.practice-note p { margin: 0 0 8px; }
+.practice-note .btn { min-height: 44px; }
+dialog.waitlist { padding: 0; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; color: var(--shell); background: #141b35; }
+dialog.waitlist::backdrop { background: rgba(6, 10, 22, 0.66); }
+dialog.waitlist label { display: block; }
+dialog.waitlist label.check, dialog.waitlist label.wl-radio { display: flex; }
+.wl-question { border: 0; margin: 0; padding: 0; }
+.wl-question legend { padding: 0; margin-bottom: 6px; }
+.wl-radio { gap: 8px; align-items: center; min-height: 36px; }
+.wl-radio input { width: 20px; height: 20px; accent-color: var(--lantern); }
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+dialog.waitlist a { color: var(--lantern); }

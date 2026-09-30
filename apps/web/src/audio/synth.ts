@@ -1,5 +1,5 @@
 /** WebAudio synthesis. Off by default; the context is created on the first user toggle. No audio files. */
-type Family = "fox" | "moth" | "beetle" | "koi";
+import type { Species } from "@mosshatch/core";
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -61,13 +61,18 @@ export const sound = {
   chime() { tone(523.25, 1.2, "sine", 0.1); tone(783.99, 1.4, "sine", 0.09, 0.16); },
   lock() { tone(220, 0.06, "square", 0.05); tone(160, 0.08, "square", 0.05, 0.05); },
   unlock() { tone(160, 0.06, "square", 0.05); tone(220, 0.08, "square", 0.05, 0.05); },
-  /** A short voice per family, pitched by the domain hash. */
-  voice(family: Family, pitch: number) {
-    switch (family) {
+  /** A short voice per species, pitched by the spec. */
+  voice(species: Species, pitch: number) {
+    switch (species) {
       case "fox": tone(620 * pitch, 0.16, "triangle", 0.1, 0, 980 * pitch); tone(900 * pitch, 0.12, "triangle", 0.08, 0.16, 500 * pitch); break;
       case "moth": [1046, 1318, 1568].forEach((f, i) => tone(f * pitch * 0.8, 0.45, "sine", 0.06, i * 0.09)); break;
       case "beetle": for (let i = 0; i < 4; i++) { tone(1400 * pitch, 0.025, "square", 0.05, i * 0.07); } break;
       case "koi": tone(240 * pitch, 0.22, "sine", 0.12, 0, 90 * pitch); noise(0.12, 0.06, 900, 0.03); break;
+      case "hare": tone(1100 * pitch, 0.06, "triangle", 0.07, 0, 1500 * pitch); tone(1200 * pitch, 0.06, "triangle", 0.06, 0.09, 1600 * pitch); break;
+      case "hedgehog": for (let i = 0; i < 3; i++) noise(0.05, 0.06, 1800 + i * 300, i * 0.08); break;
+      case "owl": tone(420 * pitch, 0.3, "sine", 0.1, 0, 380 * pitch); tone(400 * pitch, 0.4, "sine", 0.09, 0.36, 340 * pitch); break;
+      case "salamander": tone(1800 * pitch, 0.04, "sine", 0.05, 0, 2400 * pitch); tone(1600 * pitch, 0.05, "sine", 0.05, 0.1, 2200 * pitch); break;
+      case "spiritfox": tone(620 * pitch, 0.2, "triangle", 0.09, 0, 980 * pitch); [1318, 1568, 2093].forEach((f, i) => tone(f * pitch, 0.6, "sine", 0.04, 0.15 + i * 0.08)); break;
     }
   },
   startBed() {

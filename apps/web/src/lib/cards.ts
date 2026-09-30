@@ -1,4 +1,4 @@
-import { portraitSvg } from "@mosshatch/core";
+import { deriveCreatureSpec, portraitSvg } from "@mosshatch/core";
 import { api } from "./api";
 import { gated } from "./domains";
 
@@ -15,7 +15,7 @@ export const publishCard = (id: string, png: string, indexable: boolean, actionI
 
 /** The portrait, rasterised in this browser to a 256 x 320 PNG. Returns base64 and its SHA-256 (the hash the passkey signs). */
 export async function renderPortrait(fqdn: string): Promise<{ png: string; sha256: string }> {
-  const url = URL.createObjectURL(new Blob([portraitSvg(fqdn)], { type: "image/svg+xml" }));
+  const url = URL.createObjectURL(new Blob([portraitSvg(deriveCreatureSpec(fqdn))], { type: "image/svg+xml" }));
   try {
     const img = new Image();
     img.src = url;

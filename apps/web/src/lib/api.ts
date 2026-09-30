@@ -1,3 +1,5 @@
+import { buildSiteMode } from "./site";
+
 /** Thin client for /api/v1. Same-origin JSON only; the CSRF guard needs the X-MH-Client header on every mutation. */
 export class ApiError extends Error {
   constructor(public status: number, public code: string, public reason?: string) { super(code); this.name = "ApiError"; }
@@ -22,7 +24,8 @@ export async function api<T = unknown>(method: "GET" | "POST" | "DELETE", path: 
 /** Whether the API is reachable and configured for this deployment (a preview without a database answers 503 not_configured). */
 export async function apiAvailable(): Promise<boolean> {
   // Deployments without a backend never probe (a failing probe would print a console error on every visit). Set VITE_API_ENABLED=1 where the API is connected.
-  if (import.meta.env.VITE_API_ENABLED !== "1") return false;
+  // Demo mode (the public preview) never probes either: no account or purchase entry point appears (lib/site.ts).
+  if (import.meta.env.VITE_API_ENABLED !== "1" || buildSiteMode === "demo") return false;
   try { await api("GET", "/api/v1/session"); return true; }
   catch { return false; }
 }

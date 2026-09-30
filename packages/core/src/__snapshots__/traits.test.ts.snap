@@ -2,40 +2,285 @@
 
 exports[`deriveTraits > matches the golden fixture 1`] = `
 {
-  "accentHue": 204.9,
   "domain": "moonfern.com",
-  "earLength": 0.914,
-  "family": "fox",
-  "hue": 5.4,
+  "family": "owl",
   "label": "moonfern",
-  "light": 0.511,
-  "pitch": 1.279,
+  "pitch": 0.947,
+  "quality": {
+    "reasons": [
+      "Medium length: 8 characters",
+      "No digits or hyphens",
+      "Easy to say",
+      "Two words joined",
+      ".com is sought after",
+    ],
+    "score": 48,
+    "tier": "uncommon",
+  },
   "rarity": "uncommon",
-  "sat": 0.65,
-  "size": 0.991,
-  "speciesName": "Ember Fox",
-  "spots": 4,
-  "tailLength": 1.138,
+  "spec": {
+    "accent": {
+      "h": 103.5,
+      "l": 0.673,
+      "s": 0.614,
+    },
+    "accessories": [],
+    "bio": "A small speckled dusk owl. It turns its head almost all the way round.",
+    "body": {
+      "h": 316.5,
+      "l": 0.492,
+      "s": 0.691,
+    },
+    "build": 0.932,
+    "charm": {
+      "hue": 18,
+      "shape": "bell",
+    },
+    "choreography": {
+      "hatch": {
+        "crack": "spiral",
+        "duration": 3.97,
+        "emerge": "unfurl",
+        "particles": {
+          "hue": 103.5,
+          "kind": "dust",
+        },
+        "shell": {
+          "base": {
+            "h": 40,
+            "l": 0.88,
+            "s": 0.4,
+          },
+          "glow": 0.06,
+          "mark": {
+            "h": 18,
+            "l": 0.45,
+            "s": 0.55,
+          },
+          "pattern": "speckle",
+        },
+      },
+      "idle": [
+        {
+          "kind": "preen",
+          "weight": 0.77,
+        },
+        {
+          "kind": "flutter",
+          "weight": 0.47,
+        },
+        {
+          "kind": "look-around",
+          "weight": 0.45,
+        },
+      ],
+      "pitch": 0.947,
+      "react": "flutter",
+    },
+    "coat": {
+      "color": {
+        "h": 328.1,
+        "l": 0.86,
+        "s": 0.25,
+      },
+      "count": 8,
+      "pattern": "speckles",
+    },
+    "earSize": 0.734,
+    "ears": "round",
+    "effect": "moonrim",
+    "seed": 71670523,
+    "size": 0.961,
+    "species": "owl",
+    "speciesName": "Dusk Owl",
+    "tail": "plume",
+    "tailSize": 0.999,
+    "tier": "uncommon",
+    "v": 1,
+    "wings": "kite",
+  },
+  "speciesName": "Dusk Owl",
   "tld": "com",
 }
 `;
 
 exports[`deriveTraits > matches the golden fixture 2`] = `
 {
-  "accentHue": 141.8,
   "domain": "hatchkind.studio",
-  "earLength": 1.035,
   "family": "fox",
-  "hue": 319.6,
   "label": "hatchkind",
-  "light": 0.542,
-  "pitch": 0.912,
-  "rarity": "uncommon",
-  "sat": 0.529,
-  "size": 1.238,
+  "pitch": 0.867,
+  "quality": {
+    "reasons": [
+      "Medium length: 9 characters",
+      "No digits or hyphens",
+      "A little hard to say",
+      "Two words joined",
+    ],
+    "score": 25,
+    "tier": "common",
+  },
+  "rarity": "common",
+  "spec": {
+    "accent": {
+      "h": 206.9,
+      "l": 0.585,
+      "s": 0.59,
+    },
+    "accessories": [],
+    "bio": "A small plain ember fox. It pounces on moths it never catches.",
+    "body": {
+      "h": 0.4,
+      "l": 0.652,
+      "s": 0.562,
+    },
+    "build": 1.035,
+    "charm": {
+      "hue": 318,
+      "shape": "star",
+    },
+    "choreography": {
+      "hatch": {
+        "crack": "spiral",
+        "duration": 3.64,
+        "emerge": "peek-then-leap",
+        "particles": {
+          "hue": 206.9,
+          "kind": "sparks",
+        },
+        "shell": {
+          "base": {
+            "h": 335,
+            "l": 0.87,
+            "s": 0.4,
+          },
+          "glow": 0.07,
+          "mark": {
+            "h": 318,
+            "l": 0.42,
+            "s": 0.42,
+          },
+          "pattern": "zigzag",
+        },
+      },
+      "idle": [
+        {
+          "kind": "tail-flick",
+          "weight": 0.67,
+        },
+        {
+          "kind": "look-around",
+          "weight": 0.48,
+        },
+      ],
+      "pitch": 0.867,
+      "react": "hop",
+    },
+    "coat": {
+      "color": {
+        "h": 17.9,
+        "l": 0.294,
+        "s": 0.449,
+      },
+      "count": 0,
+      "pattern": "plain",
+    },
+    "earSize": 0.921,
+    "ears": "pointed",
+    "effect": "none",
+    "seed": 1583937766,
+    "size": 0.965,
+    "species": "fox",
+    "speciesName": "Ember Fox",
+    "tail": "plume",
+    "tailSize": 0.748,
+    "tier": "common",
+    "v": 1,
+    "wings": "kite",
+  },
   "speciesName": "Ember Fox",
-  "spots": 1,
-  "tailLength": 1.073,
   "tld": "studio",
+}
+`;
+
+exports[`deriveTraits > matches the golden fixture 3`] = `
+{
+  "accent": {
+    "h": 278,
+    "l": 0.689,
+    "s": 0.71,
+  },
+  "accessories": [
+    "lantern",
+  ],
+  "bio": "A stocky striped spirit fox. Its tails glow like lanterns in the moss.",
+  "body": {
+    "h": 50.5,
+    "l": 0.587,
+    "s": 0.485,
+  },
+  "build": 1.114,
+  "charm": {
+    "hue": 18,
+    "shape": "bell",
+  },
+  "choreography": {
+    "hatch": {
+      "crack": "veins",
+      "duration": 3.84,
+      "emerge": "drift-up",
+      "particles": {
+        "hue": 278,
+        "kind": "motes",
+      },
+      "shell": {
+        "base": {
+          "h": 40,
+          "l": 0.88,
+          "s": 0.4,
+        },
+        "glow": 0.06,
+        "mark": {
+          "h": 18,
+          "l": 0.45,
+          "s": 0.55,
+        },
+        "pattern": "speckle",
+      },
+    },
+    "idle": [
+      {
+        "kind": "look-around",
+        "weight": 0.64,
+      },
+      {
+        "kind": "hover",
+        "weight": 0.54,
+      },
+    ],
+    "pitch": 0.82,
+    "react": "sparkle",
+  },
+  "coat": {
+    "color": {
+      "h": 32.1,
+      "l": 0.264,
+      "s": 0.388,
+    },
+    "count": 4,
+    "pattern": "stripes",
+  },
+  "earSize": 1.103,
+  "ears": "pointed",
+  "effect": "glow",
+  "seed": 3811739634,
+  "size": 1.163,
+  "species": "spiritfox",
+  "speciesName": "Spirit Fox",
+  "tail": "brush",
+  "tailSize": 0.929,
+  "tier": "legendary",
+  "v": 1,
+  "wings": "kite",
 }
 `;

@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { build } from "vite";
-import { portraitSvg } from "@mosshatch/core";
+import { deriveCreatureSpec, portraitSvg } from "@mosshatch/core";
 import { generate } from "./generate.ts";
 
 /** Reproductions of the independent review of the hatchkind.com build (each failed on the code as reviewed). */
@@ -57,8 +57,8 @@ describe("review: the public portrait is computed from the name", () => {
     // Only the export is fetched; the stored upload is not.
     expect(calls.every((u) => u.startsWith(EXPORT_URL)), calls.join(" ")).toBe(true);
     for (const file of [...walk(d.publicDir), ...walk(d.siteDir)]) expect(fs.readFileSync(file).includes("verify your account"), file).toBe(false);
-    expect(fs.readFileSync(path.join(d.publicDir, "img/mossy-garden.com.svg"), "utf8")).toBe(portraitSvg("mossy-garden.com", "fox"));
-    expect(fs.readFileSync(path.join(d.publicDir, "img/gone-blob.com.svg"), "utf8")).toBe(portraitSvg("gone-blob.com", "moth"));
+    expect(fs.readFileSync(path.join(d.publicDir, "img/mossy-garden.com.svg"), "utf8")).toBe(portraitSvg({ ...deriveCreatureSpec("mossy-garden.com"), species: "fox" }));
+    expect(fs.readFileSync(path.join(d.publicDir, "img/gone-blob.com.svg"), "utf8")).toBe(portraitSvg({ ...deriveCreatureSpec("gone-blob.com"), species: "moth" }));
     const page = fs.readFileSync(path.join(d.siteDir, "mossy-garden.com/index.html"), "utf8");
     expect(page).toContain('src="/img/mossy-garden.com.svg"');
     expect(page).toContain('content="https://hatchkind.test/img/mossy-garden.com.svg"');

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { call, makeDomain, makeKit, makePerson, resetFuse, resetPrepareLimit, stepUp, type Kit, type Person } from "../domain-mgmt/testkit.ts";
 import { prepare } from "../stepup/testkit.ts";
 import { sha256 } from "../util/bytes.ts";
+import { CARD_TRAIT_RE } from "@mosshatch/core";
 import { releaseDomain } from "../domains/release.ts";
 import { decodePng, encodePng, sanitizePng, PngError } from "./png.ts";
 import { MemoryCardStorage, MemoryCardsSite } from "./storage.ts";
@@ -226,7 +227,7 @@ describe("ST-145 the public view and the cards role", () => {
     expect(res.json.cards.length).toBeGreaterThan(0);
     for (const card of res.json.cards) {
       expect(Object.keys(card).sort()).toEqual([...EXPORT_KEYS].sort());
-      for (const t of card.traits) expect(t).toMatch(/^(common|uncommon|rare) coat$|^(long|short) (ears|tail)$|^\d spots?$/);
+      for (const t of card.traits) expect(t).toMatch(CARD_TRAIT_RE);
     }
     const text = res.text;
     for (const f of [alice.user.userId, bob.user.userId, alice.login, bob.login, "view-released.com", "view-takedown.com", "view-unpublished.com"]) expect(text).not.toContain(f);

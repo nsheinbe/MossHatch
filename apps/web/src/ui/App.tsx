@@ -13,6 +13,9 @@ import { AccountPanel } from "./AccountPanel";
 import { OrderReturn } from "./OrderReturn";
 import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
+import { WaitlistHost } from "./WaitlistHost";
+import { takeInviteFromUrl } from "../lib/waitlist";
+import { buildSiteMode } from "../lib/site";
 
 const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
@@ -24,12 +27,22 @@ const OAuthConsent = lazy(() => import("./OAuthConsent"));
 // Rescue (transfer in), opened from Find or from the Checkout return of a transfer. Lazy: nothing of it is in the first load.
 const Rescue = lazy(() => import("./Rescue"));
 
+/** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
+function noindexAppRoutes() {
+  if (!["/device", "/checkout/return", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
+  const m = document.createElement("meta");
+  m.name = "robots"; m.content = "noindex";
+  document.head.append(m);
+}
+
 function hasWebGL2(): boolean {
   try { return !!document.createElement("canvas").getContext("webgl2"); } catch { return false; }
 }
 
 export function App() {
   const [gl] = useState(hasWebGL2);
+  // An invite link (/invite?t=…) opens sign-up on a live site; the token stays in memory only and the URL is cleaned at once.
+  const [invited] = useState(() => { noindexAppRoutes(); return takeInviteFromUrl(); });
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
@@ -51,6 +64,7 @@ export function App() {
     void (async () => {
       const ready = await apiAvailable();
       set({ apiReady: ready });
+      if (ready && invited && buildSiteMode === "live") set({ accountOpen: true });
       if (ready) { try { set({ account: await whoAmI() }); } catch { /* signed out */ } }
       const q = new URLSearchParams(location.search);
       const id = q.get("order"), sid = q.get("session_id");
@@ -58,7 +72,7 @@ export function App() {
     })();
   }, [set]);
 
-  if (!gl || failed) return <Fallback />;
+  if (!gl || failed) return <><Fallback /><WaitlistHost source="fallback" /></>;
   return (
     <>
       <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />
@@ -73,6 +87,7 @@ export function App() {
       <CardPanel />
       <AccountPanel />
       <OrderReturn />
+      <WaitlistHost source="app" />
       <div key={flash} className={`flash${flash ? " on" : ""}`} aria-hidden="true" />
     </>
   );

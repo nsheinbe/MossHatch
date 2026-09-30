@@ -24,7 +24,7 @@ export function useArrivalDemo(inputRef: RefObject<HTMLInputElement | null>) {
       remove();
       const w = handle.world;
       w?.cancelHatch();
-      if (w) for (const c of [...w.groveCreatures()]) if (c.traits.domain.startsWith(WORD)) w.removeGrove(c.traits.domain);
+      if (w) for (const c of [...w.groveCreatures()]) if (c.id.startsWith(WORD)) w.removeGrove(c.id);
       // Clear the demo text before the key that cancelled it lands in the field.
       if (inputRef.current && fromKey) inputRef.current.value = "";
       st().set({ demo: "done", query: "", results: [], alternatives: [], hatchPhase: "none", selected: null });
@@ -59,7 +59,7 @@ export function useArrivalDemo(inputRef: RefObject<HTMLInputElement | null>) {
           const a = Math.random() < 0.5 ? -1 : 1;
           c.goTo(a * 9, -7);
           at(6500, () => {
-            w.removeGrove(c.traits.domain);
+            w.removeGrove(c.id);
             st().set({ demo: "done", query: "", results: [], alternatives: [], hatchPhase: "none", selected: null });
             w.clearResults();
             remove();

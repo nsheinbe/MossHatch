@@ -5,6 +5,7 @@ import { liveQuote, type LiveQuote } from "../lib/find";
 import { ContactForm } from "./ContactForm";
 import { explain } from "../lib/account";
 import { runHatch } from "./hatchFlow";
+import { PracticeHatchNotice } from "./DemoNotice";
 
 /**
  * Checkout panel. With accounts connected and a signed-in person, the primary button pays on Stripe (the price is the server's).
@@ -69,6 +70,7 @@ export function HatchSheet() {
         {live
           ? <p className="notice">You pay on Stripe next. Nothing is charged until the name is registered.</p>
           : <p className="notice"><span className="sample-tag">Preview.</span> Nothing is bought or charged. Prices are sample prices.</p>}
+        <PracticeHatchNotice domain={r.domain} />
         <dl className="rows">
           <dt>{years === 2 ? "First 2 years" : "First year"}</dt><dd>{quote?.subtotal ?? r.price}</dd>
           <dt>Renews at</dt><dd>{years === 2 ? `${quote?.subtotal ?? r.price} per 2 years` : (quote?.subtotal ?? r.price)} (same)</dd>
@@ -93,6 +95,7 @@ export function HatchSheet() {
             <label className="check"><input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} /> Save my card for auto-renew. This is separate from the terms.</label>
           </div>
         )}
+        <p className="fineprint">What hatches is a surprise. The extension paints the shell; the name decides the creature, and short, clean names hatch rarer ones.</p>
         <p>No add-ons. Nothing is pre-checked. <a href="/fees.html" target="_blank" rel="noreferrer">Fees, renewals and refunds</a>.</p>
         {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
         {live && account && hasContact && (

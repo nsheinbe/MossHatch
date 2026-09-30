@@ -11,6 +11,7 @@ import { asRegistration, challengeFrom, consumeChallenge, issueRegistrationOptio
 import { assertCredentialAllowed, insertPasskey, passkeyView } from "./credentials.ts";
 import { classAAllowed } from "./mail.ts";
 import { completeRecovery } from "./recovery.ts";
+import { requireInvite, useInvite } from "../waitlist/gate.ts";
 
 export const SIGNUP_CODE_TTL_MS = 15 * 60_000;
 
@@ -23,6 +24,7 @@ async function signupStart(req: HandlerReq): Promise<HandlerResult> {
   const { email } = parseBody(z.object({ email: emailSchema }), req.body);
   const gate = await classAAllowed(ctx, email, "signup");
   if (!gate.allowed) throw rateLimited(gate.retryAfterSeconds);
+  await requireInvite(req, email);   // invite-only rollout (waitlist/gate.ts); a no-op unless MH_INVITE_ONLY is on
   const pendingId = (await withNoUser(ctx.runtime, (c) => c.query("select auth2_signup_pending($1,$2) as id", [email, ctx.clock.now()]))).rows[0].id as string | null;
   if (pendingId) {
     await withUser(ctx.runtime, pendingId, async (c) => {
@@ -51,6 +53,7 @@ async function signupVerify(req: HandlerReq): Promise<HandlerResult> {
       const now = ctx.clock.now();
       const u = await c.query("update users set status = 'active', email_verified_at = coalesce(email_verified_at, $2), expires_at = null where id = $1 and status in ('pending','active') returning id, webauthn_user_handle", [pending.id, now]);
       if (u.rowCount !== 1) return null;
+      await useInvite(req, c, b.email, pending.id);   // uses the invite in this activation transaction (no-op when invite-only is off)
       await c.query("insert into notification_addresses (user_id, address, kind, verified_at, created_at) select $1::uuid,$2::citext,'login',$3::timestamptz,$3::timestamptz where not exists (select 1 from notification_addresses where user_id = $1::uuid and address = $2::citext and removed_at is null)", [pending.id, b.email, now]);
       await auditUser(ctx, c, pending.id, "auth.signup.verified", { resourceKind: "user", resourceId: pending.id });
       return issueRegistrationOptions(ctx, c, { id: pending.id, email: b.email, handle: Buffer.from(u.rows[0].webauthn_user_handle) }, { preHash: pre.hash });

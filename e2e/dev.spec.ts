@@ -1,13 +1,15 @@
 import { test, expect } from "@playwright/test";
 import { axe } from "./axe";
 import path from "node:path";
-import { deriveTraits } from "../packages/core/src/index.ts";
+import { deriveTraits, SPECIES } from "../packages/core/src/index.ts";
 
 const CORE = path.resolve(process.cwd(), "packages/core/src/index.ts");
 
 declare global { interface Window { __mh: { world: { stats(): { calls: number; creatures: number; dpr: number } }; pause(): void; step(s: number, dt?: number): void } } }
 
-const DOMAINS = ["moonfern.com", "lanternwick.ai", "tinkerdeep.dev", "marrowbrook.io", "hollowmint.app", "stillwater.studio", "MoonFern.com", "a-b.com"];
+const DOMAINS = ["moonfern.com", "lanternwick.ai", "tinkerdeep.dev", "marrowbrook.io", "hollowmint.app", "stillwater.studio", "MoonFern.com", "a-b.com", "fox.com", "moss.ai", "quiet-fern-42.com"];
+const GALLERY = ["fox.com", "moss.ai", "lantern.com", "moonfern.com", "quiet-fern-42.com", "bramblewick.dev", "emberwick.com", "hollowmint.com", "sootmarrow.com", "tinkerdeep.com", "glowmere.com", "paperwren.com",
+  "brassnook.com", "tideloom.com", "quillnest.com", "duskwing.com", "marrowbrook.io", "stillwater.studio", "lanternfell.ai", "hollowmint.app", "gearhollow.dev", "inkmoth.studio"];
 
 test("golden: the same domain hatches the same creature in the browser and in Node", async ({ page }) => {
   await page.goto("/");
@@ -41,9 +43,9 @@ test("hatch flow: sheet, sequence, card; axe clean at each step; grove receives 
   expect(await page.evaluate(() => window.__mh.world.stats().creatures)).toBeGreaterThanOrEqual(1);
 });
 
-for (const family of ["fox", "moth", "beetle", "koi", "app", "studio"]) {
+for (const family of [...SPECIES, "gallery"]) {
   test(`draw calls stay within 60 on the debug page (${family})`, async ({ page }) => {
-    await page.goto(`/debug.html?debug=states&family=${family}`);
+    await page.goto(family === "gallery" ? `/debug.html?debug=states&gallery=${GALLERY.join(",")}` : `/debug.html?debug=states&family=${family}`);
     await page.waitForFunction(() => (window as any).__mh);
     await page.evaluate(() => window.__mh.pause());
     await page.evaluate(() => window.__mh.step(2));

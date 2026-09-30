@@ -1,3 +1,4 @@
+import { currentInvite } from "./waitlist";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { api, ApiError } from "./api";
 
@@ -14,11 +15,11 @@ export async function whoAmI(): Promise<Me | null> {
 }
 
 /** Step 1 of sign-up: the server emails a one-time code. The answer is the same whether or not the address has an account. */
-export const signupStart = (email: string) => api("POST", "/api/v1/auth/signup/start", { email });
+export const signupStart = (email: string) => api("POST", "/api/v1/auth/signup/start", { email, invite: currentInvite() ?? undefined });
 
 /** Step 2: verify the code, then create the passkey. Returns the recovery codes, shown once. */
 export async function signupVerify(email: string, code: string): Promise<{ recoveryCodes: string[] }> {
-  const { options } = await api<{ options: Parameters<typeof startRegistration>[0]["optionsJSON"] }>("POST", "/api/v1/auth/signup/verify", { email, code });
+  const { options } = await api<{ options: Parameters<typeof startRegistration>[0]["optionsJSON"] }>("POST", "/api/v1/auth/signup/verify", { email, code, invite: currentInvite() ?? undefined });
   const response = await startRegistration({ optionsJSON: options });
   const out = await api<{ recoveryCodes?: string[] }>("POST", "/api/v1/auth/register/verify", { response });
   return { recoveryCodes: out.recoveryCodes ?? [] };

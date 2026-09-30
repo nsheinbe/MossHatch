@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { handle } from "../world/handle";
+import { PracticeHatchNotice } from "./DemoNotice";
 
 export function CardPanel() {
   const { card, hatchPhase, set } = useUi();
@@ -20,8 +21,12 @@ export function CardPanel() {
     <aside className="panel side" role="region" aria-label={`${card.domain} has hatched`}>
       <div className="head"><h2 ref={head} tabIndex={-1}>{card.domain} hatched</h2></div>
       <div className="body">
+        <PracticeHatchNotice domain={card.domain} />
         <img className="card-img" src={card.image} alt={`Portrait of ${card.domain}, a ${card.species}`} width={512} height={640} />
-        <p style={{ marginTop: 10 }}><strong>{card.species}</strong>. Hatched {card.hatchedOn}.</p>
+        <p className={`tier tier-${card.tier}`} style={{ marginTop: 10 }}><strong>{card.tierLabel}</strong></p>
+        <p className="fineprint">Short, clean names hatch rarer creatures.</p>
+        <p><strong>{card.species}</strong>. Hatched {card.hatchedOn}.</p>
+        {card.bio && <p>{card.bio}</p>}
         <ul className="traits">{card.traits.map((t) => <li key={t}>{t}</li>)}</ul>
         <p>{card.moss}</p>
         <p className="notice">Its card address will be <span style={{ fontWeight: 700 }}>{card.address}</span>. Cards are not live yet.</p>

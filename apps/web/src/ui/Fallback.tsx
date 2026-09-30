@@ -29,7 +29,7 @@ export function Fallback() {
         <ul className="static-prices" aria-label="Results">
           {res.length === 0 ? <li>Type letters, numbers or hyphens.</li> : res.map((r) => (
             <li key={r.domain}><span className="ext" style={r.available ? undefined : { textDecoration: "line-through", color: "var(--st-sleeping)" }}>{r.domain}</span>
-              {r.available ? <><span className="price">{r.price}</span><span className="note">{r.years === 2 ? "for 2 years, " : "first year, "}renews the same</span></> : <span className="note">Taken</span>}</li>
+              {r.available ? <><span className="price">{r.price}</span><span className="note">{r.years === 2 ? "for 2 years, " : "first year, "}renews the same, <span className="sample-tag">sample price, simulated availability</span></span></> : <span className="note">Taken <span className="sample-tag">(simulated)</span></span>}</li>
           ))}
         </ul>
       )}
@@ -37,7 +37,7 @@ export function Fallback() {
       <ul className="static-prices">
         {staticPrices().map((p) => <li key={p.tld}><span className="ext">.{p.tld}</span><span className="price">{p.price}</span><span className="note">{p.years === 2 ? "for 2 years" : "first year"}, renews the same</span></li>)}
       </ul>
-      <p className="fineprint">These are sample prices. Nothing is for sale in this preview.</p>
+      <p className="fineprint">These are sample prices, and availability is simulated. Nothing is for sale in this preview, and nothing you search is registered or reserved.</p>
     </main>
   );
 }

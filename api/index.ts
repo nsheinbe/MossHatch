@@ -1,5 +1,5 @@
 // The bundle is built by `npm run build` (scripts/build-api.mjs) before Vercel packages the function.
-import { bootFromEnv, NotConfigured } from "./_bundle.mjs";
+import { bootFromEnv, NotConfigured, handleWaitlist } from "./_bundle.mjs";
 
 type Boot = Awaited<ReturnType<typeof bootFromEnv>>;
 
@@ -15,6 +15,9 @@ function boot(): Promise<Boot | { error: string }> {
 
 export default {
   async fetch(request: Request): Promise<Response> {
+    // The waitlist needs only DATABASE_URL (and optionally RESEND_API_KEY), so it answers even while the full API refuses to boot.
+    const w = await handleWaitlist(request, process.env);
+    if (w) return w;
     const b = await boot();
     if ("error" in b) {
       return new Response(JSON.stringify({ error: { code: "not_configured", reason: b.error } }), { status: 503, headers: { "content-type": "application/json", "cache-control": "no-store" } });

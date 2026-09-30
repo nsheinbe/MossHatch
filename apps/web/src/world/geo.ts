@@ -10,12 +10,16 @@ export interface PartOpts {
   emit?: number;
   /** Vertex colour variation, 0..1. */
   jitter?: number;
+  /** Second colour, blended in per vertex by `mix(x, y, z)` in 0..1 (used for two-tone coats). */
+  color2?: THREE.ColorRepresentation;
+  mix?: (x: number, y: number, z: number) => number;
   /** Creature animation part id (see hatch.vert) and its pivot. */
   part?: number;
   pivot?: [number, number, number];
 }
 
 const tmpColor = new THREE.Color();
+const tmpColor2 = new THREE.Color();
 
 /** Collects transformed primitives and merges them into one non-indexed geometry. */
 export class GeoBuilder {
@@ -32,13 +36,15 @@ export class GeoBuilder {
     const sway = new Float32Array(n);
     const emit = new Float32Array(n).fill(o.emit ?? 0);
     tmpColor.set(o.color);
+    if (o.color2 !== undefined) tmpColor2.set(o.color2);
     for (let i = 0; i < n; i++) {
       const y = pos.getY(i);
       const j = o.jitter ?? 0;
       const k = 1 + j * (hash3(pos.getX(i), y, pos.getZ(i)) - 0.5) * 2;
-      col[i * 3] = tmpColor.r * k;
-      col[i * 3 + 1] = tmpColor.g * k;
-      col[i * 3 + 2] = tmpColor.b * k;
+      const m = o.mix && o.color2 !== undefined ? Math.min(1, Math.max(0, o.mix(pos.getX(i), y, pos.getZ(i)))) : 0;
+      col[i * 3] = (tmpColor.r + (tmpColor2.r - tmpColor.r) * m) * k;
+      col[i * 3 + 1] = (tmpColor.g + (tmpColor2.g - tmpColor.g) * m) * k;
+      col[i * 3 + 2] = (tmpColor.b + (tmpColor2.b - tmpColor.b) * m) * k;
       if (o.sway === "height") {
         const t = Math.min(1, Math.max(0, (y - (o.swayY0 ?? 0)) / (o.swayH ?? 1)));
         sway[i] = (o.swayAmp ?? 1) * t * t;

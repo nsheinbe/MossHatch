@@ -23,6 +23,9 @@ export interface Card {
   domain: string;
   image: string;
   species: string;
+  tier: "common" | "uncommon" | "rare" | "legendary";
+  tierLabel: string;
+  bio: string;
   traits: string[];
   hatchedOn: string;
   moss: string;

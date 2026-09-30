@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @mosshatch/web",
-    "build": "node scripts/render-public-pages.mjs --check && npm run build -w @mosshatch/web && node scripts/web-sitemap.mjs apps/web/dist && node scripts/build-api.mjs && node scripts/postbuild.mjs",
+    "build": "node scripts/render-public-pages.mjs --check && npm run build -w @mosshatch/web && node scripts/site-pages.mjs apps/web/dist && node scripts/web-sitemap.mjs apps/web/dist && node scripts/build-api.mjs && node scripts/postbuild.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "e2e": "playwright test",
