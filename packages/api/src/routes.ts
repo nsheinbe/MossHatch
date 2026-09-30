@@ -5,6 +5,8 @@ import { registerSearchRoutes } from "./search/routes.ts";
 import { registerOps } from "./ops/routes.ts";
 import { registerOrderRoutes } from "./orders/routes.ts";
 import { registerAccountRoutes } from "./account/routes.ts";
+import { registerDomainRoutes } from "./domains/routes.ts";
+import { registerDomainMgmt } from "./domain-mgmt/routes.ts";
 
 /** The route table. Each module adds one registration line. */
 export function buildRouter(): Router {
@@ -15,5 +17,7 @@ export function buildRouter(): Router {
   registerOps(router);
   registerOrderRoutes(router);
   registerAccountRoutes(router);
+  registerDomainRoutes(router);
+  registerDomainMgmt(router);
   return router;
 }

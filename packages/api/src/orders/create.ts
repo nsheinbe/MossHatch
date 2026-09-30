@@ -11,6 +11,7 @@ import { StripeError, type CheckoutSession, type CreateSessionInput } from "../s
 import { SELL_GATE_MIN_FUNDS_MINOR, SESSION_TTL_MS, type OrderRow, type OrdersServices } from "./types.ts";
 import { loadOrder, ordersSvc, rowToOrder } from "./support.ts";
 import { modeProblem } from "./wiring.ts";
+import { reservedRenewalsMinor } from "../domains/gate.ts";
 import { ModeError, refuseSampleAtLiveCheckout } from "../config/modeguard.ts";
 
 export const RESERVING_STATES = ["review_hold", "authorized", "registering", "outcome_unknown", "registrar_unavailable", "paid_before_registration"];
@@ -108,7 +109,9 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
     if (funds !== "unsupported") {
       const floor = BigInt(((await c.query("select value from flags where name = 'sell_gate.min_funds_minor'")).rows[0]?.value as number | undefined) ?? Number(SELL_GATE_MIN_FUNDS_MINOR));
       const reserved = BigInt((await ctx.cron.query("select coalesce(sum((quote->>'wholesale_minor')::bigint), 0)::text as s from orders where kind = 'register' and state = any($1)", [RESERVING_STATES])).rows[0].s);
-      if (funds.minor - reserved - priced.wholesaleMinor < floor) throw new HttpError(503, "sell_gate", PAUSED_MESSAGE);
+      // Renewals rank ahead of new registrations (ST-109): what is already promised to renewals comes off first.
+      const renewals = await reservedRenewalsMinor(ctx.cron, now);
+      if (funds.minor - renewals - reserved - priced.wholesaleMinor < floor) throw new HttpError(503, "sell_gate", PAUSED_MESSAGE);
     }
     if (!(await svc.registrant(ctx, input.userId))) throw new HttpError(422, "contact_required");
     const docs = (await c.query(

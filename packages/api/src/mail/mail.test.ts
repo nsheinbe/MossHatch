@@ -127,6 +127,14 @@ const SAMPLE: { [K in MailKind]: Record<string, unknown> } = {
   freeze_link: { freezeToken: TOKEN, expiresInHours: 72 },
   receipt: { orderId: "0199f0a0-1111-7222-8333-444455556666", fqdn: "example-name.com", years: 2, totalMinor: "2198", taxMinor: "0", paidAt: "2026-10-01T12:00:00.000Z" },
   void_notice: { orderId: "0199f0a0-1111-7222-8333-444455556666", fqdn: "example-name.com" },
+  renewal_notice: { fqdn: "example-name.com", stage: "c8", expiresAt: "2027-10-01T12:00:00.000Z", chargeAt: "2027-09-21T12:00:00.000Z", priceMinor: "1925", autoRenew: true, offToken: TOKEN },
+  expiry_notice: { fqdn: "example-name.com", stage: "e7", expiresAt: "2027-10-01T12:00:00.000Z" },
+  expiry_lastchance: { fqdn: "example-name.com", stage: "e7", expiredAt: "2027-10-01T12:00:00.000Z", priceMinor: "1925" },
+  price_change_notice: { fqdn: "example-name.com", kind: "known", oldMinor: "1925", newMinor: "2225", chargeAt: "2027-09-21T12:00:00.000Z", autoRenew: true, aboveCap: true, offToken: TOKEN },
+  renewal_failed: { fqdn: "example-name.com", priceMinor: "1925", nextTryAt: "2027-09-24T12:00:00.000Z", deadline: "2027-10-01T12:00:00.000Z", expiresAt: "2027-10-01T12:00:00.000Z" },
+  auto_renew_on: { fqdn: "example-name.com", ceilingMinor: "1925", chargeAt: "2027-09-21T12:00:00.000Z", offToken: TOKEN },
+  renewal_refunded: { fqdn: "example-name.com", totalMinor: "1925", expiresAt: "2027-10-01T12:00:00.000Z" },
+  domain_released: { fqdn: "example-name.com", cause: "lapsed", holdUntil: "2027-11-01T12:00:00.000Z" },
 };
 const ORIGIN = "https://mosshatch.com";
 const urls = (s: string) => s.match(/https?:\/\/[^\s)>"'<]+/g) ?? [];
@@ -150,7 +158,7 @@ describe("ST-149 mail contains no vault secret, bearer token or approval link", 
       }
       if (def.link) { linkPurposes.add(def.link.purpose); expect(EMAIL_ACTION_PURPOSES as readonly string[]).toContain(def.link.purpose); }
     }
-    expect([...linkPurposes].sort()).toEqual(["freeze", "recovery_cancel"]);          // auto_renew_off is allowed but no Phase 2 mail uses it
+    expect([...linkPurposes].sort()).toEqual(["auto_renew_off", "freeze", "recovery_cancel"]);          // the Phase 3 renewal mails carry the one-click turn-off link (C-34)
     expect([...EMAIL_ACTION_PURPOSES].sort()).toEqual(["auto_renew_off", "freeze", "recovery_cancel"]);
   });
   it("ST-149: a link is built only when the token is a well-formed 128-bit-plus base64url string", () => {
@@ -187,7 +195,7 @@ describe("ST-149 mail contains no vault secret, bearer token or approval link", 
     const names = new Set<string>();
     for (const k of MAIL_KINDS) for (const f of Object.keys((TEMPLATES[k].schema as any).shape)) names.add(f);
     for (const n of names) expect(n).not.toMatch(/secret|bearer|approval|password|apikey|authcode|pay/i);
-    expect([...names].filter((n) => /token/i.test(n)).sort()).toEqual(["cancelToken", "freezeToken"]);
+    expect([...names].filter((n) => /token/i.test(n)).sort()).toEqual(["cancelToken", "freezeToken", "offToken"]);
     expect(MAIL_KINDS.some((k) => /pay|approve|approval|secret|reveal/i.test(k))).toBe(false);   // no pay-link mail for agent flows
   });
   it("ST-149: the output scan is a second wall, independent of the schemas", () => {

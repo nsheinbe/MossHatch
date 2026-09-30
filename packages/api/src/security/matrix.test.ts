@@ -15,6 +15,8 @@ let h: OrdersHarness;
 let a: Buyer, b: Buyer;
 let router: ReturnType<typeof buildRouter>;
 const ids: Record<string, string> = {};
+/** Fixtures that are names, not uuids: the domain routes take the fqdn in the path (plan 4.5). */
+const names: Record<string, string> = {};
 let bBinding = "";
 
 /** Which fixture id of user A each parameterised route takes. Keyed by the :param name within a path prefix. */
@@ -23,6 +25,9 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/passkeys\/:id/, param: "id", id: () => ids.passkey! },
   { match: /^\/api\/v1\/notification-addresses\/:id/, param: "id", id: () => ids.address! },
   { match: /^\/api\/v1\/actions\/:id/, param: "id", id: () => ids.action! },
+  { match: /^\/api\/v1\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
+  // Domains core (Phase 3): the overview, export, renew and auto-renew routes take the domain's uuid.
+  { match: /^\/api\/v1\/domains\/:id/, param: "id", id: () => ids.domain! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/];
@@ -44,11 +49,15 @@ beforeAll(async () => {
   const sessionHash = sha256(Buffer.from(a.cookie.split("=")[1]!, "base64url"));
   ids.action = (await h.app.db.owner.query(
     "insert into actions (user_id, session_id_hash, type, params, params_hash, expires_at) values ($1,$2,'passkey.add','{}','\\x02', now() + interval '1 hour') returning id", [a.userId, sessionHash])).rows[0].id;
+  names.domain = "alice-domain-fixture.com";
+  await h.app.db.owner.query("insert into domains (user_id, fqdn_ascii, tld, registrar, state, locked, nameservers, livemode) values ($1,$2,'com','mock','registered',true,'{ns1.systemdns.com,ns2.systemdns.com}',false)", [a.userId, names.domain]);
+  ids.domain = (await h.app.db.owner.query("select id from domains where user_id = $1 and fqdn_ascii = $2", [a.userId, names.domain])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;
   // The fixtures must be real, or every "refused" below would pass vacuously.
   for (const [k, v] of Object.entries(ids)) expect(v, `fixture ${k}`).toMatch(/^[0-9a-f-]{36}$/);
+  expect((await h.app.db.owner.query("select 1 from domains where user_id = $1 and fqdn_ascii = $2", [a.userId, names.domain])).rowCount, "fixture domain").toBe(1);
 }, 120_000);
 afterAll(async () => { await h?.app.drop(); });
 
@@ -89,10 +98,13 @@ async function runMatrix() {
 
 describe("ST-91: cross-tenant matrix, generated from the route table", () => {
   it("the fixtures are real: the owner reaches her own order, passkey, address and action", async () => {
-    for (const [path, id] of [["/api/v1/orders/", ids.order!], ["/api/v1/actions/", ids.action!]] as const) {
+    for (const [path, id] of [["/api/v1/orders/", ids.order!], ["/api/v1/actions/", ids.action!], ["/api/v1/domains/", ids.domain!]] as const) {
       const res = await h.app.call("GET", path + id, { cookie: a.cookie });
       expect(res.status, path).toBe(200);
     }
+    // The domain fixture is reachable by its owner through a domain-management route (and by nobody else, below).
+    const sec = await h.app.call("GET", `/api/v1/domains/${names.domain}/security`, { cookie: a.cookie });
+    expect(sec.status, sec.text).toBe(200);
     const passkeys = await h.app.call("GET", "/api/v1/passkeys", { cookie: a.cookie });
     expect(JSON.stringify(passkeys.json)).toContain(ids.passkey!);
     const addrs = await h.app.call("GET", "/api/v1/notification-addresses", { cookie: a.cookie });
@@ -102,7 +114,7 @@ describe("ST-91: cross-tenant matrix, generated from the route table", () => {
   it("every parameterised session route has a fixture, and user B cannot reach user A's resource by any method", async () => { await runMatrix(); });
 
   it("routes without path parameters never return user A's data to user B", async () => {
-    const forbidden = [a.userId, a.email, ids.order!, ids.passkey!, ids.address!, "alice-owned-name.com", "cred-alice"];
+    const forbidden = [a.userId, a.email, ids.order!, ids.passkey!, ids.address!, "alice-owned-name.com", "cred-alice", names.domain!];
     for (const r of router.routes.filter((x) => !isParam(x) && x.principals.includes("session") && x.method === "GET")) {
       const res = await callAs(b, r, r.path);
       for (const f of forbidden) expect(res.text, `${r.path} leaked ${f.slice(0, 8)}`).not.toContain(f);
@@ -118,7 +130,7 @@ describe("ST-91: cross-tenant matrix, generated from the route table", () => {
   });
 
   it("the swapped-id fuzz: A's id under every parameterised route of a different type is refused", async () => {
-    const all = Object.values(ids);
+    const all = [...Object.values(ids), ...Object.values(names)];
     for (const r of router.routes.filter((x) => isParam(x) && x.principals.includes("session") && !TOKEN_ROUTES.some((t) => t.test(x.path)))) {
       for (const id of all) {
         const res = await callAs(b, r, fill(r.path, id));

@@ -7,14 +7,9 @@ import { ACTION_TYPES, type ActionType } from "../http/types.ts";
 
 /** Ids whose gated route does not exist yet, with the phase that adds it. A deferred id that gains a route without the gate fails below. */
 export const DEFERRED_UNTIL_PHASE: Partial<Record<ActionType, number>> = {
-  "domain.nameservers.change": 3,
-  "domain.unlock": 3,
-  "domain.contact.change": 3,
-  "mandate.sign": 3,
   "secret.reveal": 4,
   "device.approve": 4,
   "dns.sensitive.approve": 4,
-  "domain.transfer_out": 5,
   "agent.purchase.approve": 5,
   "agent.token.create": 5,
   "agent.token.widen": 5,

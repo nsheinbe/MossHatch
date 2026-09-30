@@ -22,3 +22,5 @@ export * as orders from "./orders/index.ts";
 export * as stripeAdapters from "./stripe/index.ts";
 export { syncDocuments } from "./account/documents.ts";
 export * as registrarRpc from "./registrar-rpc/index.ts";
+export * as domainMgmt from "./domain-mgmt/index.ts";
+export * as domains from "./domains/index.ts";
