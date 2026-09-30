@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUi, type Result } from "../store";
 import { handle } from "../world/handle";
-import { search } from "../lib/find";
+import { search, searchLive } from "../lib/find";
 import { sound } from "../audio/synth";
 import { Chip } from "./Chips";
 import { useArrivalDemo } from "./demo";
@@ -30,7 +30,9 @@ export function Find() {
 
   const run = useCallback(async (q: string) => {
     const my = ++token.current;
-    const r = await search(q);
+    let r: Awaited<ReturnType<typeof search>>;
+    try { r = useUi.getState().apiReady ? await searchLive(q) : await search(q); }
+    catch { if (my === token.current) set({ checking: false }); return; }   // throttled or offline: keep what is on screen
     if (my !== token.current) return; // stale
     const w = handle.world;
     if (!r) { set({ results: [], alternatives: [], checking: false }); w?.clearResults(); return; }

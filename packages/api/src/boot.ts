@@ -29,7 +29,7 @@ export interface Boot { router: Router; ctx: AppContext }
  * is missing, so the function answers 503 instead of guessing. Production is refused until its adapters exist:
  * the AWS KMS HMAC/PII adapter, the write-once anchor bucket and the live OpenSRS adapter are not built in this phase.
  */
-export function bootFromEnv(env: Record<string, string | undefined>): Boot {
+export async function bootFromEnv(env: Record<string, string | undefined>): Promise<Boot> {
   const config = loadConfig(env);
   if (config.mode === "production") throw new NotConfigured("production_adapters_not_built");
   if (!env.DATABASE_URL) throw new NotConfigured("database_not_configured");
@@ -51,7 +51,10 @@ export function bootFromEnv(env: Record<string, string | undefined>): Boot {
     dnsResolver: new NodeDnsResolver(), alertNotifier: { notify: async (a: { kind: string }) => { console.warn("alert", a.kind); } },
   });
   // Phases 1 and 2 use the mock registrar (sample prices) everywhere; the live OpenSRS adapter arrives in Phase 3.
-  const registrar = new MockRegistrarPort({ clock: ctx.clock });
+  // The mock is priced from the same effective-dated table the quotes use, so the price guard sees one price on both sides.
+  const rows = (await ctx.cron.query("select distinct on (tld) tld, amount_minor from wholesale_prices where registrar = 'opensrs' and kind = 'register' and effective_from <= $1::date order by tld, effective_from desc", [ctx.clock.now()])).rows;
+  const wholesale = Object.fromEntries(rows.map((r) => [r.tld as string, BigInt(r.amount_minor)]));
+  const registrar = new MockRegistrarPort({ clock: ctx.clock, wholesalePerYear: wholesale });
   (ctx.services as Record<string, unknown>).registrar = registrar;
   const router = buildRouter();
   registerOrderJobs();

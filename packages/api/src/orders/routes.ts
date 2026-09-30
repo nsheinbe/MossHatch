@@ -46,7 +46,7 @@ export function registerOrderRoutes(router: Router): Router {
         if (!key) throw new HttpError(400, "idempotency_key_required");
         const b = (r.body && typeof r.body === "object" && !Array.isArray(r.body) ? r.body : {}) as Record<string, unknown>;
         // Only `fqdn` and `years` are read. A price, total or currency in the body is ignored (ST-97).
-        const res = await createOrder(r.ctx, { userId: uid(r), fqdn: b.fqdn, years: b.years, idempotencyKey: key, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily });
+        const res = await createOrder(r.ctx, { userId: uid(r), fqdn: b.fqdn, years: b.years, idempotencyKey: key, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily, accept: b.accept });
         return json({ order_id: res.order.id, checkout_url: res.checkoutUrl }, res.replay ? 200 : 201);
       },
     },

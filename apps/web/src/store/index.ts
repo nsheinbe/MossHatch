@@ -14,6 +14,8 @@ export interface Result {
   fee?: string;
 }
 
+import type { Me } from "../lib/account";
+
 export type View = "find" | "grove";
 export type HatchPhase = "none" | "sheet" | "hatching" | "card";
 
@@ -44,6 +46,13 @@ export interface UiState {
   groveNames: string[];
   dealOpen: boolean;
   flash: number;
+  /** null = not asked yet, false = accounts are not connected in this deployment. */
+  apiReady: boolean | null;
+  account: Me | null;
+  accountOpen: boolean;
+  orderId: string | null;
+  /** Stripe Checkout Session id from the return URL; the server checks it belongs to the order. */
+  orderSession: string | null;
   calm: boolean;
   sound: boolean;
   rehideSeconds: number;
@@ -58,7 +67,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, account: null, accountOpen: false, orderId: null, orderSession: null,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
       set: (p) => set(p),
     }),

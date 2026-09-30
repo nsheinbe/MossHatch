@@ -4,6 +4,7 @@
   "installCommand": "npm install",
   "buildCommand": "npm run build",
   "outputDirectory": "apps/web/dist",
+  "rewrites": [{ "source": "/checkout/return", "destination": "/index.html" }],
   "headers": [
     {
       "source": "/(.*)",

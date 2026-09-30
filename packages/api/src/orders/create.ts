@@ -27,6 +27,8 @@ export interface CreateOrderInput {
   /** Set when a passkey-approved agent purchase creates the order: the assertion is the acceptance. */
   assertionActionId?: string;
   agentRequestId?: string;
+  /** The document hashes the person was shown and accepted: `{terms, registration_agreement}`. Required unless a passkey assertion carries the acceptance. */
+  accept?: unknown;
 }
 export interface CreateOrderResult { order: OrderRow; checkoutUrl: string | null; replay: boolean }
 
@@ -114,6 +116,11 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
       [["terms", "registration_agreement"], now])).rows;
     const terms = docs.find((d) => d.kind === "terms"), agreement = docs.find((d) => d.kind === "registration_agreement");
     if (!terms || !agreement) throw new HttpError(503, "documents_unavailable");
+    if (!input.assertionActionId && !input.agentRequestId) {
+      // C-12 and C-14: acceptance is an explicit act on the exact documents in force, recorded per registration.
+      const a = (input.accept && typeof input.accept === "object" ? input.accept : {}) as Record<string, unknown>;
+      if (a.terms !== terms.version_hash || a.registration_agreement !== agreement.version_hash) throw new HttpError(422, "terms_not_accepted");
+    }
 
     const id = (await c.query("select uuidv7() as id")).rows[0].id as string;
     const regUsername = "mh" + base32(randomBytes(9)).toLowerCase().slice(0, 14);

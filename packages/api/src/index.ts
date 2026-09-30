@@ -20,3 +20,4 @@ export * as support from "./support/index.ts";
 export * as jobEngine from "./jobs/engine.ts";
 export * as orders from "./orders/index.ts";
 export * as stripeAdapters from "./stripe/index.ts";
+export { syncDocuments } from "./account/documents.ts";

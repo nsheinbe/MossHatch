@@ -66,8 +66,15 @@ export async function makeBuyer(h: OrdersHarness, email: string, o: { contact?: 
   return { userId: row.id, cookie: s.cookie.split(";")[0]!, email };
 }
 
-export const postOrder = (h: OrdersHarness, b: Buyer, body: unknown, key: string | null = "key-1", extra: Record<string, string> = {}) =>
-  h.app.call("POST", "/api/v1/orders", { cookie: b.cookie, body, headers: { ...(key ? { "idempotency-key": key } : {}), ...extra } });
+/** Places an order the way the web app does: the current document hashes are sent as the acceptance unless the body already has one. */
+export const postOrder = async (h: OrdersHarness, b: Buyer, body: unknown, key: string | null = "key-1", extra: Record<string, string> = {}) => {
+  let sent = body;
+  if (body && typeof body === "object" && !Array.isArray(body) && !("accept" in body)) {
+    const docs = (await h.app.db.owner.query("select kind, version_hash from document_versions where kind in ('terms','registration_agreement')")).rows;
+    sent = { ...body, accept: Object.fromEntries(docs.map((d) => [d.kind, d.version_hash])) };
+  }
+  return h.app.call("POST", "/api/v1/orders", { cookie: b.cookie, body: sent, headers: { ...(key ? { "idempotency-key": key } : {}), ...extra } });
+};
 
 export const getOrder = (h: OrdersHarness, b: Buyer, id: string) => h.app.call("GET", `/api/v1/orders/${id}`, { cookie: b.cookie });
 

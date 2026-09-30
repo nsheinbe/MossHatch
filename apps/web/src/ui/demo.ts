@@ -11,7 +11,8 @@ const WORD = "moonfern";
 export function useArrivalDemo(inputRef: RefObject<HTMLInputElement | null>) {
   useEffect(() => {
     const st = useUi.getState;
-    if (st().demo !== "idle" || st().calm) return;
+    // The demo is for first visits. A return from Checkout has its own hatch to run.
+    if (st().demo !== "idle" || st().calm || location.pathname === "/checkout/return") return;
     let cancelled = false;
     const timers: number[] = [];
     const at = (ms: number, fn: () => void) => { timers.push(window.setTimeout(() => { if (!cancelled) fn(); }, ms)); };

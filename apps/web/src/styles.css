@@ -150,3 +150,8 @@ details summary { cursor: pointer; min-height: 32px; }
 
 .search-note { margin: 0; text-align: center; font-size: 0.85rem; color: rgba(241,234,216,.85); text-shadow: 0 1px 8px var(--ink); }
 .search-note a { color: var(--lantern); }
+
+.text-input { display: block; width: 100%; min-height: 48px; padding: 0 16px; margin-top: 4px; border-radius: 24px; border: 1px solid rgba(241,234,216,.4); background: rgba(11,18,33,.66); color: var(--shell); }
+.rule { border: 0; border-top: 1px solid var(--glass-border); margin: 18px 0; }
+.codes { list-style: none; padding: 0; margin: 10px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.codes code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; }

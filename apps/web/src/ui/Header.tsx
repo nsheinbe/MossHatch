@@ -18,7 +18,7 @@ export function WordmarkMark() {
 }
 
 export function Header() {
-  const { view, calm, sound: on, set } = useUi();
+  const { view, calm, sound: on, apiReady, account, set } = useUi();
   return (
     <header className="site-header">
       <span className="wordmark"><WordmarkMark /><span>Mosshatch</span></span>
@@ -27,6 +27,11 @@ export function Header() {
         <button type="button" aria-current={view === "grove" ? "page" : undefined} onClick={() => set({ view: "grove" })}>My grove</button>
       </nav>
       <div className="tools">
+        {apiReady && (
+          <button type="button" onClick={() => set({ accountOpen: true })} aria-haspopup="dialog">
+            <span className="label">{account ? "Account" : "Sign in"}</span>
+          </button>
+        )}
         <button type="button" aria-pressed={on} onClick={() => { const n = !on; sound.setEnabled(n); set({ sound: n }); }}>
           <span className="dot" aria-hidden="true" /><span className="label">Sound {on ? "on" : "off"}</span>
         </button>
