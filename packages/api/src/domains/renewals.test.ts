@@ -235,7 +235,8 @@ describe("ST-110: a renewal charged but failing upstream", () => {
 
   it("recovers on its own: when the registrar answers again the renewal completes, the page closes and nothing is refunded", async () => {
     const { h, dom } = await mandated("st110b");
-    const t0 = new Date(new Date((await termRow(h, dom.id)).charge_at).getTime() + 60_000);
+    const term = await termRow(h, dom.id);
+    const t0 = new Date(new Date(term.charge_at).getTime() + 60_000);
     at(h, t0);
     h.registrar.faults.set("renewDraft", { fqdn: dom.fqdn, times: 2 });
     await settle(h);
@@ -246,7 +247,8 @@ describe("ST-110: a renewal charged but failing upstream", () => {
     expect((await renewOrders(h, dom.id))[0].state).toBe("renewed");
     expect(h.stripe.created.refunds).toBe(0);
     expect(await alertRows(h, "renewal_upstream_failed")).toHaveLength(0);
-    expect((await termRow(h, dom.id)).state).toBe("renewed");
+    // The renewed term, not the newest one: a sync after the renewal correctly schedules next year's term.
+    expect((await h.app.db.owner.query("select state from renewal_terms where id = $1", [term.id])).rows[0].state).toBe("renewed");
   });
 
   it("refunds on request while unrenewed, at once, and cancels the upstream draft first", async () => {
