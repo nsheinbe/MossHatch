@@ -463,7 +463,7 @@ class Sequence {
           w.hooks.onLand?.();
           w.rig.shake(0.5);
           for (let i = 0; i < 10; i++) w._bursts.emit(_v3.set(c.pos.x, 0.05, c.pos.z), _v3b.set((Math.random() - 0.5) * 1.4, 0.4 + Math.random() * 0.6, (Math.random() - 0.5) * 1.4), DUST_COL, 20, 0.8, 0, 1.5);
-          c.heading = Math.PI; // face the camera
+          c.heading = 0.25; // face the camera
           w.rig.setView("detail", _v3.set(c.pos.x, c.pos.y, c.pos.z), 0);
         }
       }

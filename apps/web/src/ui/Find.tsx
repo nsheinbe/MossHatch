@@ -98,6 +98,7 @@ export function Find() {
           />
           <button type="button" className="link-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button>
         </div>
+        <p className="search-note">Your searches stay in this browser. <a href="/commitments.html">Our commitments</a></p>
       </form>
 
       {demo === "playing" && <p className="demo-note" role="status">Demo: watching “moonfern” hatch. Type to try your own.</p>}

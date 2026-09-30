@@ -147,3 +147,6 @@ details summary { cursor: pointer; min-height: 32px; }
   .alternatives { top: 150px; }
   .grove-bar { bottom: calc(72px + env(safe-area-inset-bottom)); }
 }
+
+.search-note { margin: 0; text-align: center; font-size: 0.85rem; color: rgba(241,234,216,.85); text-shadow: 0 1px 8px var(--ink); }
+.search-note a { color: var(--lantern); }

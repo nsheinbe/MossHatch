@@ -9,7 +9,7 @@ await p.goto("http://127.0.0.1:5173/");
 await p.waitForFunction(() => window.__mh);
 await p.evaluate(() => window.__mh.pause());
 await p.keyboard.press("Escape"); // cancels the demo
-await p.fill("#name-input", "emberwick");
+await p.fill("#name-input", process.env.NAME ?? "emberwick");
 await p.waitForTimeout(600);
 await p.evaluate(() => window.__mh.step(3));
 await p.screenshot({ path: `${prefix}-a-eggs.png` });

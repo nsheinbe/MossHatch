@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
+import { axe } from "./axe";
 
 const watch = (page: Page) => {
   const bad: string[] = [];
@@ -33,7 +33,7 @@ test("first paint shows real content before the scene loads", async ({ page }) =
   await page.route("**/assets/main-*.js", (r) => r.abort());
   await page.goto("/");
   await expect(page.locator("#boot-panel")).toBeVisible(); // script failure message from /boot.js
-  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 90)}`)).toEqual([]);
+  expect((await axe(page).analyze()).violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 90)}`)).toEqual([]);
   await expect(page.getByRole("heading", { name: "Every name hatches." })).toBeVisible();
   await expect(page.locator(".static-prices li, .static-find li").first()).toBeVisible();
 });
@@ -45,7 +45,7 @@ test("axe: Find view, results, and deal popover", async ({ page }) => {
   await page.fill("#name-input", "emberwick");
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
   await page.getByRole("button", { name: "The deal" }).click();
-  const r = await new AxeBuilder({ page }).analyze();
+  const r = await axe(page).analyze();
   expect(r.violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 80)}`)).toEqual([]);
 });
 
@@ -56,7 +56,7 @@ test("axe: My grove view", async ({ page }) => {
   await page.getByRole("button", { name: "My grove" }).click();
   await page.getByRole("button", { name: "Preview a sample grove" }).click();
   await expect(page.locator(".tag").first()).toBeVisible();
-  const r = await new AxeBuilder({ page }).analyze();
+  const r = await axe(page).analyze();
   expect(r.violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 80)}`)).toEqual([]);
 });
 
@@ -99,7 +99,7 @@ test("no WebGL2: in-brand fallback with a working plain search, CSP clean", asyn
   await page.fill("#fb-name", "moonfern");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("moonfern.com")).toBeVisible();
-  const r = await new AxeBuilder({ page }).analyze();
+  const r = await axe(page).analyze();
   expect(r.violations.map((v) => v.id)).toEqual([]);
   expect(bad).toEqual([]);
   await ctx.close();
@@ -115,4 +115,19 @@ test("persisted state is limited to calm, sound and rehideSeconds", async ({ pag
   expect(Object.keys(stored.state).sort()).toEqual(["calm", "rehideSeconds", "sound"]);
   expect(stored.state.calm).toBe(true);
   expect(await page.evaluate(() => Object.keys(localStorage).length)).toBeLessThanOrEqual(1);
+});
+
+test("C-53 canary: searching sends nothing anywhere", async ({ page }) => {
+  const reqs: string[] = [];
+  page.on("request", (r) => reqs.push(r.method() + " " + new URL(r.url()).pathname));
+  await page.goto("/");
+  await page.waitForSelector("html[data-booted='1']");
+  await cancelDemo(page);
+  await page.waitForTimeout(500);
+  const before = reqs.length;
+  await page.fill("#name-input", "secretcanaryname");
+  await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
+  const after = reqs.slice(before);
+  expect(after.filter((r) => !r.startsWith("GET ") || /canary/i.test(r))).toEqual([]);
+  await expect(page.getByRole("link", { name: "commitments" })).toBeVisible();
 });

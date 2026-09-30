@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
+import { axe } from "./axe";
 import { deriveTraits } from "../packages/core/src/index.ts";
 
 declare global { interface Window { __mh: { world: { stats(): { calls: number; creatures: number; dpr: number } }; pause(): void; step(s: number, dt?: number): void } } }
@@ -26,13 +26,13 @@ test("hatch flow: sheet, sequence, card; axe clean at each step; grove receives 
   await page.locator("button.chip").first().click();
   const sheet = page.getByRole("region", { name: /^Hatch / });
   await expect(sheet).toBeVisible();
-  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => v.id)).toEqual([]);
+  expect((await axe(page).analyze()).violations.map((v) => v.id)).toEqual([]);
   await sheet.getByRole("button", { name: "Hatch", exact: true }).click();
   for (const s of [2.5, 0.8, 1.5, 3]) await page.evaluate((x) => window.__mh.step(x), s);
   const card = page.getByRole("region", { name: /has hatched$/ });
   await expect(card).toBeVisible({ timeout: 20000 });
   await expect(card.getByRole("img")).toHaveAttribute("src", /^data:image\/png/);
-  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => v.id)).toEqual([]);
+  expect((await axe(page).analyze()).violations.map((v) => v.id)).toEqual([]);
   await card.getByRole("button", { name: "Hatch another" }).click();
   await expect(card).toBeHidden();
   expect(await page.evaluate(() => window.__mh.world.stats().creatures)).toBeGreaterThanOrEqual(1);
