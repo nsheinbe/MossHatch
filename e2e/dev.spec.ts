@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { axe } from "./axe";
+import path from "node:path";
 import { deriveTraits } from "../packages/core/src/index.ts";
+
+const CORE = path.resolve(__dirname, "../packages/core/src/index.ts");
 
 declare global { interface Window { __mh: { world: { stats(): { calls: number; creatures: number; dpr: number } }; pause(): void; step(s: number, dt?: number): void } } }
 
@@ -8,10 +11,10 @@ const DOMAINS = ["moonfern.com", "lanternwick.ai", "tinkerdeep.dev", "marrowbroo
 
 test("golden: the same domain hatches the same creature in the browser and in Node", async ({ page }) => {
   await page.goto("/");
-  const inBrowser = await page.evaluate(async (ds) => {
-    const m = await import(/* @vite-ignore */ "/@fs" + "/home/user/MossHatch/packages/core/src/index.ts");
+  const inBrowser = await page.evaluate(async ({ ds, core }) => {
+    const m = await import(/* @vite-ignore */ "/@fs" + core);
     return ds.map((d: string) => m.deriveTraits(d));
-  }, DOMAINS);
+  }, { ds: DOMAINS, core: CORE });
   expect(inBrowser).toEqual(DOMAINS.map((d) => deriveTraits(d)));
 });
 
