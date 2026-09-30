@@ -12,6 +12,9 @@ import { mintToken } from "../util/token.ts";
 
 let app: TestApp;
 const router = new Router().add(tickRoute, healthTicksRoute);
+// Wall-clock bounds assume an unloaded database. The parallel suite shares one PostgreSQL with ~100 files, so there the bound
+// is only a ceiling against a collapse; CI enforces the real bound in its own sequential step with MH_PERF=1.
+const WALL_BOUND_MS = process.env.MH_PERF === "1" ? 30_000 : 100_000;
 const runs: { kind: string; at: number }[] = [];
 let handlers: Record<string, (job: JobRow) => Promise<void>> = {};
 
@@ -149,7 +152,7 @@ describe("ST-105 lease fence", () => {
     expect(started).toBeGreaterThan(100);
     expect(sim).toBeLessThanOrEqual(50_000 + 1000);                               // the tick stopped at its budget
     expect((await q("select state from jobs where kind = 'order.fulfil'"))[0].state).toBe("done");
-    expect(performance.now() - t0).toBeLessThan(30_000);
+    expect(performance.now() - t0).toBeLessThan(WALL_BOUND_MS);
   }, 120_000);
 
   it("ST-105: an order.fulfil enqueued while domain.sync jobs fill the tick starts on the next wave, not after the backlog", async () => {
@@ -187,7 +190,7 @@ describe("ST-105 lease fence", () => {
     while (total < 10000) { const r = await runTick(app.ctx, { budgetMs: 20_000, concurrency: 50 }); total += r.done; if (r.claimed === 0) break; }
     const ms = performance.now() - t0;
     expect(total).toBe(10000);
-    expect(ms).toBeLessThan(30_000);
+    expect(ms).toBeLessThan(WALL_BOUND_MS);
     console.info(`ST-105 drain of 10,000 jobs: ${Math.round(ms)} ms`);
   }, 120_000);
 });

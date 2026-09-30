@@ -29,6 +29,9 @@ jobs:
       - run: npm audit --audit-level=low
       - run: npm run typecheck
       - run: npx vitest run
+      - run: npx vitest run packages/api/src/ops/engine.test.ts   # ST-105 wall-clock bounds, alone on an unloaded database
+        env:
+          MH_PERF: "1"
       - run: node scripts/check-st-ids.mjs
       - run: npm run build   # includes the bundle scan and size budgets
       - run: npm run build:cards   # hatchkind.com (separate Vercel project): secret scan, no-script, links and budgets
