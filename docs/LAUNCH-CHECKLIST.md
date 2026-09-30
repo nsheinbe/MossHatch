@@ -28,7 +28,7 @@ The order agreed on 2026-09-30 (D-058). Each gate lists who owns it and the evid
 - [ ] Openprovider written answers: terms precedence, 4% annual rise, expired-name parking opt-out, USD funding, what counts as an operation
 
 ## Stage 5: entity (you)
-Decided 2026-09-30: Mosshatch operates under your existing parent LLC.
+Decided 2026-09-30: Mosshatch operates under your parent LLC, to be filed in January 2027 (or the last two weeks of December 2026) so 2027 is its first California franchise-tax year; confirm dates with an accountant. Until then: waitlist-only site, owner dogfooding in your own name, audit and counsel review. Accounts opened before then move to the LLC once it exists.
 - [ ] DBA "Mosshatch" filed for the parent LLC (LA County); confirm local registration and tax points with an accountant
 - [ ] Live Stripe and Openprovider accounts in the parent LLC's name; separate bank account or books for Mosshatch
 - [ ] Insurance (general and cyber liability) covering the parent LLC
