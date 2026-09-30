@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "sample": true,
+  "note": "Sample cards for local builds and tests. Every name uses the reserved .example top-level domain (RFC 2606). A production build refuses to use this file.",
+  "cards": [
+    { "slug": "ember-fox.example", "species": "Ember Fox", "family": "fox", "rarity": "common", "traits": ["common coat", "long ears", "short tail", "3 spots"], "hatched_on": "2026-09-30", "image": null, "indexable": true, "published_at": "2026-09-30T12:00:00.000Z" },
+    { "slug": "lantern-moth.example", "species": "Lantern Moth", "family": "moth", "rarity": "uncommon", "traits": ["uncommon coat", "short ears", "long tail", "1 spot"], "hatched_on": "2026-09-29", "image": null, "indexable": true, "published_at": "2026-09-29T12:00:00.000Z" },
+    { "slug": "tinkerbeetle.example", "species": "Tinkerbeetle", "family": "beetle", "rarity": "rare", "traits": ["rare coat", "short ears", "short tail", "5 spots"], "hatched_on": "2026-09-28", "image": null, "indexable": true, "published_at": "2026-09-28T12:00:00.000Z" },
+    { "slug": "clockwork-koi.example", "species": "Clockwork Koi", "family": "koi", "rarity": "common", "traits": ["common coat", "long ears", "long tail", "0 spots"], "hatched_on": "2026-09-27", "image": null, "indexable": true, "published_at": "2026-09-27T12:00:00.000Z" },
+    { "slug": "quiet-share.example", "species": "Ember Fox", "family": "fox", "rarity": "common", "traits": ["common coat", "short ears", "long tail", "2 spots"], "hatched_on": "2026-09-26", "image": null, "indexable": false, "published_at": "2026-09-26T12:00:00.000Z" }
+  ]
+}

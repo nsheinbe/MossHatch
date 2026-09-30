@@ -34,9 +34,12 @@ export async function makeOwner(h: DomainsHarness, email: string, o: Parameters<
 }
 
 export interface Bought { id: string; fqdn: string; orderId: string }
-/** Buy and register a name through the real order flow. The domain row exists when this returns. */
+/**
+ * Buy and register a name through the real order flow. The domain row exists when this returns. By default the buyer ticks the
+ * auto-renew box at checkout (the card is saved for off-session renewals, C-31); pass `autoRenew: false` for a one-time card.
+ */
 export async function buyDomain(h: DomainsHarness, who: Buyer, fqdn: string, o: Parameters<typeof buyAndPay>[3] = {}): Promise<Bought> {
-  const r = await buyAndPay(h, who, fqdn, o);
+  const r = await buyAndPay(h, who, fqdn, { autoRenew: true, ...o });
   await deliverAll(h);
   await hygiene(h);
   await drain(h);

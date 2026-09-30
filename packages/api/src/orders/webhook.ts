@@ -111,6 +111,20 @@ async function applyEvent(req: HandlerReq, ev: StripeEvent, order: OrderRow | nu
     return false;
   }
 
+  // Renew now through Checkout (no saved card): the renewal module moves the order once the payment succeeded.
+  if (ev.type === "checkout.session.completed" && o.metadata?.purpose === "renewal" && order?.kind === "renew") {
+    if (o.payment_status !== "paid" || typeof o.payment_intent !== "string") return false;
+    const { renewalCheckoutPaid } = await import("../domains/renewals.ts");
+    await renewalCheckoutPaid(ctx, order.id, String(o.id), o.payment_intent);
+    return true;
+  }
+  // The card network updated a saved card (C-38): the renewal module records it and, for a new brand, asks for a new mandate.
+  if (ev.type === "payment_method.automatically_updated") {
+    const { cardAutomaticallyUpdated } = await import("../domains/cards.ts");
+    await cardAutomaticallyUpdated(ctx, ev);
+    return false;
+  }
+
   if (FULFIL_TYPES.has(ev.type)) {
     if (!order) return false;
     await tx(ctx.cron, (c) => enqueue(c, { kind: "order.fulfil", payload: { order_id: order.id }, userId: order.userId, priority: 0 }));

@@ -66,7 +66,15 @@ export interface CreateSessionInput {
   lineItem: { name: string; unitAmount: number; currency: "usd" };
   captureMethod: "manual" | "automatic";
   requestThreeDSecure: "any" | "automatic";
+  /**
+   * `off_session` only when the person ticked the auto-renew box at checkout (C-31): Stripe then attaches the card to the customer so a
+   * later renewal can be charged without them. Absent means the card is used once and never charged off-session.
+   */
+  setupFutureUsage?: "off_session";
 }
+
+/** The parts of a PaymentMethod Mosshatch reads: never a number, only the brand for the new-agreement rule (C-38). */
+export interface PaymentMethodInfo { id: string; customer: string | null; brand: string | null }
 
 export interface Refund { id: string; status: "succeeded" | "pending" | "failed" | "canceled"; amount: number; payment_intent: string; currency: string }
 
@@ -76,7 +84,8 @@ export interface StripeEvent {
   livemode: boolean;
   created: number;
   api_version?: string;
-  data: { object: Record<string, any> };
+  /** `previous_attributes` is present on `*.updated` events such as `payment_method.automatically_updated`. */
+  data: { object: Record<string, any>; previous_attributes?: Record<string, any> };
 }
 
 export interface CreateOffSessionInput { customer: string; paymentMethod: string; amount: number; currency: "usd"; metadata: Record<string, string> }
@@ -88,6 +97,9 @@ export interface StripePort {
   retrieveSession(id: string): Promise<CheckoutSession>;
   expireSession(id: string, idem: string): Promise<CheckoutSession>;
   retrievePaymentIntent(id: string): Promise<PaymentIntent>;
+  /** Detach a saved card from its customer (C-31: the order ended without a name, or the person asked). Idempotent on our side. */
+  detachPaymentMethod(id: string, idem: string): Promise<PaymentMethodInfo>;
+  retrievePaymentMethod(id: string): Promise<PaymentMethodInfo>;
   /** Captures the full amount_capturable (never a partial amount). */
   capturePaymentIntent(id: string, idem: string): Promise<PaymentIntent>;
   cancelPaymentIntent(id: string, idem: string): Promise<PaymentIntent>;

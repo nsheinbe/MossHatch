@@ -174,7 +174,15 @@ export async function advance(m: M, orderId: string, opts: { maxSteps?: number }
 
 const due = (m: M, o: OrderRow) => !o.nextCheckAt || o.nextCheckAt <= now(m);
 
+// ---- Kind drivers (Phase 5): an order kind with its own upstream step (transfer-in) drives the states it owns; null leaves a state to the machine.
+export type OrderStep = Step;
+export type KindDriver = (m: M, o: OrderRow) => Promise<Step | null>;
+const kindDrivers = new Map<string, KindDriver>();
+export function registerKindDriver(kind: OrderRow["kind"], driver: KindDriver): void { kindDrivers.set(kind, driver); }
+
 async function stepOnce(m: M, o: OrderRow): Promise<Step> {
+  // A transfer-in must never fall through to the registration path: without its driver installed it waits.
+  if (o.kind === "transfer_in") { const drv = kindDrivers.get(o.kind); if (!drv) return "wait"; const s = await drv(m, o); if (s) return s; }
   switch (o.state) {
     case "checkout_open": case "payment_failed": return reconcilePayment(m, o);
     case "review_hold": return reviewHold(m, o);
@@ -249,6 +257,8 @@ async function evaluateAuthorization(m: M, o: OrderRow, pi: PaymentIntent): Prom
   const patch = {
     stripe_payment_intent_id: pi.id, authorized_at: at, capture_before: captureBefore, amount_capturable_minor: amount, tax_minor: amount - o.subtotalMinor,
     payment_method_ref: pi.payment_method, stripe_customer_id: pi.customer ?? o.stripeCustomerId, next_check_at: null, check_count: 0,
+    // Only a Checkout that carried setup_future_usage=off_session leaves a card that may be charged later (C-31).
+    card_reusable: o.saveCard && !!pi.customer && !!pi.payment_method,
   };
   const result = await ltx(m, async (c) => {
     await c.query("savepoint authorize");
@@ -487,6 +497,11 @@ async function createDomainRow(m: M, c: PoolClient, o: OrderRow, i: { registrarR
   if (!id) { await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "domain_row_conflict" }); return; }
   await c.query("update orders set domain_id = $2 where id = $1", [o.id, id]);
   await c.query("update registrar_profiles set domain_id = $2 where order_id = $1", [o.id, id]);
+  // C-16: the registrant email must be verified within 15 days of registration. The clock starts in the same transaction as the domain row
+  // (the domain-management module owns the table, the code and the day-10 reminder and day-15 hold; this is its `startRegistrantVerification`).
+  await c.query(
+    `insert into registrant_verifications (user_id, domain_id, reason, started_at, deadline_at) values ($1,$2,'registration',$3,$4)
+     on conflict (domain_id) where state in ('pending','suspended') do nothing`, [o.userId, id, i.at, new Date(i.at.getTime() + 15 * 86_400_000)]);
 }
 
 async function pendingCheck(m: M, o: OrderRow, op: Op): Promise<Step> {

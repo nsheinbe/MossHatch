@@ -40,7 +40,7 @@ export const RPC_COMMANDS = {
   capabilities: cmd(z.tuple([]), (p) => p.capabilities()),
   health: cmd(z.tuple([]), (p) => p.health()),
   checkAvailability: cmd(z.tuple([fqdn]).rest(z.object({ noCache: z.boolean().optional() }).strict()), (p, a) => p.checkAvailability(a[0], a[1] ?? {})),
-  quote: cmd(z.tuple([fqdn, years]).rest(z.enum(["register", "renew"])), (p, a) => p.quote(a[0], a[1], a[2])),
+  quote: cmd(z.tuple([fqdn, years]).rest(z.enum(["register", "renew", "transfer"])), (p, a) => p.quote(a[0], a[1], a[2])),
   register: cmd(z.tuple([z.object({ fqdn, years, regUsername: z.string().min(3).max(20), regPassword: z.string().min(10).max(20), registrant }).strict()]), (p, a) => p.register(a[0])),
   renew: cmd(z.tuple([fqdn, years, z.number().int().min(2000).max(2200)]), (p, a) => p.renew(a[0], a[1], a[2])),
   getDomain: cmd(z.tuple([fqdn]), (p, a) => p.getDomain(a[0])),
@@ -65,6 +65,11 @@ export const RPC_COMMANDS = {
   listDomains: cmd(z.tuple([]).rest(z.object({ cursor: z.string().max(100).optional(), limit: z.number().int().min(1).max(100).optional() }).strict()), (p, a) => p.listDomains(a[0] ?? {})),
   getDeletedDomains: cmd(z.tuple([]), (p) => p.getDeletedDomains()),
   restore: cmd(z.tuple([fqdn]), (p, a) => p.restore(a[0])),
+  // Phase 5 transfer-in. The authorization code crosses this hop once, inside the signed body, and is never logged or echoed.
+  checkTransferIn: cmd(z.tuple([fqdn]), (p, a) => p.checkTransferIn(a[0])),
+  startTransferIn: cmd(z.tuple([z.object({ fqdn, years, authCode: z.string().regex(/^[\x21-\x7e]{6,64}$/), regUsername: z.string().min(3).max(20), regPassword: z.string().min(10).max(20), registrant }).strict()]), (p, a) => p.startTransferIn(a[0])),
+  getTransferInStatus: cmd(z.tuple([fqdn]), (p, a) => p.getTransferInStatus(a[0])),
+  cancelTransferIn: cmd(z.tuple([fqdn]), (p, a) => p.cancelTransferIn(a[0])),
 } satisfies Record<string, Cmd>;
 export type RpcCommandName = keyof typeof RPC_COMMANDS;
 

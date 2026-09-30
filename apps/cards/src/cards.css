@@ -1,0 +1,31 @@
+/* hatchkind.com. Brand pairs from PLAN 4.10: Shell on Night 14.31:1, Lantern on Night 9.61:1. */
+@font-face { font-family: "Young Serif"; src: url(/fonts/young-serif-latin-400-normal.woff2) format("woff2"); font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; src: url(/fonts/atkinson-hyperlegible-latin-400-normal.woff2) format("woff2"); font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; font-weight: 700; src: url(/fonts/atkinson-hyperlegible-latin-700-normal.woff2) format("woff2"); font-display: swap; }
+:root { --night: #131a33; --shell: #f1ead8; --lantern: #ffb257; --panel: #1c2547; --line: #2c365e; }
+body { margin: 0; background: var(--night); color: var(--shell); font: 400 1.05rem/1.55 "Atkinson Hyperlegible", system-ui, sans-serif; }
+h1, h2, .wordmark { font-family: "Young Serif", Georgia, serif; font-weight: 400; line-height: 1.2; }
+a { color: var(--lantern); }
+a:focus-visible { outline: 3px solid var(--lantern); outline-offset: 2px; box-shadow: 0 0 0 6px var(--night); }
+header.site, main, footer.site { max-width: 60rem; margin: 0 auto; padding: 16px 20px; }
+header.site { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
+header.site nav { display: flex; gap: 16px; }
+header.site a { display: inline-block; min-height: 44px; line-height: 44px; }
+.wordmark { font-size: 1.4rem; color: var(--shell); text-decoration: none; }
+footer.site { border-top: 1px solid var(--line); font-size: 0.95rem; }
+.skip { position: absolute; left: -9999px; top: 8px; background: var(--lantern); color: var(--night); padding: 8px 12px; border-radius: 6px; }
+.skip:focus { left: 8px; }
+.sample { border: 2px solid var(--lantern); border-radius: 8px; padding: 10px 14px; background: var(--panel); }
+.lede { max-width: 40rem; }
+.gallery { list-style: none; padding: 0; display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.gallery a { display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 10px; background: var(--panel); color: var(--shell); text-decoration: none; min-height: 44px; }
+.gallery a:hover .fqdn { text-decoration: underline; }
+.gallery img, .portrait { width: 100%; height: auto; border-radius: 8px; background: var(--night); }
+.fqdn { font-weight: 700; overflow-wrap: anywhere; }
+.species { color: var(--shell); }
+.card { display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { .card { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; } }
+.card h1 { margin-top: 0; }
+.traits { padding-left: 1.2rem; }
+.note { max-width: 40rem; }
+.report { display: inline-block; min-height: 44px; line-height: 44px; }

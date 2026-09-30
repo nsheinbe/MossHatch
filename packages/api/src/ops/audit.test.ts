@@ -168,9 +168,9 @@ describe("kms reconcile", () => {
     const t = app.clock.now().getTime();
     const ev = (id: string, nonce: string | null, minsAgo: number) => ({ eventId: id, at: new Date(t - minsAgo * 60_000), keyId: "pii", nonce });
     app.clock.set(new Date(t - 35 * 60_000));
-    await append(u, "secret.reveal", { decrypt_nonce: "n-ok" });
+    await append(u, "pii.decrypt", { decrypt_nonce: "n-ok" });
     ct.events = [ev("e1", "n-ok", 40), ev("e2", "n-rogue", 30), ev("e3", null, 25), ev("e-late", "n-late", 5)];   // e-late is inside the delivery lag
-    await append(u, "secret.reveal", { decrypt_nonce: "n-missing-event" });
+    await append(u, "pii.decrypt", { decrypt_nonce: "n-missing-event" });
     app.clock.set(new Date(t));
     const r = await kmsReconcile(app.ctx, ct);
     expect(r.events).toBe(3);

@@ -100,6 +100,11 @@ describe("renewal notices at E-43, E-32, C-8 and E+1 are sent from the jobs tabl
     await goto(h, new Date(E.getTime() + days(7)));
     expect(mailOf(h, "expiry_lastchance")).toHaveLength(0);
     expect(mailOf(h, "renewal_notice").filter((m) => m.subject.includes("expired"))).toHaveLength(0);
-    expect(mailOf(h, "receipt").length).toBeGreaterThanOrEqual(2);  // the registration and the renewal
+    expect(mailOf(h, "receipt").length).toBeGreaterThanOrEqual(1);           // the registration
+    // C-33, C-34: the renewal receipt keeps the authorisation terms (ceiling) and the one-click turn-off link.
+    const rr = mailOf(h, "renewal_receipt");
+    expect(rr).toHaveLength(1);
+    expect(rr[0]!.text).toMatch(/up to USD \d+\.\d\d for one year/);
+    expect(rr[0]!.text).toMatch(/\/api\/v1\/email-actions\/[A-Za-z0-9_-]{43}/);
   }, 120_000);
 });

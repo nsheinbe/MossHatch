@@ -13,3 +13,5 @@ export { runPosture } from "./posture.ts";
 export { runReconcile } from "./reconcile.ts";
 export { runBalanceCheck } from "./balance.ts";
 export { mandateSignSpec, registerMandateSpec, enableAutoRenew, disableAutoRenew } from "./mandate.ts";
+export { cardAutomaticallyUpdated, cardDetachSweep } from "./cards.ts";
+export { startRenewalCheckout, renewalCheckoutPaid, preChargeNoticeGiven } from "./renewals.ts";

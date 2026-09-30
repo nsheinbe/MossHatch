@@ -1,7 +1,7 @@
 import Stripe from "stripe";
 import { assertModeConsistency, type ModeInputs } from "../config/modeguard.ts";
 import { verifySignature, DEFAULT_TOLERANCE_SEC } from "./signature.ts";
-import { StripeError, type CheckoutSession, type CreateOffSessionInput, type CreateSessionInput, type PaymentIntent, type Refund, type StripeEvent, type StripePort } from "./port.ts";
+import { StripeError, type CheckoutSession, type CreateOffSessionInput, type CreateSessionInput, type PaymentIntent, type PaymentMethodInfo, type Refund, type StripeEvent, type StripePort } from "./port.ts";
 import { toStripeSessionParams } from "./params.ts";
 
 /**
@@ -69,6 +69,10 @@ export class StripeReal implements StripePort {
       payment_method_types: ["card"], metadata: i.metadata,
     }, { idempotencyKey: idem })));
   }
+  async detachPaymentMethod(id: string, idem: string) {
+    return mapPm(await this.call(() => this.s.paymentMethods.detach(id, {}, { idempotencyKey: idem })));
+  }
+  async retrievePaymentMethod(id: string) { return mapPm(await this.call(() => this.s.paymentMethods.retrieve(id))); }
   async createRefund(i: { paymentIntent: string; amount?: number; reason?: string; metadata?: Record<string, string> }, idem: string): Promise<Refund> {
     const r = await this.call(() => this.s.refunds.create({ payment_intent: i.paymentIntent, ...(i.amount !== undefined ? { amount: i.amount } : {}), ...(i.reason ? { metadata: { reason: i.reason, ...(i.metadata ?? {}) } } : { metadata: i.metadata ?? {} }) }, { idempotencyKey: idem }));
     return { id: r.id, status: r.status as Refund["status"], amount: r.amount, payment_intent: typeof r.payment_intent === "string" ? r.payment_intent : (r.payment_intent as any)?.id, currency: r.currency };
@@ -88,6 +92,10 @@ function mapSession(s: any): CheckoutSession {
     customer: typeof s.customer === "string" ? s.customer : s.customer?.id ?? null, client_reference_id: s.client_reference_id ?? null, metadata: s.metadata ?? {}, expires_at: s.expires_at,
     livemode: s.livemode, amount_subtotal: s.amount_subtotal ?? 0, amount_total: s.amount_total ?? 0, amount_tax: s.total_details?.amount_tax ?? 0, currency: s.currency ?? "usd",
   };
+}
+
+function mapPm(p: any): PaymentMethodInfo {
+  return { id: p.id, customer: typeof p.customer === "string" ? p.customer : p.customer?.id ?? null, brand: p.card?.brand ?? null };
 }
 
 function mapPi(p: any): PaymentIntent {

@@ -14,7 +14,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** What the owner sees. Money is decimal strings; nothing here is a token, a URL or a payment detail. */
 export function orderView(o: OrderRow, paid?: { amountMinor: bigint; taxMinor: bigint } | null) {
   return {
-    id: o.id, state: o.state, fqdn: o.fqdn, years: o.years, currency: "usd",
+    id: o.id, kind: o.kind, state: o.state, fqdn: o.fqdn, years: o.years, currency: "usd",
     subtotal_minor: o.subtotalMinor.toString(), tax_ceiling_minor: o.taxCeilingMinor.toString(), total_minor: o.totalMinor.toString(),
     charged_minor: paid ? paid.amountMinor.toString() : null, tax_minor: paid ? paid.taxMinor.toString() : null,
     message: o.state === "voided" || o.state === "canceling" ? voidMessage(o.voidReason) : null,
@@ -45,8 +45,8 @@ export function registerOrderRoutes(router: Router): Router {
         const key = r.request.headers.get("idempotency-key");
         if (!key) throw new HttpError(400, "idempotency_key_required");
         const b = (r.body && typeof r.body === "object" && !Array.isArray(r.body) ? r.body : {}) as Record<string, unknown>;
-        // Only `fqdn` and `years` are read. A price, total or currency in the body is ignored (ST-97).
-        const res = await createOrder(r.ctx, { userId: uid(r), fqdn: b.fqdn, years: b.years, idempotencyKey: key, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily, accept: b.accept });
+        // Only `fqdn`, `years`, the acceptance hashes and the auto-renew box are read. A price, total or currency in the body is ignored (ST-97).
+        const res = await createOrder(r.ctx, { userId: uid(r), fqdn: b.fqdn, years: b.years, idempotencyKey: key, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily, accept: b.accept, autoRenew: b.auto_renew });
         return json({ order_id: res.order.id, checkout_url: res.checkoutUrl }, res.replay ? 200 : 201);
       },
     },

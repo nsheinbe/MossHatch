@@ -4,6 +4,7 @@ import {
   type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult, type RegistrarCapabilities, type RegistrarPort,
   type TransferAway, type TransferAwayStatus, type UpstreamOrder,
+  type TransferInBlock, type TransferInCheck, type TransferInFailure, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
 import { randomAuthCode } from "../authcode.ts";
@@ -188,14 +189,14 @@ export class OpenSrsAdapter implements RegistrarPort {
     return { fqdn: d, kind, source: this.cfg.mode === "live" ? "live" : "sample", checkedAt: this.clock.now() };
   }
 
-  async quote(fqdn: string, years: number, kind: "register" | "renew" = "register"): Promise<Quote> {
+  async quote(fqdn: string, years: number, kind: "register" | "renew" | "transfer" = "register"): Promise<Quote> {
     const d = this.norm(fqdn); const tld = this.tldOf(d); this.checkTerm(tld, years);
-    const price = async (t: "new" | "renewal") => {
+    const price = async (t: "new" | "renewal" | "transfer") => {
       const r = await this.call("GET_PRICE", "DOMAIN", { domain: d, reg_type: t, period: years });
       // UNVERIFIED: whether `price` is the total for `period` or per year. The dossier says only that it includes the ICANN fee.
       return { minor: parseMinor(str(r.attrs.price)), premium: flag(r.attrs.is_registry_premium) };
     };
-    const first = await price(kind === "renew" ? "renewal" : "new");
+    const first = await price(kind === "renew" ? "renewal" : kind === "transfer" ? "transfer" : "new");
     const renewal = kind === "renew" ? first : await price("renewal");
     return { fqdn: d, tld, years, wholesale: this.money(first.minor), renewalWholesale: this.money(renewal.minor), isRegistryPremium: first.premium || renewal.premium, quotedAt: this.clock.now() };
   }
@@ -473,6 +474,74 @@ export class OpenSrsAdapter implements RegistrarPort {
     // UNVERIFIED that auto_renew=0 with let_expire=0 is a valid pair; the dossier names both fields under expire_action only.
     await this.call("MODIFY", "DOMAIN", { domain: d, data: "expire_action", auto_renew: yn(enabled), let_expire: 0 });
   }
+
+  // ---- transfer-in (Phase 5) ---------------------------------------------------------------------------------------
+  // Horizon cannot run a transfer ("You cannot transfer domains in Horizon", KB 201000063316): this code has never met a real response.
+  // Commands and the attributes `reg_type=transfer`, `auth_info`, `check_status` are in the dossier (S15, S20); every RESPONSE attribute
+  // name below (transferrable, reason, status, order_id, request_date) is UNVERIFIED and must be confirmed in the live rehearsal.
+
+  /** UNVERIFIED mapping of CHECK_TRANSFER `reason` text to our codes: only the numbers and phrases the dossier quotes are relied on. */
+  private blockOf(reason: string): TransferInBlock {
+    const r = reason.toLowerCase();
+    if (/60 days/.test(r)) return /transfer/.test(r) ? "recently_transferred" : "too_new";
+    if (/server ?transfer ?prohibited|registry lock/.test(r)) return "registry_lock";
+    if (/lock|prohibit/.test(r)) return "locked_at_losing";
+    if (/not (yet )?registered|available/.test(r)) return "not_registered";
+    if (/redemption/.test(r)) return "redemption";
+    if (/pending ?delete/.test(r)) return "pending_delete";
+    if (/pending|in progress|already/.test(r)) return "pending_transfer";
+    return "other";
+  }
+  async checkTransferIn(fqdn: string): Promise<TransferInCheck> {
+    const d = this.norm(fqdn);
+    const r = await this.call("CHECK_TRANSFER", "DOMAIN", { domain: d });
+    const ok = flag(r.attrs.transferrable);
+    const out: TransferInCheck = { fqdn: d, transferable: ok, registryStatuses: [] };
+    if (!ok) out.reason = this.blockOf(str(r.attrs.reason) ?? "");
+    // CHECK_TRANSFER says nothing about DNSSEC or dates; `dsPresent` stays undefined and the caller reads RDAP.
+    return out;
+  }
+  async startTransferIn(req: TransferInRequest): Promise<TransferInStart> {
+    const d = this.norm(req.fqdn); const tld = this.tldOf(d); this.checkSales(tld);
+    const need = tld === "ai" ? 2 : 1;
+    if (req.years !== need) throw rejected("invalid_period");
+    if (typeof req.authCode !== "string" || !/^[\x21-\x7e]{6,64}$/.test(req.authCode)) throw rejected("auth_code_required");
+    const q = await this.quote(d, req.years, "transfer");
+    if (q.isRegistryPremium) throw rejected("premium_refused"); // D-031 applies to transfers too
+    const attrs: OpsObject = {
+      domain: d, reg_type: "transfer", period: req.years, handle: "process", auto_renew: 0, f_lock_domain: 1,
+      reg_username: req.regUsername, reg_password: req.regPassword, contact_set: this.contactSet(req.registrant),
+      custom_nameservers: 0, custom_tech_contact: 0, auth_info: req.authCode,
+    };
+    if (!NO_PRIVACY_SERVICE.has(tld)) attrs.f_whois_privacy = 0;
+    const r = await this.call("SW_REGISTER", "DOMAIN", attrs);
+    const id = str(r.attrs.id) ?? str(r.attrs.order_id) ?? ""; // UNVERIFIED attribute name
+    // Where the order went is read back rather than guessed: with a valid auth_info the API reference says no owner email is sent (S15),
+    // a KB page says only the web interface takes the code with the order (KB 201000063138). A failed read reports the conservative state.
+    let st: TransferInState | null = null;
+    try { st = await this.getTransferInStatus(d); } catch { st = null; }
+    const status = st?.status === "pending_registry" ? "pending_registry" : "pending_owner";
+    return { status, registrarOrderId: st?.registrarOrderId ?? id, ownerEmailSent: status === "pending_owner" };
+  }
+  async getTransferInStatus(fqdn: string): Promise<TransferInState | null> {
+    const d = this.norm(fqdn);
+    const r = await this.call("CHECK_TRANSFER", "DOMAIN", { domain: d, check_status: 1 });
+    const raw = (str(r.attrs.status) ?? "undef").toLowerCase();
+    const map: Record<string, TransferInStatus> = { pending_owner: "pending_owner", pending_admin: "pending_owner", pending_registry: "pending_registry", completed: "completed", cancelled: "cancelled" };
+    const status = map[raw];
+    if (!status) return null;   // `undef`: the provider knows no transfer of ours for this name
+    const out: TransferInState = { fqdn: d, status };
+    const id = str(r.attrs.order_id) ?? str(r.attrs.id); if (id) out.registrarOrderId = id;
+    const req = parseDate(str(r.attrs.request_date)); if (req) out.requestedAt = req;
+    if (status === "cancelled") {
+      const why = (str(r.attrs.reason) ?? "").toLowerCase();
+      const failure: TransferInFailure = /auth/.test(why) ? "invalid_auth_code" : /declin|nack|reject|denied/.test(why) ? "nack" : /timed? ?out|expired|not approved/.test(why) ? "owner_timeout" : /lock|prohibit/.test(why) ? "locked_at_losing" : "unknown";
+      out.failure = failure;
+      if (failure === "nack") out.nackReason = "unstated";   // OpenSRS reports free text; the I.A.3.7 reason is not a documented field
+    }
+    return out;
+  }
+  async cancelTransferIn(fqdn: string): Promise<{ cancelled: boolean }> { return this.cancelTransfer(fqdn); }
 
   // ---- inventory and lifecycle -------------------------------------------------------------------------------------
   async listDomains(opts: { cursor?: string; limit?: number } = {}): Promise<{ rows: InventoryRow[]; next?: string }> {

@@ -21,7 +21,7 @@ export function rowToOrder(r: Record<string, any>): OrderRow {
     sessionId: r.stripe_checkout_session_id, paymentIntentId: r.stripe_payment_intent_id, attempt: r.attempt, captureBefore: date(r.capture_before), regUsername: r.reg_username,
     livemode: r.livemode, failureCode: r.failure_code, voidReason: r.void_reason, authorizedAt: date(r.authorized_at), amountCapturableMinor: big(r.amount_capturable_minor),
     registeredAt: date(r.registered_at), nextCheckAt: date(r.next_check_at), checkCount: r.check_count, cancelPiId: r.cancel_pi_id, captureFailedAt: date(r.capture_failed_at),
-    captureDeadline: date(r.capture_deadline), payLinkExpiresAt: date(r.pay_link_expires_at), stripeCustomerId: r.stripe_customer_id, paymentMethodRef: r.payment_method_ref,
+    captureDeadline: date(r.capture_deadline), payLinkExpiresAt: date(r.pay_link_expires_at), stripeCustomerId: r.stripe_customer_id, paymentMethodRef: r.payment_method_ref, saveCard: !!r.save_card, cardReusable: !!r.card_reusable,
     lateWatchUntil: date(r.late_watch_until), lateWatchState: r.late_watch_state, createdAt: new Date(r.created_at),
   };
 }

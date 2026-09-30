@@ -8,6 +8,7 @@ import { runReconcile } from "./reconcile.ts";
 import { runReleaseSweep } from "./release.ts";
 import { renewalChargeDeadLetter, renewalChargeJob, runRenewalScheduler } from "./renewals.ts";
 import { domainSyncJob } from "./sync.ts";
+import { cardDetachSweep } from "./cards.ts";
 
 const DAY = 86_400;
 type Def = JobDef & { everySec?: number };
@@ -24,13 +25,15 @@ export const DOMAIN_JOBS: Def[] = [
   { kind: "registrar.reconcile", priority: 1, maxRuntimeSec: 300, everySec: DAY, handler: async (ctx) => { await runReconcile(ctx); } },
   { kind: "registrar.posture", priority: 1, maxRuntimeSec: 300, everySec: DAY, handler: async (ctx) => { await runPosture(ctx); } },
   { kind: "registrar.balance", priority: 1, maxRuntimeSec: 60, everySec: 3600, handler: async (ctx) => { await runBalanceCheck(ctx); } },
+  { kind: "card.detach_sweep", priority: 1, maxRuntimeSec: 60, everySec: 3600, handler: async (ctx) => { await cardDetachSweep(ctx); } },
   { kind: "domain.release", priority: 1, maxRuntimeSec: 120, everySec: 3600, handler: async (ctx) => { await runReleaseSweep(ctx); } },
 ];
 
 /** Idempotent. Called by `registerDomainRoutes`. */
 export function registerDomainJobs(): void {
   for (const { everySec, ...def } of DOMAIN_JOBS) {
-    if (!getJobDef(def.kind)) registerJob(def);
+    // A process without payments (no Stripe key: a preview that sells nothing) has no orders services; the jobs then have nothing to do.
+    if (!getJobDef(def.kind)) registerJob({ ...def, handler: async (ctx, job) => { if (!(ctx.services as { orders?: unknown }).orders) return; await def.handler(ctx, job); } });
     if (everySec) registerRecurringJob({ kind: def.kind, everySec });
   }
   // A money job that dead-letters keeps retrying to E-1 (PLAN jobs table).

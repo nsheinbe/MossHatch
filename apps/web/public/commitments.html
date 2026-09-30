@@ -7,18 +7,31 @@
   <link rel="stylesheet" href="/commitments.css" />
 </head>
 <body>
-  <main>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site">
+<a class="wordmark" href="/">Mosshatch</a>
+<nav aria-label="Site"><a href="/fees.html">Fees</a> <a href="/commitments.html">Commitments</a> <a href="/legal/index.html">Legal</a></nav>
+</header>
+  <main id="main">
     <h1>Our commitments</h1>
-    <p>This is a preview. It sells nothing and holds no accounts.</p>
+    <p><strong>Draft. Counsel has not reviewed this wording.</strong></p>
     <h2>Your searches</h2>
     <ul>
-      <li>A name you type stays in your browser. This preview does not send it anywhere, store it, or share it.</li>
-      <li>The prices you see are sample prices from a mock registrar, not quotes.</li>
-      <li>A test in our build checks that typing a name makes no request to any server.</li>
+      <li>We never register a name because you searched for it, and we never hold a name you looked at.</li>
+      <li>We never sell or share what you search for.</li>
+      <li>We do not write the names you search to our database, logs or audit records. An availability answer is kept in memory for at most a minute, so a repeat search does not ask the registrar again. Rate limits count searches per address, not names.</li>
+      <li>A test in our build checks that a searched name reaches no table, no log line and no audit row.</li>
     </ul>
-    <h2>Before real sales</h2>
-    <p>Real availability checks will be sent to our registrar partner and the registry, which will see the name. We will say that here before it happens, and we will never register a name because you searched for it.</p>
-    <p><a href="/">Back to the grove</a></p>
+    <h2>Who sees a search</h2>
+    <p>In the preview, a name you type stays in your browser and the prices are sample prices from a mock registrar. Where sales are switched on, checking whether a name is free sends it to our registrar partner (planned: Tucows, through OpenSRS), which asks the registry. They see the name. Your internet provider's resolver can see lookups too. We cannot promise what they do with it; we can promise what we do.</p>
+    <h2>How we check availability</h2>
+    <p>We check a name only after you stop typing, and only through our registrar's own availability check. We do not send your searches to public WHOIS or RDAP services in bulk; their terms forbid high-volume automated use, and we respect that. Each visitor and each account has a limit per hour, and the whole service has a daily ceiling.</p>
+    <h2>Money</h2>
+    <p>You pay the price shown. Every fee, renewal date and refund rule is on <a href="/fees.html">our fees page</a>.</p>
+        <p><a href="/">Back to the grove</a></p>
   </main>
+<footer class="site">
+<p>Mosshatch is a domain reseller, not an ICANN-accredited registrar. Planned registrar of record: Tucows Domains Inc. (IANA ID 69). <a href="/fees.html#registrar">Registrar of record and complaints</a>.</p>
+</footer>
 </body>
 </html>

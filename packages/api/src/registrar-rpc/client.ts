@@ -54,6 +54,10 @@ export async function connectRegistrarRpc(o: { secret: string; send: RpcSend; cl
     listDomains: (opts) => call("listDomains", opts ? [opts] : []),
     getDeletedDomains: () => call("getDeletedDomains"),
     restore: (f) => call("restore", [f]),
+    checkTransferIn: (f) => call("checkTransferIn", [f]),
+    startTransferIn: (r) => call("startTransferIn", [r]),
+    getTransferInStatus: async (f) => (await call<Awaited<ReturnType<RegistrarPort["getTransferInStatus"]>> | undefined>("getTransferInStatus", [f])) ?? null,
+    cancelTransferIn: (f) => call("cancelTransferIn", [f]),
   };
   return port;
 }

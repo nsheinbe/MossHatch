@@ -48,7 +48,8 @@ export async function makeHarness(opts: { config?: Partial<Config>; taxBps?: num
   const svc = installOrders(app.ctx, { stripe, registrar, webhookSecrets: () => secrets, waitUntil: (p) => { waited.push(p); }, tick: () => undefined });
   registerOrderJobs();
   await app.db.owner.query(
-    "insert into document_versions (kind, version_hash, effective_at) values ('terms','termshash0123456789abcdef','2026-01-01'),('registration_agreement','agreementhash0123456789','2026-01-01')");
+    "insert into document_versions (kind, version_hash, effective_at) values ('terms','termshash0123456789abcdef','2026-01-01'),('registration_agreement','agreementhash0123456789','2026-01-01'),"
+    + "('tld_addendum_ai','aiaddendumhash0123456789','2026-01-01'),('tld_addendum_io','ioaddendumhash0123456789','2026-01-01')");
   const subtotal = (tld: string, years = 1) => (wholesale[tld]! + (wholesale[tld]! < 5000n ? 400n : wholesale[tld]! < 10000n ? 900n : 1000n)) * BigInt(years);
   const h: OrdersHarness = {
     app, stripe, registrar, svc, waited, secrets, subtotal,
@@ -70,7 +71,9 @@ export async function makeBuyer(h: OrdersHarness, email: string, o: { contact?: 
 export const postOrder = async (h: OrdersHarness, b: Buyer, body: unknown, key: string | null = "key-1", extra: Record<string, string> = {}) => {
   let sent = body;
   if (body && typeof body === "object" && !Array.isArray(body) && !("accept" in body)) {
-    const docs = (await h.app.db.owner.query("select kind, version_hash from document_versions where kind in ('terms','registration_agreement')")).rows;
+    // The TLD addenda (.ai, .io) are sent the way the web app sends them: accepted with the other documents when the name needs one.
+    const docs = (await h.app.db.owner.query("select kind, version_hash from document_versions where kind in ('terms','registration_agreement','tld_addendum_ai','tld_addendum_io','auto_renew_authorisation')")).rows
+      .filter((d) => d.kind !== "auto_renew_authorisation" || (body as Record<string, unknown>).auto_renew === true);
     sent = { ...body, accept: Object.fromEntries(docs.map((d) => [d.kind, d.version_hash])) };
   }
   return h.app.call("POST", "/api/v1/orders", { cookie: b.cookie, body: sent, headers: { ...(key ? { "idempotency-key": key } : {}), ...extra } });
@@ -107,8 +110,8 @@ export async function drain(h: OrdersHarness, rounds = 6) {
 }
 
 /** A buyer places an order and pays on Checkout (authorization only). */
-export async function buyAndPay(h: OrdersHarness, b: Buyer, fqdn: string, o: { key?: string; years?: number; pay?: Parameters<FakeStripe["payCheckout"]>[1] } = {}) {
-  const res = await postOrder(h, b, { fqdn, years: o.years ?? 1 }, o.key ?? `k-${fqdn}`);
+export async function buyAndPay(h: OrdersHarness, b: Buyer, fqdn: string, o: { key?: string; years?: number; pay?: Parameters<FakeStripe["payCheckout"]>[1]; autoRenew?: boolean } = {}) {
+  const res = await postOrder(h, b, { fqdn, years: o.years ?? 1, ...(o.autoRenew ? { auto_renew: true } : {}) }, o.key ?? `k-${fqdn}`);
   if (res.status >= 300) throw new Error(`order failed ${res.status} ${res.text}`);
   const id = res.json.order_id as string;
   const row = await orderRow(h, id);

@@ -83,7 +83,9 @@ export const TEMPLATES = {
   }),
   // ---- Domains core (Phase 3): renewal notices (D-008, C-26, C-32, C-33, C-34), price-change reminders and release ----
   renewal_notice: def({
-    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e43", "e32", "c8", "e_plus_1"]), expiresAt: iso, chargeAt: iso, priceMinor: digits, autoRenew: z.boolean(), offToken: actionToken.optional() }),
+    // C-34: a notice about an automatic charge always carries the one-click turn-off link; the schema refuses one without it.
+    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e43", "e32", "c8", "e_plus_1"]), expiresAt: iso, chargeAt: iso, priceMinor: digits, autoRenew: z.boolean(), offToken: actionToken.optional() })
+      .refine((v) => !v.autoRenew || v.stage === "e_plus_1" || !!v.offToken),
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
     render: (v, l) => {
       const off = v.autoRenew && l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : "";
@@ -112,7 +114,8 @@ export const TEMPLATES = {
     },
   }),
   price_change_notice: def({
-    klass: "C", schema: z.strictObject({ fqdn, kind: z.enum(["known", "reminder"]), oldMinor: digits, newMinor: digits, chargeAt: iso, autoRenew: z.boolean(), aboveCap: z.boolean(), offToken: actionToken.optional() }),
+    klass: "C", schema: z.strictObject({ fqdn, kind: z.enum(["known", "reminder"]), oldMinor: digits, newMinor: digits, chargeAt: iso, autoRenew: z.boolean(), aboveCap: z.boolean(), offToken: actionToken.optional() })
+      .refine((v) => !v.autoRenew || !!v.offToken),
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
     render: (v, l) => {
       const hold = v.autoRenew && v.aboveCap ? `\nThe new price is above the limit you set for auto-renew, so we will not charge it. Sign in at ${l.home} and confirm again with your passkey, or renew by hand.\n` : "";
@@ -122,13 +125,35 @@ export const TEMPLATES = {
     },
   }),
   renewal_failed: def({
-    klass: "C", schema: z.strictObject({ fqdn, priceMinor: digits, nextTryAt: iso.optional(), deadline: iso, expiresAt: iso }),
-    render: (v, l) => ({ subject: `Your card was declined for ${v.fqdn}`, text: `We could not charge ${usd(v.priceMinor)} to renew ${v.fqdn}.\n\n${v.nextTryAt ? `We try the card again on ${day(v.nextTryAt)}. ` : "We will not try the card again. "}You have until ${day(v.deadline)} to renew another way: sign in at ${l.home}, update your card or press Renew now.\n\nThe name expires on ${day(v.expiresAt)}.\n` }),
+    klass: "C", schema: z.strictObject({ fqdn, priceMinor: digits, nextTryAt: iso.optional(), deadline: iso, expiresAt: iso, offToken: actionToken.optional() }),
+    link: { purpose: "auto_renew_off", field: "offToken", optional: true },
+    render: (v, l) => ({ subject: `Your card was declined for ${v.fqdn}`, text: `We could not charge ${usd(v.priceMinor)} to renew ${v.fqdn}.\n\n${v.nextTryAt ? `We try the card again on ${day(v.nextTryAt)}. ` : "We will not try the card again. "}You have until ${day(v.deadline)} to renew another way: sign in at ${l.home}, update your card or press Renew now.\n\nThe name expires on ${day(v.expiresAt)}.\n${l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : ""}` }),
   }),
   auto_renew_on: def({
     klass: "C", schema: z.strictObject({ fqdn, ceilingMinor: digits, chargeAt: iso, offToken: actionToken }),
     link: { purpose: "auto_renew_off", field: "offToken" },
     render: (v, l) => ({ subject: `Auto-renew is on for ${v.fqdn}`, text: `You turned auto-renew on for ${v.fqdn} with your passkey. Ten days before it expires, on ${day(v.chargeAt)} for the current term, we charge the renewal price to your saved card, up to ${usd(v.ceilingMinor)} for one year. We email you before every charge.\n\nTurn it off with one click: ${l.action}\nThe link works once and needs no sign-in. You can also turn it off at ${l.home}.\n` }),
+  }),
+  // ---- Phase 3 finish: the renewal receipt keeps the mandate terms and the one-click cancel (C-33, C-34); the card updater (C-38) ----
+  renewal_receipt: def({
+    klass: "C", schema: z.strictObject({ orderId: z.uuid(), fqdn, years: z.number().int().min(1).max(10), totalMinor: digits, taxMinor: digits, paidAt: iso, ceilingMinor: digits.optional(), expiresAt: iso.optional(), offToken: actionToken.optional() }),
+    link: { purpose: "auto_renew_off", field: "offToken", optional: true },
+    render: (v, l) => {
+      const terms = v.ceilingMinor
+        ? `\nYour auto-renew authorisation: each year, ten days before the name expires, we charge your saved card the renewal price, up to ${usd(v.ceilingMinor)} for one year. We email you before every charge. A higher price is never charged without your passkey.\n${l.action ? `Turn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in. ` : ""}You can also turn it off at ${l.home}.\n`
+        : "";
+      return { subject: `Your Mosshatch renewal receipt for ${v.fqdn}`, text: `You paid to renew ${v.fqdn}.\n\nOrder: ${v.orderId}\nTerm: ${v.years} ${v.years === 1 ? "year" : "years"}\nTotal: ${usd(v.totalMinor)} (tax included: ${usd(v.taxMinor)})\nPaid: ${when(v.paidAt)}\n${v.expiresAt ? `The name now runs to ${day(v.expiresAt)} once the registry confirms it.\n` : ""}${terms}\nKeep this email as the record of your renewal and its terms.\n` };
+    },
+  }),
+  card_updated: def({
+    klass: "C", schema: z.strictObject({ fqdn, brandChanged: z.boolean(), offToken: actionToken.optional() }),
+    link: { purpose: "auto_renew_off", field: "offToken", optional: true },
+    render: (v, l) => {
+      const off = l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : "";
+      return v.brandChanged
+        ? { subject: `Confirm auto-renew for ${v.fqdn}`, text: `Your bank replaced the card saved for ${v.fqdn} with a card of another kind. That is a new card, so we will not charge it until you agree again.\n\nSign in at ${l.home} and turn auto-renew on again with your passkey, or press Renew now to pay by hand. Until then the name is not renewed automatically.\n${off}` }
+        : { subject: `Your saved card was updated for ${v.fqdn}`, text: `Your bank sent us new details for the card saved for ${v.fqdn}, such as a new expiry date. Auto-renew stays on with the same limit and the same dates. Nothing was charged.\n\nSign in at ${l.home} to review it.\n${off}` };
+    },
   }),
   renewal_refunded: def({
     klass: "C", schema: z.strictObject({ fqdn, totalMinor: digits, expiresAt: iso }),
@@ -139,6 +164,67 @@ export const TEMPLATES = {
     render: (v, l) => {
       const why = { lapsed: "expired and the registry deleted it", transferred_out: "moved to another registrar", unpaid: "could not be paid for", refunded: "was refunded", account_closed: "left when your account closed", deleted: "was deleted" }[v.cause];
       return { subject: `Your domain ${v.fqdn} left your account`, text: `${v.fqdn} ${why}, so it has left your account. Its agent tokens are revoked, its auto-renew is off and its card is unpublished.\n\nYou can export its record until ${day(v.holdUntil)}. After that we destroy the secrets and settings stored for it. Sign in at ${l.home} to export.\n` };
+    },
+  }),
+  // ---- Transfers (Phase 5): Rescue (transfer-in) and the Gate (transfer-out). No template carries a link to act on a transfer. ----
+  transfer_confirm_code: def({
+    klass: "A", schema: z.strictObject({ code: z.string().regex(/^[A-Z0-9]{8}$/), fqdn, ttlMinutes: z.number().int().min(1).max(1440) }),
+    render: (v) => ({ subject: `Confirm the transfer of ${v.fqdn} to Mosshatch`, text: `Enter this code on Mosshatch to confirm that you want to move ${v.fqdn} to Mosshatch: ${v.code}\n\nThe code works for ${v.ttlMinutes} minutes. If you did not start a transfer, ignore this email and nothing moves.\n` }),
+  }),
+  transfer_submitted: def({
+    klass: "C", schema: z.strictObject({ fqdn, orderId: z.uuid(), stage: z.enum(["pending_owner", "pending_registry"]), deadline: iso, timing: z.enum(["standard", "registry"]) }),
+    render: (v, l) => {
+      const timing = v.timing === "registry" ? "The registry sets the timing and we cannot predict it." : "A transfer can take several days and sometimes about two weeks. It stays Traveling until the registry confirms.";
+      const step = v.stage === "pending_owner"
+        ? `Our registrar, OpenSRS, emailed the owner of ${v.fqdn} to confirm the transfer. Someone must confirm it there by ${when(v.deadline)}, or the transfer ends.`
+        : `The registry asked the current registrar to release ${v.fqdn}. It has until ${when(v.deadline)} to answer, and silence counts as agreement.`;
+      return { subject: `We asked for ${v.fqdn} to move to Mosshatch`, text: `${step}\n\n${timing} We take the payment when the name arrives, or before your card hold ends, and refund it in full if the transfer fails.\n\nOrder: ${v.orderId}\nSign in at ${l.home} to follow it.\n` };
+    },
+  }),
+  transfer_completed: def({
+    klass: "C", schema: z.strictObject({ fqdn, expiresAt: iso, transferableFrom: iso }),
+    render: (v, l) => ({ subject: `Your domain ${v.fqdn} now lives at Mosshatch`, text: `The registry confirmed the transfer: ${v.fqdn} is now in your Mosshatch account. It runs to ${day(v.expiresAt)} and is locked.\n\nA name can move to another registrar again 60 days after a transfer, so from ${day(v.transferableFrom)}.\n\nSign in at ${l.home} to manage it.\n` }),
+  }),
+  transfer_failed: def({
+    klass: "C", schema: z.strictObject({
+      fqdn,
+      reason: z.enum(["invalid_auth_code", "owner_declined", "owner_timeout", "nack", "registry_lock", "locked_at_losing", "cancelled_by_us", "unknown", "not_transferable", "quote_increased", "price_guard", "auth_window", "auth_lost", "no_contact", "registrar_rejected", "unknown_deadline", "unconfirmed", "review_refused", "payment_failed"]),
+      nackReason: z.enum(["fraud", "identity_dispute", "non_payment", "owner_objection", "within_60_days_creation", "within_60_days_transfer", "udrp", "urs", "court_order", "tdrp", "cor_lock", "unstated"]).optional(),
+      money: z.enum(["nothing_charged", "refunding"]),
+    }),
+    render: (v, l) => {
+      const why: Record<string, string> = {
+        invalid_auth_code: "The registry did not accept the transfer code. Get a new code from your current registrar and start again.",
+        owner_declined: "The transfer was declined in the confirmation email from our registrar.", owner_timeout: "Nobody confirmed the transfer in the email from our registrar within five days.",
+        nack: "Your current registrar refused the transfer.", registry_lock: "The registry had locked the name when the request arrived.", locked_at_losing: "The name was locked at its current registrar when the request arrived.",
+        cancelled_by_us: "You cancelled the transfer.", unknown: "The transfer ended without completing.", not_transferable: "The name could not be transferred when we checked again.",
+        quote_increased: "The price rose before we sent the request.", price_guard: "This name is not sold at our standard price.", auth_window: "We could not send the request inside the payment hold.",
+        auth_lost: "Your card hold ended before we could send the request.", no_contact: "We need a registrant contact before we can transfer a name.", registrar_rejected: "Our registrar refused the request.",
+        unknown_deadline: "We could not confirm that the transfer started.", unconfirmed: "The transfer was not confirmed in time.", review_refused: "Your card issuer or our fraud checks did not clear the payment.", payment_failed: "The payment did not go through.",
+      };
+      const denial: Record<string, string> = {
+        fraud: "It reported evidence of fraud.", identity_dispute: "It reported a dispute over who holds the name.", non_payment: "It reported an unpaid past or current registration period.",
+        owner_objection: "The current owner had asked it to refuse transfers.", within_60_days_creation: "The name was registered less than 60 days ago.", within_60_days_transfer: "The name moved to that registrar less than 60 days ago.",
+        udrp: "A UDRP dispute is open against the name.", urs: "A URS case is open against the name.", court_order: "A court order stops the transfer.", tdrp: "A transfer dispute is open.", cor_lock: "The owner changed less than 60 days ago.", unstated: "It gave no reason we can show.",
+      };
+      const nack = v.reason === "nack" && v.nackReason ? ` ${denial[v.nackReason]}` : "";
+      const money = v.money === "refunding" ? "We are refunding your payment in full. Your bank shows the refund in a few days." : "Nothing was charged. Any hold on your card disappears when your bank releases it.";
+      return { subject: `The transfer of ${v.fqdn} did not complete`, text: `${why[v.reason]}${nack}\n\n${money} The name stays where it was.\n\nSign in at ${l.home} to start again.\n` };
+    },
+  }),
+  transfer_away_started: def({
+    klass: "B", schema: z.strictObject({ fqdn, requestedAt: iso, declineBy: iso, freezeToken: actionToken.optional() }),
+    link: { purpose: "freeze", field: "freezeToken", optional: true },
+    render: (v, l) => ({ subject: `A transfer of ${v.fqdn} to another registrar started`, text: `A transfer of ${v.fqdn} to another registrar started on ${when(v.requestedAt)}, after you unlocked it and took its transfer code with your passkey.\n\nOur registrar, OpenSRS, emails the registrant to confirm or decline it. Silence until ${when(v.declineBy)} counts as agreement. To keep the name, decline in that email or press Stop this transfer on the domain page.\n\n${notYou(l.action, "Sign in to follow the transfer.")}\n` }),
+  }),
+  transfer_denied: def({
+    klass: "C", schema: z.strictObject({ fqdn, reason: z.enum(["fraud", "identity_dispute", "non_payment", "owner_objection", "within_60_days_creation", "within_60_days_transfer", "udrp", "urs", "court_order", "tdrp", "cor_lock"]) }),
+    render: (v) => {
+      const why: Record<string, string> = {
+        fraud: "evidence of fraud", identity_dispute: "a dispute over who holds the name", non_payment: "an unpaid past or current registration period", owner_objection: "your standing instruction to refuse transfers",
+        within_60_days_creation: "the name is less than 60 days old", within_60_days_transfer: "the name moved here less than 60 days ago", udrp: "an open UDRP dispute", urs: "an open URS case", court_order: "a court order", tdrp: "an open transfer dispute", cor_lock: "a change of registrant less than 60 days ago",
+      };
+      return { subject: `We refused a transfer of ${v.fqdn}`, text: `We asked our registrar to refuse the transfer of ${v.fqdn} to another registrar. The reason: ${why[v.reason]}.\n\nThis is one of the reasons the ICANN Transfer Policy allows or requires. If you think it is wrong, reply to this email or write to support@mosshatch.com.\n` };
     },
   }),
 } as const;

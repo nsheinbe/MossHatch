@@ -38,7 +38,8 @@ const enc = encodeURIComponent;
 export const listDomains = () => api<{ domains: DomainSummary[]; eggs: EggSummary[] }>("GET", "/api/v1/domains");
 export const getDomain = (id: string) => api<DomainDetail>("GET", `/api/v1/domains/${enc(id)}`);
 export const getLedger = () => api<{ entries: LedgerEntry[]; refunds: LedgerRefund[] }>("GET", "/api/v1/ledger");
-export const renewNow = (id: string) => api<{ status: string; order_id: string }>("POST", `/api/v1/domains/${enc(id)}/renew`, {});
+/** `consent`: the auto-renew authorisation hash, sent only when its box is ticked; a Checkout for this renewal then also saves the card. */
+export const renewNow = (id: string, consent?: string) => api<{ status: string; order_id: string; checkout_url?: string }>("POST", `/api/v1/domains/${enc(id)}/renew`, consent ? { auto_renew_consent: consent } : {});
 export const autoRenewOff = (id: string) => api<{ auto_renew: false }>("DELETE", `/api/v1/domains/${enc(id)}/auto-renew`);
 export const refundOrder = (orderId: string) => api("POST", `/api/v1/orders/${enc(orderId)}/refund`, { confirm_delete: true });
 
@@ -66,7 +67,7 @@ export const authorisationDoc = async () => (await api<{ documents: { kind: stri
 // ---- step-up: prepare, passkey, commit ------------------------------------------------------------------------------------------------
 
 export interface Prepared { actionId: string; summary: string; options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }
-export type StepUpType = "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change";
+export type StepUpType = "card.publish" | "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change";
 
 /** Step one: the server works out exactly what will be signed and says it in words. Nothing is signed yet. */
 export async function prepareStepUp(type: StepUpType, target: string, userInput?: unknown): Promise<Prepared> {
@@ -98,7 +99,8 @@ export function explainDomain(e: unknown): string {
       case "assertion_invalid": case "challenge_unavailable": return "The passkey check did not go through. Try again.";
       case "no_passkey": return "Add a passkey to your account first.";
       case "consent_required": case "terms_not_accepted": return "Read and tick the auto-renew authorisation first.";
-      case "no_saved_card": case "payment_method_required": return "Auto-renew needs a card saved from a paid order. Buy or renew once first.";
+      case "no_saved_card": case "payment_method_required": return "Auto-renew needs a card saved for renewals. Tick the authorisation and press Renew now: you pay this renewal on Stripe and the card is kept. Then turn auto-renew on.";
+      case "auto_renew_consent_required": return "Read and tick the auto-renew authorisation first.";
       case "documents_unavailable": return "The auto-renew authorisation is not published yet. Nothing was changed.";
       case "already_on": return "Auto-renew is already on.";
       case "not_renewable": return "This name cannot be renewed right now.";

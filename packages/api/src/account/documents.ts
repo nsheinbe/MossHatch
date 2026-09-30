@@ -4,7 +4,15 @@ import path from "node:path";
 import type { Pool } from "@mosshatch/db";
 
 /** The legal document set. Each file's SHA-256 is its version; acceptance records the hash the person was shown. */
-export const DOCUMENT_FILES: Record<string, string> = { terms: "terms.html", registration_agreement: "registration-agreement.html", auto_renew_authorisation: "auto-renew-authorisation.html" };
+export const DOCUMENT_FILES: Record<string, string> = { terms: "terms.html", registration_agreement: "registration-agreement.html", auto_renew_authorisation: "auto-renew-authorisation.html",
+  tld_addendum_ai: "tld-addendum-ai.html", tld_addendum_io: "tld-addendum-io.html" };
+
+// Phase 6: the rest of the fourteen-document legal set (COMPLIANCE.md "Legal document set", C-72). Paths are relative to apps/web/public/legal.
+Object.assign(DOCUMENT_FILES, {
+  privacy_notice: "privacy.html", refund_policy: "refunds.html", fees_notifications: "../fees.html", acceptable_use: "acceptable-use.html",
+  abuse_dmca: "abuse-dmca.html", registrant_rights: "registrant-rights.html", security_policy: "../security.html", legal_process: "legal-process.html",
+  accessibility: "accessibility.html", storage_cookies: "cookies.html", search_commitments: "../commitments.html",
+});
 
 export function hashOfFile(file: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");

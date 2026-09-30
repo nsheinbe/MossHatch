@@ -18,17 +18,25 @@ export interface CommandRule {
   enums?: Readonly<Record<string, readonly string[]>>;
   /** Writes that create a billed order must state the term explicitly (the default of 2 would bill two years for a one-year order). */
   explicitPeriod?: boolean;
+  /** Cross-attribute rule; returns a refusal code or null. */
+  check?: (attributes: OpsObject) => string | null;
   verified: "dossier" | "action-only" | "unverified";
 }
 const R = (r: CommandRule): [string, CommandRule] => [`${r.action}:${r.object}`, r];
 
 export const ALLOWED_COMMANDS: ReadonlyMap<string, CommandRule> = new Map([
   R({ action: "LOOKUP", object: "DOMAIN", write: false, allowed: ["domain", "no_cache"], required: ["domain"], verified: "dossier" }),
-  R({ action: "GET_PRICE", object: "DOMAIN", write: false, allowed: ["domain", "reg_type", "period", "all_periods"], required: ["domain", "reg_type", "period"], enums: { reg_type: ["new", "renewal"] }, verified: "dossier" }),
+  R({ action: "GET_PRICE", object: "DOMAIN", write: false, allowed: ["domain", "reg_type", "period", "all_periods"], required: ["domain", "reg_type", "period"], enums: { reg_type: ["new", "renewal", "transfer"] }, verified: "dossier" }),
+  // Phase 5: a transfer-in rides SW_REGISTER as reg_type=transfer and only with `auth_info`; it keeps the domain's own nameservers (a signed
+  // domain moved to SystemDNS would stop resolving), so it may not carry a nameserver list. A new registration may not carry `auth_info`.
   R({ action: "SW_REGISTER", object: "DOMAIN", write: true, explicitPeriod: true,
-    allowed: ["domain", "reg_type", "period", "handle", "auto_renew", "f_whois_privacy", "f_lock_domain", "reg_username", "reg_password", "contact_set", "custom_nameservers", "nameserver_list", "custom_tech_contact"],
+    allowed: ["domain", "reg_type", "period", "handle", "auto_renew", "f_whois_privacy", "f_lock_domain", "reg_username", "reg_password", "contact_set", "custom_nameservers", "nameserver_list", "custom_tech_contact", "auth_info"],
     required: ["domain", "reg_type", "period", "handle", "auto_renew", "f_lock_domain", "reg_username", "reg_password", "contact_set"],
-    enums: { reg_type: ["new"], handle: ["process"] }, verified: "dossier" }),
+    enums: { reg_type: ["new", "transfer"], handle: ["process"] }, verified: "dossier",
+    check: (a) => a.reg_type === "transfer"
+      ? (typeof a.auth_info !== "string" || a.auth_info.length < 6 ? "auth_info_required" : a.nameserver_list !== undefined || String(a.custom_nameservers ?? "0") !== "0" ? "transfer_keeps_nameservers" : null)
+      : (a.auth_info !== undefined ? "auth_info_not_allowed" : null) }),
+  R({ action: "CHECK_TRANSFER", object: "DOMAIN", write: false, allowed: ["domain", "check_status", "get_request_address"], required: ["domain"], enums: { check_status: ["0", "1"], get_request_address: ["0", "1"] }, verified: "dossier" }),
   R({ action: "RENEW", object: "DOMAIN", write: true, explicitPeriod: true,
     allowed: ["domain", "currentexpirationyear", "period", "handle"], required: ["domain", "currentexpirationyear", "period", "handle"], enums: { handle: ["process"] }, verified: "dossier" }),
   // `type=domain_auth_info` is deliberately absent: Mosshatch never reads a stored authorization code back (plan Gate (5)).
@@ -60,6 +68,7 @@ export function checkCommand(action: string, object: string, attributes: OpsObje
   for (const k of Object.keys(attributes)) if (!rule.allowed.includes(k)) throw refuse("attribute_not_allowed");
   for (const k of rule.required) { const v = attributes[k]; if (v === undefined || v === null || v === "") throw refuse("attribute_missing"); }
   for (const [k, vals] of Object.entries(rule.enums ?? {})) { const v = attributes[k]; if (v !== undefined && !vals.includes(String(v))) throw refuse("attribute_value_not_allowed"); }
+  if (rule.check) { const why = rule.check(attributes); if (why) throw refuse(why); }
   const d = attributes.domain;
   if (d !== undefined && (typeof d !== "string" || !FQDN.test(d))) throw refuse("domain_invalid");
   if (rule.explicitPeriod || attributes.period !== undefined) {

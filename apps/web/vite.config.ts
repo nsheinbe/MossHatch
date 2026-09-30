@@ -72,6 +72,18 @@ function devApi(): Plugin {
             res.setHeader("content-type", "application/json");
             return res.end(JSON.stringify(app.email.to(to).map((m: any) => ({ kind: m.kind, text: m.text }))));
           }
+          if (url.startsWith("/__dev/transfer-away")) {
+            // The mock registrar's out-of-band simulator: someone at another registrar starts a transfer of this name. The poll runs at once
+            // (in production it runs every 5 minutes) so the page can show "needs attention" and the Stop button.
+            const fqdn = (new URL(url, origin).searchParams.get("fqdn") ?? "").toLowerCase();
+            const reg: any = app.ctx.services.orders.registrar;
+            if (!/^[a-z0-9-]+\.[a-z]+$/.test(fqdn) || !reg.oob) { res.statusCode = 400; return res.end("{}"); }
+            reg.oob.startTransferAway(fqdn, { gainingRegistrar: "Other Registrar Inc." });
+            const tr: any = await server.ssrLoadModule(root + "../../packages/api/src/domain-mgmt/transfer.ts");
+            const out = await tr.transferPoll(app.ctx);
+            res.setHeader("content-type", "application/json");
+            return res.end(JSON.stringify(out));
+          }
           if (url.startsWith("/__dev/pay")) {
             // Pay the fake Checkout, deliver the signed webhooks, run the jobs, and send the person back to the app.
             const q = new URL(url, origin).searchParams;

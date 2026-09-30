@@ -16,6 +16,10 @@ import { opportunisticTick } from "./jobs/engine.ts";
 import { buildRouter } from "./routes.ts";
 import type { Router } from "./http/router.ts";
 import { FakeStripe } from "./stripe/fake.ts";
+import { publishFromEnv } from "./publish/wiring.ts";
+import { installPublish } from "./publish/service.ts";
+import { installDomainsFromEnv, registrarFromEnv } from "./domains/boot-wiring.ts";
+import { installVaultFromEnv } from "./vault/wiring.ts";
 
 export class NotConfigured extends Error {
   override name = "NotConfigured";
@@ -54,9 +58,12 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   // The mock is priced from the same effective-dated table the quotes use, so the price guard sees one price on both sides.
   const rows = (await ctx.cron.query("select distinct on (tld) tld, amount_minor from wholesale_prices where registrar = 'opensrs' and kind = 'register' and effective_from <= $1::date order by tld, effective_from desc", [ctx.clock.now()])).rows;
   const wholesale = Object.fromEntries(rows.map((r) => [r.tld as string, BigInt(r.amount_minor)]));
-  const registrar = new MockRegistrarPort({ clock: ctx.clock, wholesalePerYear: wholesale });
+  // Phase 3: a sandbox or live process reaches OpenSRS only through the signed RPC to the `registrar` project; the mock stays for MH_REGISTRAR_MODE=mock.
+  const registrar = (await registrarFromEnv(env, config)) ?? new MockRegistrarPort({ clock: ctx.clock, wholesalePerYear: wholesale });
   (ctx.services as Record<string, unknown>).registrar = registrar;
   const router = buildRouter();
+  const pub = publishFromEnv(env, config.mode);
+  if (pub) installPublish(ctx, pub);
   registerOrderJobs();
   registerOpsJobs();
   if (env.STRIPE_SECRET_KEY) {
@@ -65,5 +72,8 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   } else if (config.mode === "local" && env.MH_FAKE_STRIPE === "1") {
     installOrders(ctx, { stripe: new FakeStripe(ctx.clock, { livemode: false, taxBps: 0 }), registrar });
   }
+  // Phase 3: the domains services (the posture job's end-user probe). The domain and domain-management jobs are registered by buildRouter.
+  installDomainsFromEnv(ctx, env);
+  installVaultFromEnv(ctx, env, config.mode);
   return { router, ctx };
 }

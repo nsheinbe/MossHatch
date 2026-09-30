@@ -7,6 +7,10 @@ import { registerOrderRoutes } from "./orders/routes.ts";
 import { registerAccountRoutes } from "./account/routes.ts";
 import { registerDomainRoutes } from "./domains/routes.ts";
 import { registerDomainMgmt } from "./domain-mgmt/routes.ts";
+import { registerTransfers } from "./transfers/routes.ts";
+import { registerVaultRoutes } from "./vault/routes.ts";
+import { registerPublish } from "./publish/routes.ts";
+import { registerBindings } from "./bindings/routes.ts";
 
 /** The route table. Each module adds one registration line. */
 export function buildRouter(): Router {
@@ -19,5 +23,9 @@ export function buildRouter(): Router {
   registerAccountRoutes(router);
   registerDomainRoutes(router);
   registerDomainMgmt(router);
+  registerTransfers(router);
+  registerVaultRoutes(router);
+  registerPublish(router);
+  registerBindings(router);
   return router;
 }

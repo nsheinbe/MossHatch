@@ -121,6 +121,8 @@ const SAMPLE: { [K in MailKind]: Record<string, unknown> } = {
   recovery_started: { coolingOffUntil: "2026-10-03T12:00:00.000Z", cancelToken: TOKEN },
   recovery_completed: { holdUntil: "2026-10-05T12:00:00.000Z" },
   recovery_cancelled: {},
+  renewal_receipt: { orderId: "0192f000-0000-7000-8000-000000000001", fqdn: "moonfern.com", years: 1, totalMinor: "1850", taxMinor: "0", paidAt: "2026-10-01T12:00:00.000Z", ceilingMinor: "1850", offToken: TOKEN },
+  card_updated: { fqdn: "moonfern.com", brandChanged: true, offToken: TOKEN },
   credential_added: { credentialRef: "a1b2c3d4", at: "2026-10-01T12:00:00.000Z", freezeToken: TOKEN },
   credential_removed: { credentialRef: "a1b2c3d4", at: "2026-10-01T12:00:00.000Z" },
   address_changed: { change: "added", addressKind: "second", at: "2026-10-01T12:00:00.000Z", freezeToken: TOKEN },
@@ -135,6 +137,12 @@ const SAMPLE: { [K in MailKind]: Record<string, unknown> } = {
   auto_renew_on: { fqdn: "example-name.com", ceilingMinor: "1925", chargeAt: "2027-09-21T12:00:00.000Z", offToken: TOKEN },
   renewal_refunded: { fqdn: "example-name.com", totalMinor: "1925", expiresAt: "2027-10-01T12:00:00.000Z" },
   domain_released: { fqdn: "example-name.com", cause: "lapsed", holdUntil: "2027-11-01T12:00:00.000Z" },
+  transfer_confirm_code: { code: "K7Q2MZ4P", fqdn: "example-name.com", ttlMinutes: 30 },
+  transfer_submitted: { fqdn: "example-name.com", orderId: "0199f0a0-1111-7222-8333-444455556666", stage: "pending_registry", deadline: "2026-10-06T12:00:00.000Z", timing: "standard" },
+  transfer_completed: { fqdn: "example-name.com", expiresAt: "2027-10-01T12:00:00.000Z", transferableFrom: "2026-11-30T12:00:00.000Z" },
+  transfer_failed: { fqdn: "example-name.com", reason: "nack", nackReason: "fraud", money: "refunding" },
+  transfer_away_started: { fqdn: "example-name.com", requestedAt: "2026-10-01T12:00:00.000Z", declineBy: "2026-10-06T12:00:00.000Z", freezeToken: TOKEN },
+  transfer_denied: { fqdn: "example-name.com", reason: "udrp" },
 };
 const ORIGIN = "https://mosshatch.com";
 const urls = (s: string) => s.match(/https?:\/\/[^\s)>"'<]+/g) ?? [];

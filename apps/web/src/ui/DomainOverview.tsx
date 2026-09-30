@@ -64,7 +64,7 @@ export function DomainOverview({ d, sec, xfer, reload }: { d: DomainDetail; sec:
             <p>Auto-renew is <strong>off</strong>. The name will expire unless you renew it.</p>
             <div className="consent" role="group" aria-labelledby="consent-h">
               <h4 id="consent-h">Auto-renew authorisation</h4>
-              <p>If you turn this on, ten days before this name expires we charge your saved card the renewal price{price ? `, up to ${price} for ${years(d.renewal.years)}` : ""}. We email you first. You can turn it off any time with one click, and nothing is charged after that.</p>
+              <p>If you turn this on, ten days before this name expires we charge your saved card the renewal price{price ? `, up to ${price} for ${years(d.renewal.years)}` : ""}. We email you first. You can turn it off any time with one click, and nothing is charged after that. No card saved for renewals yet? Tick the box and press Renew now: you pay this renewal on Stripe and the card is kept for auto-renew.</p>
               <p>{doc ? <a href={doc.url} target="_blank" rel="noopener">Read the full authorisation (opens in a new tab)</a> : doc === null ? "The authorisation text is not published yet." : ""}</p>
               <label className="check"><input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} /> I agree to this authorisation. It is separate from the terms of service.</label>
               <div className="row-actions">
@@ -79,7 +79,9 @@ export function DomainOverview({ d, sec, xfer, reload }: { d: DomainDetail; sec:
         {req && <StepUp key={req.type} req={req} onDone={() => setReq(null)} />}
         <div className="row-actions">
           <button type="button" className="btn secondary" disabled={busy} onClick={() => void act(async () => {
-            const r = await renewNow(d.id);
+            const r = await renewNow(d.id, !on && agree && doc ? doc.version : undefined);
+            // No card saved for renewals: pay this one on Stripe's page. The registry is asked only after the payment succeeds.
+            if (r.status === "checkout" && r.checkout_url) { sessionStorage.setItem("mh.order", r.order_id); window.location.assign(r.checkout_url); return "Opening Stripe to pay for the renewal."; }
             return r.status === "renewed" ? "Renewed." : r.status === "refunded" ? "The renewal could not be finished, so it was refunded." : "Renewing now. This can take a minute.";
           })}>Renew now</button>
         </div>

@@ -8,14 +8,16 @@ import { closeAlerts, raiseAlert } from "../ops/alerts.ts";
 import { sendMail } from "../email.ts";
 import { buildMail } from "../mail/templates.ts";
 import { advance, machine, move, type M } from "../orders/machine.ts";
-import { customerAddresses, loadOrder, mailReceipt } from "../orders/support.ts";
+import { customerAddresses, loadOrder } from "../orders/support.ts";
+import { mintEmailActionToken } from "../auth/email-actions.ts";
 import type { OrderRow } from "../orders/types.ts";
 import { StripeError } from "../stripe/port.ts";
 import { quoteToJson } from "../pricing/index.ts";
 import { hashOf } from "../util/bytes.ts";
 import { DAY_MS, flagTrue, loadDomain, registrarOf, rowToDomain, svcOf, yearOf, type DomainRow } from "./common.ts";
 import { sellGate } from "./gate.ts";
-import { activeMandate, savedCard, type MandateRow } from "./mandate.ts";
+import { activeMandate, currentAuthorisationHash, savedCard, type MandateRow } from "./mandate.ts";
+import { HttpError } from "../http/router.ts";
 import { ensureTerm, renewalQuote, rowToTerm, type TermRow } from "./terms.ts";
 
 /**
@@ -147,7 +149,26 @@ async function termOfOrder(q: Pick<PoolClient, "query">, orderId: string): Promi
 // Holds: reasons the automatic charge waits (C-33, ST-102, ST-109)
 // ---------------------------------------------------------------------------------------------------------------------------------------
 
-export type HoldReason = "paused" | "account_review" | "no_price" | "above_cap" | "price_notice_pending" | "funds_gate" | "no_saved_card" | "registrar_unavailable";
+export type HoldReason = "paused" | "account_review" | "no_price" | "above_cap" | "price_notice_pending" | "funds_gate" | "no_saved_card" | "registrar_unavailable" | "reconsent_required" | "charge_notice_pending";
+
+/** The pre-charge notice must reach the person at least this long before an automatic charge (Visa 7 days, C-38; the C-8 notice gives 8). */
+export const PRE_CHARGE_NOTICE_MS = 7 * DAY_MS;
+
+/**
+ * Whether the person was told about THIS charge at least 7 days ago: a renewal notice for this term with auto-renew on (E-43, E-32 or C-8),
+ * or the auto-renew confirmation email, which names the charge date, when the mandate was signed during this term. A mandate signed a
+ * year ago does not count for this year's charge; the notices do.
+ */
+export async function preChargeNoticeGiven(ctx: AppContext, term: TermRow, mandate: MandateRow): Promise<boolean> {
+  const cutoff = new Date(ctx.clock.now().getTime() - PRE_CHARGE_NOTICE_MS);
+  const n = await ctx.cron.query(
+    "select 1 from notices where domain_id = $1 and term_key = $2 and kind in ('renewal.e43','renewal.e32','renewal.c8') and sent_at <= $3 limit 1",
+    [term.domainId, term.termEnd.toISOString().slice(0, 10), cutoff]);
+  if ((n.rowCount ?? 0) > 0) return true;
+  if (mandate.acceptedAt > cutoff) return false;
+  const prev = (await ctx.cron.query("select max(term_end) as t from renewal_terms where domain_id = $1 and term_end < $2", [term.domainId, term.termEnd])).rows[0]?.t;
+  return !prev || mandate.acceptedAt >= new Date(prev);
+}
 
 /** Why a charge must wait right now, or null. `manual` (the person pressed Renew now) skips the cap and notice waits: the click is the consent. */
 export async function chargeHold(ctx: AppContext, term: TermRow, d: DomainRow, mandate: MandateRow | null, manual: boolean): Promise<{ reason: HoldReason; price?: bigint } | null> {
@@ -158,7 +179,9 @@ export async function chargeHold(ctx: AppContext, term: TermRow, d: DomainRow, m
   if (!q) return { reason: "no_price" };
   if (!manual) {
     if (!mandate) return { reason: "no_saved_card" };
+    if (mandate.reconsentRequiredAt) return { reason: "reconsent_required" };
     if (q.subtotalMinor > mandate.priceCeilingMinor) return { reason: "above_cap", price: q.subtotalMinor };
+    if (!(await preChargeNoticeGiven(ctx, term, mandate))) return { reason: "charge_notice_pending" };
     if (q.subtotalMinor > term.notifiedPriceMinor) return { reason: "price_notice_pending", price: q.subtotalMinor };
     // A price change the person was told about less than 7 days ago waits, unless the name is about to expire.
     if (term.priceNoticeAt && q.subtotalMinor !== term.baselinePriceMinor && ctx.clock.now().getTime() - term.priceNoticeAt.getTime() < PRICE_NOTICE_MIN_MS && ctx.clock.now().getTime() < term.termEnd.getTime() - 3 * DAY_MS) return { reason: "price_notice_pending", price: q.subtotalMinor };
@@ -196,6 +219,8 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
   }
   const card = mandate?.paymentMethodRef && mandate.customerRef ? { customer: mandate.customerRef, paymentMethod: mandate.paymentMethodRef } : (o.stripeCustomerId && o.paymentMethodRef ? { customer: o.stripeCustomerId, paymentMethod: o.paymentMethodRef } : await savedCard(ctx.cron, d.userId));
   if (!card) { await setHeld(ctx, term, "no_saved_card"); return "wait"; }
+  // A card the network replaced with another brand is a new card: even a Renew now click pays on Checkout until the mandate is signed again.
+  if (mandate?.reconsentRequiredAt) { await setHeld(ctx, term, "reconsent_required"); return "wait"; }
 
   const claimed = await ltx(m, async (c) => {
     const cur = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as string | undefined;
@@ -248,9 +273,24 @@ async function charged(m: M, o: OrderRow, term: TermRow, piId: string, amount: b
     return b;
   });
   if (!done) return "progressed";
-  try { await tx(m.ctx.cron, (c) => mailReceipt(m.ctx, c, o, { totalMinor: amount, taxMinor: 0n, paidAt: at })); }
+  try { await tx(m.ctx.cron, (c) => mailRenewalReceipt(m.ctx, c, o, term, { totalMinor: amount, taxMinor: 0n, paidAt: at })); }
   catch { await tx(m.ctx.cron, (c) => raiseAlert(m.ctx, c, { severity: "warn", kind: "mail_failed", subject: o.id })).catch(() => undefined); }
   return "progressed";
+}
+
+/**
+ * The renewal receipt (C-33): the amount, and while a mandate is live, the terms of the authorisation (ceiling, when we charge) and the
+ * one-click turn-off link, so the person keeps an acknowledgement of the terms and how to cancel with every charge.
+ */
+async function mailRenewalReceipt(ctx: AppContext, c: PoolClient, o: OrderRow, term: TermRow, p: { totalMinor: bigint; taxMinor: bigint; paidAt: Date }): Promise<void> {
+  const to = await customerAddresses(c, o.userId);
+  if (to.length === 0) return;
+  const live = await activeMandate(c, term.domainId);
+  const off = live ? (await mintEmailActionToken(ctx, c, { userId: o.userId, purpose: "auto_renew_off", eventId: term.domainId, ttlMs: 400 * DAY_MS })).token : undefined;
+  await sendMail(c, ctx.email, buildMail("renewal_receipt", {
+    orderId: o.id, fqdn: o.fqdn, years: o.years, totalMinor: p.totalMinor.toString(), taxMinor: p.taxMinor.toString(), paidAt: p.paidAt.toISOString(),
+    ...(live ? { ceilingMinor: live.priceCeilingMinor.toString() } : {}), ...(off ? { offToken: off } : {}),
+  }, { to, dedupeKey: `receipt:${o.id}`, userId: o.userId, origin: ctx.config.origin }));
 }
 
 /** A determined failure of the off-session charge: mail the person, and follow the ladder. */
@@ -268,8 +308,11 @@ async function failedCharge(m: M, o: OrderRow, term: TermRow, kind: "declined" |
     if (!nextAt) await raiseAlert(ctx, c, { severity: "warn", kind: "renewal_payment_failed", subject: o.id, detail: { order_id: o.id, kind } });
     const to = await customerAddresses(c, o.userId);
     if (to.length) {
+      const live = await activeMandate(c, term.domainId);
+      const off = live ? (await mintEmailActionToken(ctx, c, { userId: o.userId, purpose: "auto_renew_off", eventId: term.domainId, ttlMs: 60 * DAY_MS })).token : undefined;
       await sendMail(c, ctx.email, buildMail("renewal_failed", {
         fqdn: o.fqdn, priceMinor: o.subtotalMinor.toString(), ...(nextAt ? { nextTryAt: nextAt.toISOString() } : {}), deadline: term.termEnd.toISOString(), expiresAt: term.termEnd.toISOString(),
+        ...(off ? { offToken: off } : {}),
       }, { to, dedupeKey: `renewal.failed:${o.id}:${seq}`, userId: o.userId, origin: ctx.config.origin }));
     }
   });
@@ -561,3 +604,88 @@ export async function renewalChargeDeadLetter(ctx: AppContext, dead: { id: strin
   await tx(ctx.cron, (c) => enqueue(c, { kind: "renewal.charge", payload: { order_id: id }, userId: o.userId, runAt: new Date(ctx.clock.now().getTime() + UPSTREAM_FAST_RETRY_MS), dedupeKey: `renewal.charge:${id}:dl:${crypto.randomUUID()}`, priority: 0 }));
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// Renew now without a saved card: a hosted Checkout for the same renewal order (C-30: the charge still comes before the registrar)
+// ---------------------------------------------------------------------------------------------------------------------------------------
+
+/**
+ * The person pressed Renew now and no card is saved for off-session use (they never ticked auto-renew, or the card was detached). The
+ * same renewal order gets a hosted Checkout with automatic capture: the registrar is called only after Stripe says the payment
+ * succeeded. The Session is reused while it is open, so repeated clicks do not open a second payment page for the same term.
+ * The card is saved only when the person also ticked the auto-renew authorisation (`consentHash`, its own consent row, C-31).
+ */
+export async function startRenewalCheckout(ctx: AppContext, o: OrderRow, opts: { consentHash?: string; ipPrefix?: string; uaFamily?: string } = {}): Promise<string | null> {
+  if (o.kind !== "renew" || o.state !== "draft") return null;
+  const svc = svcOf(ctx);
+  const now0 = ctx.clock.now();
+  // The authorisation text in force; a consent to anything else saves nothing (and is refused, so the page cannot pretend it saved the card).
+  let save = o.saveCard;
+  if (opts.consentHash !== undefined && !o.saveCard) {
+    const hash = await currentAuthorisationHash(ctx.cron, now0);
+    if (!hash || opts.consentHash !== hash) throw new HttpError(422, "auto_renew_consent_required");
+    await tx(ctx.cron, async (c) => {
+      const upd = await c.query("update orders set save_card = true, auto_renew_opt_in = true, stripe_checkout_session_id = null where id = $1 and state = 'draft' and not save_card", [o.id]);
+      if (upd.rowCount !== 1) return;
+      const ip = await ctx.pii.encrypt(opts.ipPrefix ?? "", `order_ip:${o.id}`);
+      await c.query(
+        "insert into consents (user_id, kind, document_hash, version, accepted_at, ip_enc, ua_family, order_id, domain_id, actor_kind, retain_until) values ($1,'auto_renew_mandate',$2,$3,$4,$5,$6,$7,$8,'user',$9)",
+        [o.userId, hash, hash.slice(0, 12), now0, ip, opts.uaFamily ?? null, o.id, o.domainId, new Date(now0.getTime() + 3 * 365 * DAY_MS)]);
+    });
+    save = true;
+    o = { ...o, saveCard: true, sessionId: null };
+  }
+  if (o.sessionId) {
+    try { const s = await svc.stripe.retrieveSession(o.sessionId); if (s.status === "open" && s.url) return s.url; }
+    catch (e) { if (!(e instanceof StripeError)) throw e; }
+  }
+  const now = ctx.clock.now();
+  const { ensureCustomer } = await import("../orders/create.ts");
+  const customer = o.stripeCustomerId ?? await ensureCustomer(ctx, svc, o.userId);
+  // One Session per order per hour-bucket: a retried click inside the hour replays the same Session under the same key.
+  const key = `renewcs:${o.id}:${save ? "save:" : ""}${Math.floor(now.getTime() / 3600_000)}`;
+  const s = await svc.stripe.createCheckoutSession({
+    customer, clientReferenceId: o.id,
+    successUrl: `${ctx.config.origin}/checkout/return?order=${o.id}&session_id={CHECKOUT_SESSION_ID}`, cancelUrl: `${ctx.config.origin}/checkout/cancelled?order=${o.id}`,
+    expiresAt: Math.floor(now.getTime() / 1000) + 60 * 60, metadata: { order_id: o.id, purpose: "renewal", renewal: "checkout" },
+    lineItem: { name: `${o.fqdn} renewal for ${o.years} ${o.years === 1 ? "year" : "years"}`, unitAmount: Number(o.subtotalMinor), currency: "usd" },
+    captureMethod: "automatic", requestThreeDSecure: "automatic",
+    ...(save ? { setupFutureUsage: "off_session" as const } : {}),
+  }, key);
+  await ctx.cron.query("update orders set stripe_checkout_session_id = $2, stripe_customer_id = coalesce(stripe_customer_id, $3) where id = $1 and state = 'draft'", [o.id, s.id, s.customer]);
+  return s.url;
+}
+
+/**
+ * `checkout.session.completed` for a renewal Checkout: re-fetch the PaymentIntent, and when it succeeded for this order's amount,
+ * move `draft -> captured -> renewing_upstream` exactly as an off-session charge would. A payment that arrives after the order moved on
+ * (the name was renewed another way, or it lapsed) is refunded in full and an operator is told; nothing is charged twice for one term.
+ */
+export async function renewalCheckoutPaid(ctx: AppContext, orderId: string, sessionId: string, piId: string): Promise<"charged" | "refunded" | "ignored"> {
+  const o = await loadOrder(ctx.cron, orderId);
+  if (!o || o.kind !== "renew") return "ignored";
+  const svc = svcOf(ctx);
+  const pi = await svc.stripe.retrievePaymentIntent(piId);
+  if (pi.status !== "succeeded" || pi.metadata.order_id !== o.id || pi.livemode !== o.livemode) return "ignored";
+  const m = machine(ctx);
+  const term = await termOfOrder(ctx.cron, o.id);
+  const claimed = o.state === "draft" && term && o.sessionId === sessionId ? await ltx(m, async (c) => {
+    const cur = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as string | undefined;
+    if (cur !== "draft") return null;
+    return claimOp(c, m, o.id, "renew_charge", { term: term.id, via: "checkout" });
+  }) : null;
+  if (claimed && term) {
+    await charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, claimed.op.id);
+    // The card used on Checkout, kept for off-session renewals only when this Checkout carried the auto-renew consent.
+    await ctx.cron.query("update orders set payment_method_ref = coalesce(payment_method_ref, $2), stripe_customer_id = coalesce(stripe_customer_id, $3), card_reusable = save_card and $2::text is not null where id = $1",
+      [o.id, pi.payment_method, pi.customer]);
+    const after = await loadOrder(ctx.cron, o.id);
+    if (after && after.state !== "draft") return "charged";
+  }
+  // Already paid another way for this term (or the order ended): give the money back, once.
+  const already = (await ctx.cron.query("select 1 from payments where stripe_payment_intent_id = $1", [pi.id])).rowCount;
+  if (already) return "charged";
+  await svc.stripe.createRefund({ paymentIntent: pi.id, reason: "duplicate_renewal" }, `renewcs-refund:${pi.id}`);
+  await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "renewal_checkout_after_close", subject: o.id, detail: { order_id: o.id, state: o.state } }));
+  return "refunded";
+}

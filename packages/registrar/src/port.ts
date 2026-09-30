@@ -106,12 +106,72 @@ export interface InventoryRow { fqdn: string; expiresAt: Date }
 export interface DeletedDomain { fqdn: string; deletedAt: Date; redemptionEndsAt: Date }
 export interface Balance { balance: Money; held: Money; available: Money }
 
+// ---- Phase 5: transfer-in (Rescue) -------------------------------------------------------------------------------------
+/**
+ * Upstream transfer-in statuses (OpenSRS `CHECK_TRANSFER check_status=1`: pending_owner, pending_admin (deprecated), pending_registry,
+ * completed, cancelled, undef). `pending_admin` is folded into `pending_owner`; `undef` is reported as `null` by `getTransferInStatus`.
+ */
+export type TransferInStatus = "pending_owner" | "pending_registry" | "completed" | "cancelled";
+/** Why a name cannot be transferred in right now (pre-check), each with a plain message in the app. */
+export type TransferInBlock =
+  | "not_registered" | "already_here" | "locked_at_losing" | "registry_lock" | "too_new" | "recently_transferred" | "pending_transfer"
+  | "redemption" | "pending_delete" | "dispute" | "other";
+/** Transfer Policy I.A.3.7 (may deny) and I.A.3.8 (must deny) reasons a losing registrar gives in a NACK. */
+export const TRANSFER_DENIAL_REASONS = [
+  "fraud", "identity_dispute", "non_payment", "owner_objection", "within_60_days_creation", "within_60_days_transfer",
+  "udrp", "urs", "court_order", "tdrp", "cor_lock",
+] as const;
+export type TransferDenialReason = (typeof TRANSFER_DENIAL_REASONS)[number] | "unstated";
+/** Why a submitted transfer-in ended without completing. */
+export type TransferInFailure =
+  | "invalid_auth_code" | "owner_declined" | "owner_timeout" | "nack" | "registry_lock" | "locked_at_losing" | "cancelled_by_us" | "unknown";
+
+export interface TransferInCheck {
+  fqdn: string;
+  transferable: boolean;
+  reason?: TransferInBlock;
+  /** When the 60-day rule lifts (registry creation or last transfer plus 60 days), when the adapter knows the dates. */
+  transferableAt?: Date;
+  createdAt?: Date;
+  lastTransferAt?: Date;
+  expiresAt?: Date;
+  registryStatuses: string[];
+  /** DS records at the registry. `undefined` when the adapter cannot tell (OpenSRS CHECK_TRANSFER does not say; RDAP does). */
+  dsPresent?: boolean;
+}
+export interface TransferInRequest {
+  fqdn: string;
+  /** Years the transfer adds (1 for gTLDs and .io, 2 for .ai); always sent explicitly. */
+  years: number;
+  /** The authorization code from the losing registrar. The port sends it once and keeps nothing. */
+  authCode: string;
+  regUsername: string;
+  regPassword: string;
+  registrant: Registrant;
+}
+export interface TransferInStart { status: Exclude<TransferInStatus, "completed" | "cancelled">; registrarOrderId: string; ownerEmailSent: boolean }
+export interface TransferInState {
+  fqdn: string;
+  status: TransferInStatus;
+  registrarOrderId?: string;
+  requestedAt?: Date;
+  updatedAt?: Date;
+  failure?: TransferInFailure;
+  nackReason?: TransferDenialReason;
+  /** pending_owner: the owner confirms by the emailed link before this, or the provider cancels. */
+  ownerDeadlineAt?: Date;
+  /** pending_registry: the losing registrar answers before this, or the registry acknowledges automatically. */
+  registryDeadlineAt?: Date;
+  /** Registry expiry after completion. */
+  expiresAt?: Date;
+}
+
 
 export interface RegistrarPort {
   capabilities(): RegistrarCapabilities;
   health(): Promise<{ status: "ok" | "degraded" | "maintenance"; maintenanceUntil?: Date }>;
   checkAvailability(fqdn: string, opts?: { noCache?: boolean }): Promise<Availability>;
-  quote(fqdn: string, years: number, kind?: "register" | "renew"): Promise<Quote>;
+  quote(fqdn: string, years: number, kind?: "register" | "renew" | "transfer"): Promise<Quote>;
   register(req: RegisterRequest): Promise<RegisterResult>;
   renew(fqdn: string, years: number, currentExpiryYear: number): Promise<{ status: "renewed" | "accepted_pending"; registrarOrderId: string; expiresAt?: Date }>;
   getDomain(fqdn: string): Promise<DomainStatus | null>;
@@ -162,4 +222,17 @@ export interface RegistrarPort {
   restore(fqdn: string): Promise<{ status: "restored" | "accepted_pending"; registrarOrderId?: string }>;
   /** `GET_BALANCE`. `getFundingStatus()` is `available`. */
   getBalance(): Promise<Balance>;
+
+  // ---- Phase 5: transfer-in ---------------------------------------------------------------------------------------
+  /** Pre-transfer check (`CHECK_TRANSFER`): whether the name can be transferred in now, and why not. Sends no code. */
+  checkTransferIn(fqdn: string): Promise<TransferInCheck>;
+  /**
+   * Starts a transfer-in as the gaining registrar (`SW_REGISTER reg_type=transfer` with `auth_info`). Returns only after the provider accepted
+   * the order; the transfer is NOT complete until `getTransferInStatus` says `completed`. A timeout after sending is `outcomeUnknown`: poll, never resend.
+   */
+  startTransferIn(req: TransferInRequest): Promise<TransferInStart>;
+  /** `CHECK_TRANSFER check_status=1` for a transfer this reseller started; null when the provider knows none (`undef`). */
+  getTransferInStatus(fqdn: string): Promise<TransferInState | null>;
+  /** `CANCEL_TRANSFER` for a pending transfer-in this reseller started. False when it can no longer be cancelled. */
+  cancelTransferIn(fqdn: string): Promise<{ cancelled: boolean }>;
 }

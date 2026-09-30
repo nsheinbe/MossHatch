@@ -7,7 +7,7 @@ import { at, autoRenewOn, buyDomain, days, domainRow, harnessPerTest, mailOf, ma
 const per = harnessPerTest();
 afterEach(async () => { await per.dropAll(); });
 
-/** Stand-ins for the tables later modules own (cards, the Nest, connections), with the column names of PLAN 4.4 that release touches. */
+/** Stand-ins for the tables later modules own, created only when those modules' migrations are absent (they exist now: 0800 vault, 1000 cards). */
 async function standIns(h: DomainsHarness) {
   await h.app.db.owner.query(`
     create table if not exists cards (id uuid primary key default uuidv7(), domain_id uuid not null, slug text, published_at timestamptz, unpublished_at timestamptz);
@@ -25,11 +25,16 @@ async function attach(h: DomainsHarness, o: Owner, domainId: string) {
   const tok = mintToken("live");
   await q("insert into bindings (user_id, kind, name, token_prefix, token_hash, scopes, expires_at) values ($1,'agent','scoped',$2,$3,$4, now() + interval '400 days')",
     [o.userId, tok.prefix, tok.hash, JSON.stringify([{ capability: "mandate.off", domain_id: domainId }, { capability: "secrets.read", domain_id: domainId, env: "prod" }])]);
-  const sec = (await q("insert into secrets (domain_id, env, name) values ($1,'prod','DATABASE_URL') returning id", [domainId])).rows[0].id;
-  await q("insert into secret_versions (secret_id, ciphertext, wrapped_dek) values ($1, '\\xdeadbeef', '\\xcafebabe')", [sec]);
-  await q("insert into cards (domain_id, slug, published_at) values ($1,$2,now())", [domainId, "card-" + domainId.slice(0, 8)]);
-  const con = (await q("insert into connections (domain_id, service) values ($1,'vercel') returning id", [domainId])).rows[0].id;
-  await q("insert into connection_credentials (connection_id) values ($1)", [con]);
+  // The real tables of the vault (0800) and cards (1000) modules, with every column they require.
+  const sec = (await q("insert into secrets (user_id, domain_id, env, name) values ($1,$2,'prod','DATABASE_URL') returning id", [o.userId, domainId])).rows[0].id;
+  await q("insert into secret_versions (secret_id, user_id, version, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class, created_by_kind) values ($1,$2,1,'\\xdeadbeef',$3,$4,'\\xcafebabe','local:test','vault-nonprod','user')",
+    [sec, o.userId, Buffer.alloc(12, 1), Buffer.alloc(16, 2)]);
+  const fq = (await q("select fqdn_ascii from domains where id = $1", [domainId])).rows[0].fqdn_ascii;
+  await q(`insert into cards (user_id, domain_id, slug, species, family, rarity, traits, hatched_on, snapshot_ref, snapshot_url, image_sha256, image_width, image_height, image_bytes, published_at)
+           values ($1,$2,$3,'moss fox','fox','common','["quiet"]'::jsonb, now()::date, 'snap', 'https://example.test/s.png', $4, 512, 512, 1000, now())`, [o.userId, domainId, fq, "a".repeat(64)]);
+  const con = (await q("insert into connections (user_id, domain_id, service) values ($1,$2,'vercel') returning id", [o.userId, domainId])).rows[0].id;
+  await q("insert into connection_credentials (connection_id, user_id, kind, ciphertext, nonce, tag, wrapped_dek, kek_ref, kek_class) values ($1,$2,'pasted_token','\\xdeadbeef',$3,$4,'\\xcafebabe','local:test','vault-nonprod')",
+    [con, o.userId, Buffer.alloc(12, 1), Buffer.alloc(16, 2)]);
   return { token: tok.token };
 }
 

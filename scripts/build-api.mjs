@@ -6,7 +6,7 @@ await build({
   input: "packages/api/src/boot.ts",
   platform: "node",
   external: ["pg-native"],
-  output: { file: "api/_bundle.mjs", format: "esm", minify: false, sourcemap: false, banner: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
+  output: { file: "api/_bundle.mjs", format: "esm", codeSplitting: false, minify: false, sourcemap: false, banner: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
   logLevel: "warn",
 });
 console.log("api bundle written: api/_bundle.mjs");

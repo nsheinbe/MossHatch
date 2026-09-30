@@ -24,3 +24,7 @@ export { syncDocuments } from "./account/documents.ts";
 export * as registrarRpc from "./registrar-rpc/index.ts";
 export * as domainMgmt from "./domain-mgmt/index.ts";
 export * as domains from "./domains/index.ts";
+export * as publish from "./publish/index.ts";
+export * as vault from "./vault/index.ts";
+export * as transfers from "./transfers/index.ts";
+export * as bindings from "./bindings/index.ts";

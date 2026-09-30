@@ -30,7 +30,16 @@ export interface CreateOrderInput {
   agentRequestId?: string;
   /** The document hashes the person was shown and accepted: `{terms, registration_agreement}`. Required unless a passkey assertion carries the acceptance. */
   accept?: unknown;
+  /**
+   * The auto-renew box at checkout, unticked by default and separate from the terms box (C-31, D-024). `true` asks Stripe to save the
+   * card (`setup_future_usage=off_session`) and needs `accept.auto_renew_authorisation` = the hash of the authorisation text shown.
+   * The mandate itself is still signed with a passkey on the domain page (`mandate.sign`).
+   */
+  autoRenew?: unknown;
 }
+
+/** Extensions whose registry terms the buyer accepts as a separate addendum at checkout (C-59 .ai, C-60 .io). */
+export const TLD_ADDENDA: Record<string, string> = { ai: "tld_addendum_ai", io: "tld_addendum_io" };
 export interface CreateOrderResult { order: OrderRow; checkoutUrl: string | null; replay: boolean }
 
 const REGISTER_ROW_UNIQUE = "orders_user_id_idempotency_key_key";
@@ -51,7 +60,10 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
   if (typeof input.years !== "number" || !Number.isInteger(input.years) || input.years < 1 || input.years > 10) throw new HttpError(422, "invalid_term");
   const fqdn = `${parsed.label}.${parsed.tld}`;
   const years = input.years;
-  const requestHash = hashOf({ fqdn, years });
+  if (input.autoRenew !== undefined && typeof input.autoRenew !== "boolean") throw new HttpError(422, "invalid_request");
+  const autoRenew = input.autoRenew === true;
+  // The opt-in is part of the request: the same key with the box ticked differently is a different request.
+  const requestHash = hashOf(autoRenew ? { fqdn, years, auto_renew: true } : { fqdn, years });
 
   const replayOf = async (): Promise<CreateOrderResult | null> => {
     const row = (await withUser(ctx.runtime, input.userId, (c) => c.query("select * from orders where user_id = $1 and idempotency_key = $2", [input.userId, input.idempotencyKey]))).rows[0];
@@ -114,30 +126,42 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
       if (funds.minor - renewals - reserved - priced.wholesaleMinor < floor) throw new HttpError(503, "sell_gate", PAUSED_MESSAGE);
     }
     if (!(await svc.registrant(ctx, input.userId))) throw new HttpError(422, "contact_required");
+    const addendumKind = TLD_ADDENDA[parsed.tld];
     const docs = (await c.query(
       `select distinct on (kind) kind, version_hash from document_versions where kind = any($1) and effective_at <= $2 and (retired_at is null or retired_at > $2) order by kind, effective_at desc`,
-      [["terms", "registration_agreement"], now])).rows;
+      [["terms", "registration_agreement", "auto_renew_authorisation", ...(addendumKind ? [addendumKind] : [])], now])).rows;
     const terms = docs.find((d) => d.kind === "terms"), agreement = docs.find((d) => d.kind === "registration_agreement");
+    const addendum = addendumKind ? docs.find((d) => d.kind === addendumKind) : undefined;
+    const authorisation = docs.find((d) => d.kind === "auto_renew_authorisation");
     if (!terms || !agreement) throw new HttpError(503, "documents_unavailable");
+    // .ai and .io are sold only with their registry terms published and accepted (two-year .ai term, .io registry rules and sovereignty risk).
+    if (addendumKind && !addendum) throw new HttpError(503, "documents_unavailable");
+    if (autoRenew && !authorisation) throw new HttpError(503, "documents_unavailable");
+    const a = (input.accept && typeof input.accept === "object" ? input.accept : {}) as Record<string, unknown>;
     if (!input.assertionActionId && !input.agentRequestId) {
       // C-12 and C-14: acceptance is an explicit act on the exact documents in force, recorded per registration.
-      const a = (input.accept && typeof input.accept === "object" ? input.accept : {}) as Record<string, unknown>;
       if (a.terms !== terms.version_hash || a.registration_agreement !== agreement.version_hash) throw new HttpError(422, "terms_not_accepted");
+      if (addendum && a[addendumKind!] !== addendum.version_hash) throw new HttpError(422, "tld_terms_not_accepted");
     }
+    // The auto-renew consent is its own act on its own text (C-31, C-38), never implied by the terms: an agent path cannot give it.
+    if (autoRenew && (input.agentRequestId || a.auto_renew_authorisation !== authorisation!.version_hash)) throw new HttpError(422, "auto_renew_consent_required");
 
     const id = (await c.query("select uuidv7() as id")).rows[0].id as string;
     const regUsername = "mh" + base32(randomBytes(9)).toLowerCase().slice(0, 14);
     const regPassword = base62(18);
     const ipEnc = await ctx.pii.encrypt(input.ipPrefix, `order_ip:${id}`);
     const ins = await c.query(
-      `insert into orders (id, user_id, kind, fqdn_ascii, years, state, idempotency_key, request_hash, quote, subtotal_minor, tax_ceiling_minor, total_minor, attempt, reg_username, checkout_ip_enc, livemode, agent_request_id, created_at)
-       values ($1,$2,'register',$3,$4,'checkout_open',$5,$6,$7,$8,$9,$10,1,$11,$12,$13,$14,$15)
+      `insert into orders (id, user_id, kind, fqdn_ascii, years, state, idempotency_key, request_hash, quote, subtotal_minor, tax_ceiling_minor, total_minor, attempt, reg_username, checkout_ip_enc, livemode, agent_request_id, created_at, save_card, auto_renew_opt_in)
+       values ($1,$2,'register',$3,$4,'checkout_open',$5,$6,$7,$8,$9,$10,1,$11,$12,$13,$14,$15,$16,$16)
        on conflict (user_id, idempotency_key) do nothing returning *`,
-      [id, input.userId, fqdn, years, input.idempotencyKey, requestHash, quoteToJson(priced), priced.subtotalMinor, priced.taxCeilingMinor, priced.totalMinor, regUsername, ipEnc, ctx.config.livemode, input.agentRequestId ?? null, now]);
+      [id, input.userId, fqdn, years, input.idempotencyKey, requestHash, quoteToJson(priced), priced.subtotalMinor, priced.taxCeilingMinor, priced.totalMinor, regUsername, ipEnc, ctx.config.livemode, input.agentRequestId ?? null, now, autoRenew]);
     if (ins.rowCount === 0) return null;                       // lost the race to a twin request: replay below
     // The upstream profile is generated and stored BEFORE any registrar call.
     await c.query("insert into registrar_profiles (order_id, username, password_enc) values ($1,$2,$3)", [id, regUsername, await ctx.pii.encrypt(regPassword, `registrar_profile:${id}`)]);
-    for (const [kind, doc] of [["terms", terms], ["registration_agreement", agreement]] as const) {
+    const accepted: [string, { version_hash: string }][] = [["terms", terms], ["registration_agreement", agreement]];
+    if (addendum) accepted.push(["tld_addendum", addendum]);
+    if (autoRenew) accepted.push(["auto_renew_mandate", authorisation!]);
+    for (const [kind, doc] of accepted) {
       await c.query(
         "insert into consents (user_id, kind, document_hash, version, accepted_at, ip_enc, ua_family, assertion_action_id, order_id, actor_kind, retain_until) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'user',$10)",
         [input.userId, kind, doc.version_hash, doc.version_hash.slice(0, 12), now, ipEnc, input.uaFamily, input.assertionActionId ?? null, id, new Date(now.getTime() + RETAIN_CONSENT_MS)]);
@@ -179,6 +203,7 @@ export function sessionInputFor(ctx: AppContext, o: OrderRow, customer: string, 
     captureMethod: "manual",
     // 3-D Secure for an account's first two orders and any order over USD 100 (own targets).
     requestThreeDSecure: priorOrders < 2 || o.totalMinor > 10_000n ? "any" : "automatic",
+    ...(o.saveCard ? { setupFutureUsage: "off_session" as const } : {}),
   };
 }
 

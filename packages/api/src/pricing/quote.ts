@@ -98,7 +98,8 @@ export async function buildQuote(c: PoolClient, input: QuoteInput, now: Date, op
   if (!policy) throw new PricingError("unsupported_tld");
   let years = input.years === undefined ? policy.minTerm : input.years;
   if (kind === "restore") { if (input.years !== undefined && input.years !== 1) throw new PricingError("invalid_term"); years = 1; }
-  if (!Number.isInteger(years) || years < policy.minTerm || years > policy.maxTerm) throw new PricingError("invalid_term");
+  // A restore is one transaction whatever the extension's minimum term (.ai's two-year minimum applies to registration and renewal only).
+  if (!Number.isInteger(years) || (kind !== "restore" && years < policy.minTerm) || years > policy.maxTerm) throw new PricingError("invalid_term");
 
   const rows = await loadPriceRows(c, [parsed.tld], [kind, "register"], now);
   const row = rows.get(`${parsed.tld}:${kind}`);

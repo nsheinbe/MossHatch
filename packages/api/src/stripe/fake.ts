@@ -14,9 +14,14 @@ import { toStripeSessionParams } from "./params.ts";
  * keys (a key replays the first result INCLUDING a cached 500, a different body under a used key is an error, keys
  * expire after 24 hours, and a second request while the first is in flight is a 409), `capture_before`, tax added at
  * Checkout on top of the subtotal, signed webhook events with `livemode`, and manual-capture cancel and refund rules.
- * What it cannot prove: any behaviour of the real API, wallets, Radar, or Stripe Tax.
+ * Saved cards (API version pinned in real.ts, 2026-08-26.dahlia): a Checkout Session with `payment_intent_data.setup_future_usage=off_session`
+ * attaches the card to the session's customer when it is paid (and emits `payment_method.attached`); an off-session PaymentIntent with a
+ * card that is not attached to that customer is refused; `detach` removes the attachment; the card updater emits
+ * `payment_method.automatically_updated` with the PaymentMethod and `previous_attributes`, as documented.
+ * What it cannot prove: any behaviour of the real API, wallets, Radar, Stripe Tax, or the exact error code Stripe returns for an
+ * unattached card off-session (UNVERIFIED: the fake uses invalid_request / `payment_method_not_attached`).
  */
-export type FaultMethod = "createCheckoutSession" | "createCustomer" | "capturePaymentIntent" | "cancelPaymentIntent" | "expireSession" | "createRefund" | "retrievePaymentIntent" | "retrieveSession" | "createOffSessionPaymentIntent";
+export type FaultMethod = "detachPaymentMethod" | "retrievePaymentMethod" | "createCheckoutSession" | "createCustomer" | "capturePaymentIntent" | "cancelPaymentIntent" | "expireSession" | "createRefund" | "retrievePaymentIntent" | "retrieveSession" | "createOffSessionPaymentIntent";
 export interface Fault {
   /** server: a 500 that Stripe caches under the idempotency key. timeout: applied, but the caller never sees the answer. lost: never applied, caller sees a timeout. */
   kind: "server" | "timeout" | "lost";
@@ -49,6 +54,8 @@ export class FakeStripe implements StripePort {
   paymentIntents = new Map<string, PaymentIntent>();
   refunds = new Map<string, Refund>();
   customers = new Map<string, { id: string; userId: string }>();
+  /** Every card seen, with the customer it is attached to (null: used once, never saved). */
+  paymentMethods = new Map<string, { id: string; customer: string | null; brand: string; expYear: number; last4: string }>();
   outbox: StripeEvent[] = [];
   calls: Record<string, number> = {};
   /** Real creations (an idempotent replay does not count). */
@@ -217,6 +224,10 @@ export class FakeStripe implements StripePort {
     return this.run("createOffSessionPaymentIntent", this.key(idem, "createOffSessionPaymentIntent"), input, () => {
       const now = this.nowSec();
       if (input.paymentMethod.startsWith("pm_declined")) throw new StripeError("card_error", 402, "card_declined", "Your card was declined.");
+      if (input.paymentMethod.startsWith("pm_auth_required")) throw new StripeError("card_error", 402, "authentication_required", "This payment requires authentication.");
+      // A card used once at Checkout without setup_future_usage is not attached to the customer and cannot be charged off-session.
+      const pm = this.paymentMethods.get(input.paymentMethod);
+      if (!pm || pm.customer !== input.customer) throw new StripeError("invalid_request", 400, "payment_method_not_attached", "The provided PaymentMethod is not attached to this Customer.");
       const p: PaymentIntent = {
         id: this.id("pi"), status: "succeeded", amount: input.amount, amount_capturable: 0, amount_received: input.amount, currency: input.currency, metadata: { ...input.metadata },
         capture_before: null, livemode: this.livemode, review_open: false, payment_method: input.paymentMethod, customer: input.customer, capture_method: "automatic", cancellation_reason: null, created: now,
@@ -224,6 +235,24 @@ export class FakeStripe implements StripePort {
       this.paymentIntents.set(p.id, p);
       this.emit("payment_intent.succeeded", p);
       return structuredClone(p);
+    });
+  }
+
+  async detachPaymentMethod(id: string, idem: string) {
+    return this.run("detachPaymentMethod", this.key(idem, "detachPaymentMethod"), id, () => {
+      const pm = this.paymentMethods.get(id);
+      if (!pm) throw new StripeError("invalid_request", 404, "resource_missing", "No such PaymentMethod");
+      if (!pm.customer) throw new StripeError("invalid_request", 400, "payment_method_unexpected_state", "The payment method you provided is not attached to a customer so detachment is impossible.");
+      pm.customer = null;
+      this.emit("payment_method.detached", { id: pm.id, object: "payment_method", customer: null, card: { brand: pm.brand, last4: pm.last4, exp_year: pm.expYear } });
+      return { id: pm.id, customer: null, brand: pm.brand };
+    });
+  }
+  async retrievePaymentMethod(id: string) {
+    return this.run("retrievePaymentMethod", null, id, () => {
+      const pm = this.paymentMethods.get(id);
+      if (!pm) throw new StripeError("invalid_request", 404, "resource_missing", "No such PaymentMethod");
+      return { id: pm.id, customer: pm.customer, brand: pm.brand };
     });
   }
 
@@ -260,18 +289,49 @@ export class FakeStripe implements StripePort {
     const before = this.outbox.length;
     if (o.declined) { const e = this.emit("payment_intent.payment_failed", { id: "pi_declined", metadata: s.metadata, last_payment_error: { code: "card_declined" } }); return [e]; }
     const now = this.nowSec();
-    const auto = !!o.autoCapture;
+    const params = (s as { _params?: { input: CreateSessionInput } })._params?.input;
+    const auto = !!o.autoCapture || params?.captureMethod === "automatic";
+    const pmId = o.paymentMethod ?? `pm_card_visa_${(++this.seq).toString().padStart(4, "0")}`;
+    const saved = params?.setupFutureUsage === "off_session";
+    if (!this.paymentMethods.has(pmId)) this.paymentMethods.set(pmId, { id: pmId, customer: null, brand: "visa", expYear: new Date(now * 1000).getUTCFullYear() + 3, last4: "4242" });
+    if (saved && s.customer) {
+      const pm = this.paymentMethods.get(pmId)!;
+      pm.customer = s.customer;
+      this.emit("payment_method.attached", { id: pm.id, object: "payment_method", customer: s.customer, card: { brand: pm.brand, last4: pm.last4, exp_year: pm.expYear } });
+    }
     const p: PaymentIntent = {
       id: this.id("pi"), status: auto ? "succeeded" : "requires_capture", amount: o.amountCapturable ?? total, amount_capturable: auto ? 0 : (o.amountCapturable ?? total),
       amount_received: auto ? (o.amountCapturable ?? total) : 0, currency: o.currency ?? "usd",
       metadata: { order_id: o.metadataOrderId ?? s.metadata.order_id ?? "", attempt: s.metadata.attempt ?? "" }, capture_before: auto ? null : o.captureBefore !== undefined ? o.captureBefore : now + Math.floor(this.captureWindowMs / 1000),
-      livemode: this.livemode, review_open: !!o.reviewOpen, payment_method: o.paymentMethod ?? "pm_card_visa", customer: s.customer, capture_method: auto ? "automatic" : "manual", cancellation_reason: null, created: now,
+      livemode: this.livemode, review_open: !!o.reviewOpen, payment_method: pmId, customer: s.customer, capture_method: auto ? "automatic" : "manual", cancellation_reason: null, created: now,
     };
     this.paymentIntents.set(p.id, p);
     s.status = "complete"; s.payment_status = auto ? "paid" : "unpaid"; s.payment_intent = p.id; s.amount_tax = tax; s.amount_total = total; s.url = null;
     this.emit("checkout.session.completed", s);
     this.emit(auto ? "payment_intent.succeeded" : "payment_intent.amount_capturable_updated", p);
     return this.outbox.slice(before);
+  }
+
+  /**
+   * The card network's updater replaced the saved card's details (new number or expiry, rarely a new brand). Emits
+   * `payment_method.automatically_updated` with the PaymentMethod and `previous_attributes` naming what changed.
+   */
+  cardUpdater(pmId: string, change: { brand?: string; expYear?: number } = {}): StripeEvent {
+    const pm = this.paymentMethods.get(pmId);
+    if (!pm) throw new Error("no such payment method");
+    const prev: Record<string, unknown> = { exp_year: pm.expYear, last4: pm.last4 };
+    if (change.brand && change.brand !== pm.brand) prev.brand = pm.brand;
+    pm.expYear = change.expYear ?? pm.expYear + 4; pm.last4 = String(1000 + (this.seq++ % 9000));
+    if (change.brand) pm.brand = change.brand;
+    const ev: StripeEvent = { id: this.id("evt"), type: "payment_method.automatically_updated", livemode: this.livemode, created: this.nowSec(), api_version: "2026-08-26.dahlia",
+      data: { object: { id: pm.id, object: "payment_method", customer: pm.customer, type: "card", card: { brand: pm.brand, last4: pm.last4, exp_year: pm.expYear } }, previous_attributes: { card: prev } } };
+    this.outbox.push(ev);
+    return ev;
+  }
+
+  /** Test helper: a saved card attached to a customer (as a paid opt-in Checkout would leave it). */
+  attachCard(pmId: string, customer: string, brand = "visa"): void {
+    this.paymentMethods.set(pmId, { id: pmId, customer, brand, expYear: 2030, last4: "4242" });
   }
 
   /** Someone captures in the Dashboard. */

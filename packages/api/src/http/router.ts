@@ -126,6 +126,9 @@ export class Router {
       const now = ctx.clock.now();
       if (!row || row.revoked_at || new Date(row.expires_at) <= now) throw new HttpError(401, "unauthorized");
       if (row.paused_at) throw new HttpError(403, "binding_paused");
+      // Idle limit and last-used, in the database on every request (ST-62): 30 days without use ends a token.
+      const live = (await withNoUser(ctx.runtime, (c) => c.query("select auth_binding_touch($1, $2, '30 days'::interval) as ok", [row.id, now]))).rows[0];
+      if (!live?.ok) throw new HttpError(401, "unauthorized");
       return { kind: "binding", userId: row.user_id, bindingId: row.id, bindingKind: row.kind, scopes: row.scopes };
     }
     if (cookies[SESSION_COOKIE]) {

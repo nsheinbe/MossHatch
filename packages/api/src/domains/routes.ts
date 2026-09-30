@@ -10,7 +10,8 @@ import { orderView } from "../orders/routes.ts";
 import { UUID_RE, rowToDomain } from "./common.ts";
 import { disableAutoRenew, enableAutoRenew, registerMandateSpec } from "./mandate.ts";
 import { RefundDenied, refundOrder } from "./refunds.ts";
-import { advanceRenewal, ensureRenewalOrder, markManualRenewal } from "./renewals.ts";
+import { advanceRenewal, ensureRenewalOrder, markManualRenewal, startRenewalCheckout } from "./renewals.ts";
+import { StripeError } from "../stripe/port.ts";
 import { ensureTerm } from "./terms.ts";
 import { domainExport, domainOverview, ledger, listGrove } from "./views.ts";
 import { registerDomainJobs } from "./jobs.ts";
@@ -30,6 +31,7 @@ function bindingMayTurnOff(scopes: unknown, domainId: string): boolean {
 }
 
 const AutoRenewBody = z.strictObject({ consent_hash: z.string().min(8).max(128) });
+const RenewBody = z.strictObject({ auto_renew_consent: z.string().min(8).max(128).optional() }).optional();
 const RefundBody = z.strictObject({ confirm_delete: z.boolean().optional() }).optional();
 
 const REFUND_STATUS: Record<string, [number, string]> = {
@@ -57,6 +59,10 @@ export const domainRoutes: Route[] = [
     method: "POST", path: "/api/v1/domains/:id/renew", principals: ["session"], tag: "domains",
     async handler(r) {
       const userId = uid(r), domainId = idOf(r), ctx = r.ctx;
+      // Optional: the person ticked the auto-renew authorisation, so a Checkout for this renewal also saves the card (C-31).
+      const rb = RenewBody.safeParse(r.body && Object.keys(r.body as object).length ? r.body : undefined);
+      if (!rb.success) throw new HttpError(422, "invalid_request");
+      const saveConsent = rb.data?.auto_renew_consent;
       const rl = await withUser(ctx.runtime, userId, (c) => hit(ctx, c, `renew:${userId}`, { bucket: "domain_renew", max: 20, windowSeconds: 3600 }));
       if (!rl.allowed) throw new HttpError(429, "rate_limited", undefined, { "Retry-After": String(rl.retryAfterSeconds) });
       const row = await withUser(ctx.runtime, userId, async (c) => (await c.query("select * from domains where id = $1 and user_id = $2 and released_at is null", [domainId, userId])).rows[0]);
@@ -80,8 +86,21 @@ export const domainRoutes: Route[] = [
       if (after.state === "renewing_upstream" || after.state === "captured") return json({ status: "renewing", order_id: after.id }, 202);
       if (after.state === "refund_pending" || after.state === "refunded") return json({ status: "refunded", order_id: after.id }, 409);
       const t = (await ctx.cron.query("select state, held_reason from renewal_terms where order_id = $1", [after.id])).rows[0];
+      // The bank wants the person present (3-D Secure): bring them back on-session through Checkout (C-38).
+      if (after.failureCode === "authentication_required") {
+        try { const url = await startRenewalCheckout(ctx, after, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily }); if (url) return json({ status: "checkout", order_id: after.id, checkout_url: url }, 200); }
+        catch (e) { if (!(e instanceof StripeError)) throw e; }
+      }
       if (after.failureCode === "card_declined" || after.failureCode === "authentication_required") throw new HttpError(402, "payment_declined");
-      if (t?.held_reason === "no_saved_card") throw new HttpError(409, "payment_method_required");
+      if (t?.held_reason === "no_saved_card" || t?.held_reason === "reconsent_required") {
+        // No card saved for off-session use (or one that needs a new agreement): pay this renewal on Stripe's hosted Checkout instead.
+        // The registrar is still called only after Stripe says the payment succeeded (C-30).
+        try {
+          const url = await startRenewalCheckout(ctx, after, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily });
+          if (url) return json({ status: "checkout", order_id: after.id, checkout_url: url }, 200);
+        } catch (e) { if (e instanceof StripeError) throw new HttpError(503, "payment_unavailable"); throw e; }
+        throw new HttpError(409, "payment_method_required");
+      }
       if (t?.held_reason === "account_review" || t?.held_reason === "paused") throw new HttpError(409, "renewal_paused");
       if (t?.held_reason === "funds_gate" || t?.held_reason === "registrar_unavailable") throw new HttpError(503, "sell_gate", "Renewals are paused for a short while. Nothing was charged.");
       return json({ status: "pending", order_id: after.id }, 202);

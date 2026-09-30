@@ -196,10 +196,16 @@ describe("ST-115: velocity fuse and command allow-list", () => {
       ["SEND_AUTHCODE", "DOMAIN", { domain: "a-b.com" }], ["DELETE", "DOMAIN", { domain: "a-b.com" }], ["SW_REGISTER", "DOMAIN_TRANSFER", {}], ["REVOKE", "DOMAIN", { domain: "a-b.com" }],
       ["SUBMIT", "BULK_CHANGE", {}], ["CANCEL_PENDING_ORDERS", "ORDER", { to_date: "2027-01-01" }], ["FORCE_DNS_NAMESERVERS", "DOMAIN", { domain: "a-b.com" }],
     ] as [string, string, object][]) await expect(call(a, o, at), a).rejects.toMatchObject({ kind: "rejected", code: "command_not_allowed" });
-    // Allowed command, forbidden argument: the code is never read back, and a transfer-in cannot ride SW_REGISTER.
+    // Allowed command, forbidden argument: the code is never read back. Phase 5: a transfer-in rides SW_REGISTER only as reg_type=transfer
+    // with auth_info and without a nameserver list, and a new registration never carries auth_info.
     await expect(call("GET", "DOMAIN", { domain: "a-b.com", type: "domain_auth_info" })).rejects.toMatchObject({ code: "attribute_value_not_allowed" });
     await expect(call("MODIFY", "DOMAIN", { domain: "a-b.com", data: "whois_privacy_state" })).rejects.toMatchObject({ code: "attribute_value_not_allowed" });
-    await expect(call("SW_REGISTER", "DOMAIN", { domain: "a-b.com", reg_type: "transfer", period: 1, handle: "process", auto_renew: 0, f_lock_domain: 1, reg_username: "abc", reg_password: "x".repeat(12), contact_set: {}, auth_info: "x" })).rejects.toMatchObject({ code: "attribute_not_allowed" });
+    const sw = { domain: "a-b.com", period: 1, handle: "process", auto_renew: 0, f_lock_domain: 1, reg_username: "abc", reg_password: "x".repeat(12), contact_set: {} };
+    await expect(call("SW_REGISTER", "DOMAIN", { ...sw, reg_type: "transfer", auth_info: "x" })).rejects.toMatchObject({ code: "auth_info_required" });
+    await expect(call("SW_REGISTER", "DOMAIN", { ...sw, reg_type: "transfer" })).rejects.toMatchObject({ code: "auth_info_required" });
+    await expect(call("SW_REGISTER", "DOMAIN", { ...sw, reg_type: "transfer", auth_info: "abcdef12", custom_nameservers: 1, nameserver_list: [] })).rejects.toMatchObject({ code: "transfer_keeps_nameservers" });
+    await expect(call("SW_REGISTER", "DOMAIN", { ...sw, reg_type: "new", auth_info: "abcdef12" })).rejects.toMatchObject({ code: "auth_info_not_allowed" });
+    await expect(call("SW_REGISTER", "DOMAIN", { ...sw, reg_type: "trade", auth_info: "abcdef12" })).rejects.toMatchObject({ code: "attribute_value_not_allowed" });
     await expect(call("LOOKUP", "DOMAIN", { domain: "A B.com" })).rejects.toMatchObject({ code: "domain_invalid" });
     expect(r.transport.requests.length).toBe(before);
     expect(ALLOWED_COMMANDS.has("SEND_AUTHCODE:DOMAIN")).toBe(false);

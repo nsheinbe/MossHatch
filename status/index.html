@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'" />
+<meta name="referrer" content="no-referrer" />
+<title>Mosshatch status</title>
+<meta name="description" content="Whether Mosshatch, its API and hatchkind.com are working, and what we are doing about it when they are not." />
+<link rel="stylesheet" href="status.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site"><p class="wordmark">Mosshatch status</p></header>
+<main id="main">
+<!-- EDIT HERE: the overall line. One of: ok / degraded / down. Change the class, the symbol and the words together. -->
+<section class="overall ok" aria-labelledby="overall">
+<h1 id="overall"><span class="mark" aria-hidden="true">●</span> Everything is working</h1>
+<p>Last checked by hand: <time datetime="2026-09-30T12:00Z">30 September 2026, 12:00 UTC</time>.</p>
+</section>
+
+<h2>Parts of the service</h2>
+<!-- Each state has a symbol and a word, never colour alone: ● Working, ▲ Slow or partly down, ■ Down. -->
+<ul class="parts">
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">mosshatch.com and search</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">Sign-in and passkeys</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">Checkout and payments</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">Registrations, renewals and transfers</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">DNS changes</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">The Nest (secrets) and the CLI</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">Email notices</span> <span class="state">Working</span></li>
+<li class="ok"><span class="mark" aria-hidden="true">●</span> <span class="name">hatchkind.com cards</span> <span class="state">Working</span></li>
+</ul>
+
+<h2>Incidents</h2>
+<!-- Newest first. Copy the <article> below for each incident and update it in place; never delete a past incident. -->
+<p class="none">No incidents in the last 90 days.</p>
+<!--
+<article class="incident">
+<h3>Checkout slow for some cards</h3>
+<p class="when"><time datetime="2026-10-01T09:10Z">1 October 2026, 09:10 UTC</time> to <time datetime="2026-10-01T09:55Z">09:55 UTC</time></p>
+<ul>
+<li><time datetime="2026-10-01T09:55Z">09:55</time> Resolved. Payments made during the incident were charged once.</li>
+<li><time datetime="2026-10-01T09:20Z">09:20</time> We know checkout is slow and are working with our payment provider.</li>
+</ul>
+</article>
+-->
+
+<h2>Your domains during an outage</h2>
+<p>Your domains keep resolving while mosshatch.com is down: DNS is served by the registrar's name servers or yours, not by this website. Renewals that fall due during an outage are retried before the name expires.</p>
+
+<h2>Contact</h2>
+<p>Email <a href="mailto:support@mosshatch.com">support@mosshatch.com</a>. Security problems: <a href="mailto:security@mosshatch.com">security@mosshatch.com</a>.</p>
+</main>
+<footer class="site"><p>This page is hosted apart from Mosshatch, so it stays up when Mosshatch is down.</p></footer>
+</body>
+</html>

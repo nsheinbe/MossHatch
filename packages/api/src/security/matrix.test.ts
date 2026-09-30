@@ -28,6 +28,10 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
   // Domains core (Phase 3): the overview, export, renew and auto-renew routes take the domain's uuid.
   { match: /^\/api\/v1\/domains\/:id/, param: "id", id: () => ids.domain! },
+  // Transfers (Phase 5): a transfer-in of user A. The Gate (/domains/:id/gate) is covered by the domains :id fixture above.
+  { match: /^\/api\/v1\/transfers\/:id/, param: "id", id: () => ids.transfer! },
+  // Vault (Phase 4): the reveal takes the secret id.
+  { match: /^\/api\/v1\/secrets\/:id/, param: "id", id: () => ids.secret! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/];
@@ -52,6 +56,8 @@ beforeAll(async () => {
   names.domain = "alice-domain-fixture.com";
   await h.app.db.owner.query("insert into domains (user_id, fqdn_ascii, tld, registrar, state, locked, nameservers, livemode) values ($1,$2,'com','mock','registered',true,'{ns1.systemdns.com,ns2.systemdns.com}',false)", [a.userId, names.domain]);
   ids.domain = (await h.app.db.owner.query("select id from domains where user_id = $1 and fqdn_ascii = $2", [a.userId, names.domain])).rows[0].id;
+  ids.secret = (await h.app.db.owner.query("insert into secrets (user_id, domain_id, env, name) values ($1,$2,'prod','ALICE_FIXTURE') returning id", [a.userId, ids.domain])).rows[0].id;
+  ids.transfer = (await h.app.db.owner.query("insert into transfers_in (user_id, order_id, fqdn_ascii, tld, years, idempotency_key, request_hash) values ($1,$2,'alice-transfer.com','com',1,'matrix-t','\\x00') returning id", [a.userId, ids.order])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;

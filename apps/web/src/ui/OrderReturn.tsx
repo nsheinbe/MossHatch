@@ -23,7 +23,9 @@ export function OrderReturn() {
         const o = first && orderSession ? await reconcileOrder(orderId, orderSession) : await getOrder(orderId);
         if (!alive) return;
         setOrder(o);
-        const done = ["registered", "capturing", "captured"].includes(o.state);
+        // A renewal paid on Checkout has no egg to hatch: the creature already lives in the grove.
+        const renewal = o.kind === "renew";
+        const done = !renewal && ["registered", "capturing", "captured"].includes(o.state);
         if (done && !started.current && handle.world) {
           started.current = true;
           handle.world.setResults([{ domain: o.fqdn, available: true }]);

@@ -101,6 +101,9 @@ export class FakeHorizonTransport implements HttpTransport {
 
   private async dispatch(action: string, a: OpsObject): Promise<string> {
     const m = this.mock; const domain = str(a.domain) ?? "";
+    // "You cannot simulate a domain transfer in Horizon" (KB 201000063316): the fake refuses rather than pretend. Transfer-in is proven
+    // against MockRegistrarPort and the adapter's request shape against a scripted transport, never against this fake.
+    if ((action === "SW_REGISTER" && str(a.reg_type) === "transfer") || action === "CHECK_TRANSFER") return opsReply(465, {}, "Transfers cannot be simulated in the test environment");
     switch (action) {
       case "LOOKUP": {
         const r = await m.checkAvailability(domain, { noCache: str(a.no_cache) === "1" });

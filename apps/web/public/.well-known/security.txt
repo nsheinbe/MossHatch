@@ -1,0 +1,6 @@
+# Security contact for mosshatch.com (RFC 9116). The policy page is a draft awaiting counsel review; the contact is live.
+Contact: mailto:security@mosshatch.com
+Expires: 2027-09-29T23:59:00.000Z
+Preferred-Languages: en
+Canonical: https://mosshatch.com/.well-known/security.txt
+Policy: https://mosshatch.com/security

@@ -20,7 +20,7 @@ export function useNarrow() {
 }
 
 export function Find() {
-  const { query, results, alternatives, demo, dealOpen, hatchPhase, set } = useUi();
+  const { query, results, alternatives, demo, dealOpen, hatchPhase, apiReady, set } = useUi();
   const narrow = useNarrow();
   const token = useRef(0);
   const timer = useRef<number>(0);
@@ -100,7 +100,7 @@ export function Find() {
           />
           <button type="button" className="link-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button>
         </div>
-        <p className="search-note">Your searches stay in this browser. <a href="/commitments.html">Our commitments</a></p>
+        <p className="search-note">{apiReady ? "We check names with our registrar, never register one because you searched, and never sell your searches." : "Your searches stay in this browser."} <a href="/commitments.html">Our commitments</a> · <a href="/fees.html">Fees</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
       </form>
 
       {demo === "playing" && <p className="demo-note" role="status">Demo: watching “moonfern” hatch. Type to try your own.</p>}

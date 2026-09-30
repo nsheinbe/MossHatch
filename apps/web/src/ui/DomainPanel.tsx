@@ -3,6 +3,7 @@ import { useUi } from "../store";
 import { explainDomain, getDomain, getSecurity, getTransfer, type DomainDetail, type Security, type TransferState } from "../lib/domains";
 import { DomainOverview } from "./DomainOverview";
 import { DnsTab } from "./DnsTab";
+import { CardSection } from "./CardSection";
 
 type Tab = "overview" | "dns";
 
@@ -58,6 +59,7 @@ export default function DomainPanel() {
           {err && <p role="alert" className="notice">{err}</p>}
           {!d && !err && <p role="status">Loading.</p>}
           {d && tab === "overview" && <DomainOverview d={d} sec={sec} xfer={xfer} reload={reload} />}
+          {d && tab === "overview" && !d.released && <CardSection domainId={d.id} fqdn={domainPanel.fqdn} />}
           {d && tab === "dns" && <DnsTab d={d} sec={sec} reloadAll={reload} />}
         </div>
         <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ domainPanel: null })}>Close</button></div>

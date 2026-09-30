@@ -12,12 +12,14 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @mosshatch/web",
-    "build": "npm run build -w @mosshatch/web && node scripts/build-api.mjs && node scripts/postbuild.mjs",
+    "build": "node scripts/render-public-pages.mjs --check && npm run build -w @mosshatch/web && node scripts/web-sitemap.mjs apps/web/dist && npm run build:cards && node scripts/build-api.mjs && node scripts/postbuild.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
     "e2e": "playwright test",
     "check:st": "node scripts/check-st-ids.mjs",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "build:cards": "npm run build -w @mosshatch/cards && node scripts/check-cards.mjs apps/cards/dist",
+    "pages": "node scripts/render-public-pages.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

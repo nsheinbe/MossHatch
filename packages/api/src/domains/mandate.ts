@@ -23,11 +23,14 @@ export const MANDATE_RETAIN_MS = 3 * 365 * DAY_MS;
 export interface MandateRow {
   id: string; domainId: string; userId: string; paymentMethodRef: string | null; customerRef: string | null; priceCeilingMinor: bigint;
   chargeDaysBeforeExpiry: number; textHash: string; termYears: number; signedActionId: string | null; consentId: string | null; acceptedAt: Date; revokedAt: Date | null;
+  /** Set when the card network replaced the card with another brand (C-38): no charge until a fresh signature. */
+  reconsentRequiredAt: Date | null; cardUpdatedAt: Date | null;
 }
 const rowToMandate = (r: Record<string, any>): MandateRow => ({
   id: r.id, domainId: r.domain_id, userId: r.user_id, paymentMethodRef: r.stripe_payment_method_ref, customerRef: r.stripe_customer_ref, priceCeilingMinor: BigInt(r.price_ceiling_minor),
   chargeDaysBeforeExpiry: r.charge_days_before_expiry, textHash: r.text_hash, termYears: r.term_years, signedActionId: r.signed_action_id, consentId: r.consent_id,
   acceptedAt: new Date(r.accepted_at), revokedAt: r.revoked_at ? new Date(r.revoked_at) : null,
+  reconsentRequiredAt: r.reconsent_required_at ? new Date(r.reconsent_required_at) : null, cardUpdatedAt: r.card_updated_at ? new Date(r.card_updated_at) : null,
 });
 
 export async function activeMandate(q: Q, domainId: string): Promise<MandateRow | null> {
@@ -42,11 +45,15 @@ export async function currentAuthorisationHash(q: Q, now: Date): Promise<string 
   return (r.rows[0]?.version_hash as string | undefined) ?? null;
 }
 
-/** The card the mandate would charge: the payment method of the person's latest paid order (Stripe customer and method ids only). */
+/**
+ * The card the mandate would charge: the payment method of the person's latest paid order whose Checkout saved the card for
+ * off-session use (`setup_future_usage=off_session`, set only when the auto-renew box was ticked, C-31) and that was not detached since.
+ * A card used once at Checkout is never charged again without the person.
+ */
 export async function savedCard(q: Q, userId: string): Promise<{ customer: string; paymentMethod: string } | null> {
   const r = await q.query(
     `select stripe_customer_id, payment_method_ref from orders where user_id = $1 and payment_method_ref is not null and stripe_customer_id is not null
-        and state in ('captured','renewing_upstream','renewed','refunded','partially_refunded') order by created_at desc limit 1`, [userId]);
+        and card_reusable and card_detached_at is null and state in ('captured','renewing_upstream','renewed','refunded','partially_refunded') order by created_at desc limit 1`, [userId]);
   const row = r.rows[0];
   return row ? { customer: row.stripe_customer_id as string, paymentMethod: row.payment_method_ref as string } : null;
 }
@@ -98,7 +105,14 @@ export async function enableAutoRenew(ctx: AppContext, c: PoolClient, o: { userI
   const hash = await currentAuthorisationHash(c, now);
   if (!hash || p.text_hash !== hash || o.consentHash !== hash) return { ok: false, code: "terms_not_accepted" };
   const existing = await activeMandate(c, d.id);
-  if (existing) return { ok: false, code: "already_on" };
+  if (existing) {
+    // A live mandate is replaced only when it cannot be charged as it stands: the card changed brand (a new agreement, C-38) or the renewal
+    // price rose above its ceiling (a fresh passkey approval, C-33). The old one is revoked in the same transaction as the new one is written.
+    const q = await renewalQuote(c, d.fqdn, now);
+    const aboveCap = !!q && q.subtotalMinor > existing.priceCeilingMinor;
+    if (!existing.reconsentRequiredAt && !aboveCap) return { ok: false, code: "already_on" };
+    await c.query("update renewal_mandates set revoked_at = $2, revoked_by = 'reconsent' where id = $1 and revoked_at is null", [existing.id, now]);
+  }
   const card = await c.query("select stripe_customer_id from orders where user_id = $1 and payment_method_ref = $2 and stripe_customer_id is not null order by created_at desc limit 1", [o.userId, p.payment_method_ref]);
   const ip = await ctx.pii.encrypt(o.ipPrefix, `consent_ip:${o.actionId}`);
   const retain = new Date(now.getTime() + MANDATE_RETAIN_MS);

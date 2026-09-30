@@ -51,6 +51,10 @@ export interface OrderRow {
   captureDeadline: Date | null;
   payLinkExpiresAt: Date | null;
   stripeCustomerId: string | null;
+  /** The Checkout asked Stripe to keep the card for off-session renewals (the auto-renew opt-in, C-31). */
+  saveCard: boolean;
+  /** The card was saved and may be charged off-session. */
+  cardReusable: boolean;
   paymentMethodRef: string | null;
   lateWatchUntil: Date | null;
   lateWatchState: "watching" | "claimed" | "expired" | null;

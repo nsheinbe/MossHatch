@@ -144,6 +144,8 @@ export function registerDeadLetterHook(kind: string, hook: DeadLetterHook): void
   deadHooks.set(kind, [...(deadHooks.get(kind) ?? []), hook]);
 }
 export function clearDeadLetterHooks(): void { deadHooks.clear(); }
+/** Which kinds have a dead-letter default (the boot completeness test reads it). */
+export const listDeadLetterHookKinds = (): string[] => [...deadHooks.keys()];
 
 async function deadLetter(ctx: Pick<AppContext, "cron" | "services" | "clock">, job: { id: string; kind: string; priority?: number; attempts: number }, reason: string): Promise<void> {
   const def = getJobDef(job.kind);
@@ -198,6 +200,8 @@ export function registerRecurringJob(r: { kind: string; everySec: number; payloa
   recurring.set(r.kind, { kind: r.kind, everySec: r.everySec, payload: r.payload ?? {} });
 }
 export function clearRecurringJobs(): void { recurring.clear(); }
+/** The recurring schedule as registered (the boot completeness test reads it). */
+export const listRecurringJobs = (): { kind: string; everySec: number }[] => [...recurring.values()].map((r) => ({ kind: r.kind, everySec: r.everySec }));
 
 export async function enqueueRecurring(ctx: Pick<AppContext, "cron">, now: Date): Promise<number> {
   let n = 0;

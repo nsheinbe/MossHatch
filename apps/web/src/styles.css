@@ -114,6 +114,7 @@ details summary { cursor: pointer; min-height: 32px; }
 .static-prices .ext { font-family: var(--display); color: var(--lantern); min-width: 4.5rem; }
 .static-prices .price { font-weight: 700; }
 .static-prices .note { color: rgba(241, 234, 216, 0.7); font-size: 0.9rem; }
+.static-links a { color: var(--lantern); }
 .static-search { margin: 22px 0 0; display: grid; gap: 6px; }
 .static-search label { font-family: var(--display); }
 .static-search input { min-height: 48px; padding: 0 16px; border-radius: 24px; border: 1px solid rgba(241, 234, 216, 0.4); background: rgba(11, 18, 33, 0.66); }
@@ -163,7 +164,7 @@ details summary { cursor: pointer; min-height: 32px; }
 .tabs button[aria-selected="true"] { background: var(--shell); color: var(--ink); }
 .section { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--glass-border); }
 .section h3, .banner h3 { font-size: 1.15rem; margin-bottom: 6px; }
-.section h4, .consent h4 { font-family: var(--display); font-weight: 400; font-size: 1.05rem; margin: 0 0 6px; grid-column: 1 / -1; }
+.consent h3, .section h4, .consent h4 { font-family: var(--display); font-weight: 400; font-size: 1.05rem; margin: 0 0 6px; grid-column: 1 / -1; }
 .banner { margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--st-attention); border-radius: 12px; background: rgba(255, 154, 126, 0.12); }
 .banner p { margin: 0 0 8px; }
 .consent { margin: 10px 0; padding: 12px 14px; border: 2px solid var(--lantern); border-radius: 12px; }

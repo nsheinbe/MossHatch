@@ -17,6 +17,7 @@ export function HatchSheet() {
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<LegalDoc[]>([]);
   const [accepted, setAccepted] = useState(false);
+  const [autoRenew, setAutoRenew] = useState(false);
   const [hasContact, setHasContact] = useState<boolean | null>(null);
   const [quote, setQuote] = useState<LiveQuote | null>(null);
   useEffect(() => { if (hatchPhase === "sheet") head.current?.focus(); }, [hatchPhase]);
@@ -34,18 +35,28 @@ export function HatchSheet() {
   }, [quoteFor, selected?.years]);
   useEffect(() => {
     if (!wantsPay) return;
-    void getDocuments().then(setDocs).catch(() => setDocs([]));
+    void getDocuments(selected?.domain.split(".").pop()).then(setDocs).catch(() => setDocs([]));
     void getContact().then((c) => setHasContact(c.present)).catch(() => setHasContact(false));
-  }, [wantsPay]);
+  }, [wantsPay, selected?.domain]);
+  useEffect(() => { setAccepted(false); setAutoRenew(false); }, [selected?.domain]);
   if (hatchPhase !== "sheet" || !selected) return null;
   const r = selected;
   const years = r.years ?? 1;
   const live = apiReady === true;
+  const tld = r.domain.split(".").pop() ?? "";
+  const doc = (kind: string) => docs.find((d) => d.kind === kind);
+  const addendum = tld === "ai" || tld === "io" ? doc(`tld_addendum_${tld}`) : undefined;
+  const authorisation = doc("auto_renew_authorisation");
+  const docsReady = !!doc("terms") && !!doc("registration_agreement") && (tld !== "ai" && tld !== "io" ? true : !!addendum);
 
   const pay = async () => {
     setBusy(true); setError(null);
     try {
-      const o = await startCheckout(r.domain, years, Object.fromEntries(docs.map((d) => [d.kind, d.version])));
+      // The acceptance is built from what this sheet showed. The auto-renew text is sent only when its own box is ticked (C-31).
+      const accept: Record<string, string> = { terms: doc("terms")!.version, registration_agreement: doc("registration_agreement")!.version };
+      if (addendum) accept[addendum.kind] = addendum.version;
+      if (autoRenew && authorisation) accept.auto_renew_authorisation = authorisation.version;
+      const o = await startCheckout(r.domain, years, accept, autoRenew && !!authorisation);
       sessionStorage.setItem("mh.order", o.order_id);
       window.location.assign(o.checkout_url);
     } catch (e) { setError(explain(e)); setBusy(false); }
@@ -71,18 +82,27 @@ export function HatchSheet() {
             <dt>Flat fee</dt><dd>{quote?.fee ?? r.fee}</dd>
           </dl>
         </details>
-        <p>No add-ons. Nothing is pre-checked.</p>
+        {tld === "ai" && <p className="notice">.ai is sold for 2 years at a time, so the price is the total for 2 years. Its contact details show in public lookups, and it cannot be refunded.</p>}
+        {tld === "io" && <p className="notice">.io follows its registry's own rules, needs at least two nameservers, and cannot be refunded. Its future depends on a treaty about the Chagos Archipelago that is not in force.</p>}
+        {live && account && hasContact && authorisation && (
+          <div className="consent" role="group" aria-labelledby="ar-h">
+            <h3 id="ar-h">Auto-renew (optional)</h3>
+            <p>If you tick this, Stripe keeps your card so we can renew this name each year, ten days before it expires, at the renewal price shown above. You confirm it with your passkey after the name hatches, we email you before every charge, and you can turn it off with one click. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorisation</a>.</p>
+            <label className="check"><input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} /> Save my card for auto-renew. This is separate from the terms.</label>
+          </div>
+        )}
+        <p>No add-ons. Nothing is pre-checked. <a href="/fees.html" target="_blank" rel="noreferrer">Fees, renewals and refunds</a>.</p>
         {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
         {live && account && hasContact && (
           <p>
             <input id="accept" type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: 8 }} />
-            <label htmlFor="accept">I accept the <a href={docs.find((d) => d.kind === "terms")?.url ?? "/legal/terms.html"} target="_blank" rel="noreferrer">terms of service</a> and the <a href={docs.find((d) => d.kind === "registration_agreement")?.url ?? "/legal/registration-agreement.html"} target="_blank" rel="noreferrer">registration agreement</a>.</label>
+            <label htmlFor="accept">I accept the <a href={doc("terms")?.url ?? "/legal/terms.html"} target="_blank" rel="noreferrer">terms of service</a>{addendum ? ", " : " and "}the <a href={doc("registration_agreement")?.url ?? "/legal/registration-agreement.html"} target="_blank" rel="noreferrer">registration agreement</a>{addendum && <> and the <a href={addendum.url} target="_blank" rel="noreferrer">.{tld} registry terms</a></>}.</label>
           </p>
         )}
         {error && <p role="alert" className="notice" style={{ color: "var(--st-attention)" }}>{error}</p>}
         <div className="row-actions">
           {!live && <button type="button" className="btn primary" onClick={() => void runHatch(r.domain)}>Hatch</button>}
-          {live && account && hasContact && <button type="button" className="btn primary" disabled={busy || !accepted || docs.length < 2 || !quote} onClick={pay}>{busy ? "Opening Stripe" : `Pay ${quote?.subtotal ?? r.price} and hatch`}</button>}
+          {live && account && hasContact && <button type="button" className="btn primary" disabled={busy || !accepted || !docsReady || !quote} onClick={pay}>{busy ? "Opening Stripe" : `Pay ${quote?.subtotal ?? r.price} and hatch`}</button>}
           {live && !account && <button type="button" className="btn primary" onClick={() => set({ accountOpen: true })}>Sign in to hatch</button>}
           <button type="button" className="btn secondary" onClick={() => set({ hatchPhase: "none", selected: null })}>Not yet</button>
         </div>

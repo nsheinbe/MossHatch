@@ -264,6 +264,7 @@ describe("the capture_failed ladder", () => {
     const o0 = await orderRow(h, id);
     const dom = (await h.app.db.owner.query("select id from domains where fqdn_ascii = $1", [o0.fqdn_ascii])).rows[0].id;
     await h.app.db.owner.query("insert into renewal_mandates (domain_id, user_id, stripe_payment_method_ref, price_ceiling_minor, text_hash, retain_until) values ($1,$2,'pm_saved_1',5000,'h', now() + interval '3 years')", [dom, buyer.userId]);
+    h.stripe.attachCard("pm_saved_1", o0.stripe_customer_id);          // saved at an opt-in Checkout: only an attached card can be charged off-session
     await work(id, 1);
     h.app.clock.advance(16 * 60_000);
     await work(id);

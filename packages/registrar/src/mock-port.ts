@@ -5,6 +5,7 @@ import {
   type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult,
   type RegistrarCapabilities, type RegistrarPort, type TransferAway, type TransferAwayStatus, type UpstreamOrder,
+  type TransferDenialReason, type TransferInCheck, type TransferInFailure, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
 } from "./port.ts";
 import { randomAuthCode } from "./authcode.ts";
 import { canonicalZone, validateZone, zoneHash } from "./dns.ts";
@@ -87,7 +88,53 @@ interface MockDomain {
   registrant?: Registrant; pendingRegistrant?: Registrant;
   autoRenew: boolean; letExpire: boolean; privacy?: "redacted_default" | "exposed"; privacyService?: boolean;
   ds: DsRecord[]; zone: Map<DnsRecordType, DnsRecord[]>; authHash?: string;
+  /** Set when the name arrived by transfer-in (the 60-day rule counts from it). */
+  lastTransferAt?: Date;
 }
+
+// ---- Phase 5: transfer-in simulator (Horizon cannot run a transfer: "You cannot transfer domains in Horizon", KB 201000063316) ----
+/** OpenSRS cancels a transfer the owner has not confirmed within five days (check_transfer, S20; KB 201000063138). */
+export const TRANSFER_OWNER_WINDOW_MS = 5 * 86_400_000;
+/** OpenSRS review before the request reaches the registry: "typically takes 24 to 48 hours" (K5). The mock uses the short end. */
+export const TRANSFER_REVIEW_MS = 24 * 3_600_000;
+/** The registry's pending window: silence from the losing registrar for five days acknowledges the transfer (Transfer Policy I.A.3.5-3.6). */
+export const TRANSFER_REGISTRY_WINDOW_MS = 5 * 86_400_000;
+/** Transfer Policy I.A.3.7.5 / 3.7.6 and the registry rule: no transfer within 60 days of creation or of a prior transfer (OpenSRS error 552). */
+export const TRANSFER_LOCK_MS = 60 * 86_400_000;
+/** Years a transfer adds: one for the gTLDs and .io, two for .ai ("Domain Transfer: 2 years renewal", K12). */
+export const TRANSFER_YEARS: Record<string, number> = { com: 1, dev: 1, app: 1, studio: 1, io: 1, ai: 2 };
+
+/** A name registered at ANOTHER registrar, which this reseller can try to transfer in. */
+export interface ForeignSeed {
+  authCode: string;
+  createdAt?: Date;
+  lastTransferAt?: Date;
+  expiresAt?: Date;
+  /** clientTransferProhibited at the losing registrar. */
+  locked?: boolean;
+  /** serverTransferProhibited: a registry lock only the losing registrar can ask to lift. */
+  registryLock?: boolean;
+  dsPresent?: boolean;
+  /** RGP states and an open UDRP (a must-deny, I.A.3.8). */
+  status?: "active" | "redemption" | "pending_delete" | "udrp";
+  nameservers?: string[];
+  /** What the owner does with the approval email when one is sent. Default: confirms after an hour. */
+  owner?: "confirm" | "decline" | "silent";
+  /** What the losing registrar does in the registry window. Default: silence (auto-ACK after five days). */
+  losing?: "ack" | "silent" | { nack: TransferDenialReason };
+}
+interface MockForeign extends Required<Pick<ForeignSeed, "owner" | "losing">> {
+  fqdn: string; authHash: string; createdAt: Date; lastTransferAt?: Date; expiresAt: Date; locked: boolean; registryLock: boolean; dsPresent: boolean;
+  status: NonNullable<ForeignSeed["status"]>; nameservers: string[];
+}
+interface MockTransferIn {
+  fqdn: string; orderId: string; status: TransferInStatus; failure?: TransferInFailure; nackReason?: TransferDenialReason;
+  requestedAt: Date; updatedAt: Date; ownerDeadlineAt?: Date; ownerActAt?: Date; reviewAt?: Date; registrySentAt?: Date; registryDeadlineAt?: Date;
+  years: number; regUsername: string; registrant: Registrant; fingerprint: string; authHash: string; costMinor: bigint;
+}
+/** How the provider treats `auth_info` sent with the API order. The API reference: "If provided and valid, the transfer will not send an approval
+ * email" (S15); KB 201000063138: "The RWI is the only interface that lets you supply the authorization code with the order itself". Unresolved, so both. */
+export type TransferOwnerStep = "skipped_with_code" | "always_email";
 interface FaultState { opts: FaultOptions; remaining: number | null }
 
 const KNOWN_TAKEN = new Set(["google.com", "example.com", "mosshatch.com", "hatchkind.com", "moonfern.io"]);
@@ -115,16 +162,24 @@ export class MockRegistrarPort implements RegistrarPort {
   private deleted: DeletedDomain[] = [];
   private transfersAway: TransferAway[] = [];
   private transfersIn = new Set<string>();
+  private foreign = new Map<string, MockForeign>();
+  private inbound: MockTransferIn[] = [];
+  /** Owner-approval emails the provider "sent" (the mock sends nothing): one per transfer that needed one. */
+  readonly ownerApprovalEmails: { fqdn: string; at: Date }[] = [];
+  transferOwnerStep: TransferOwnerStep = "skipped_with_code";
   readonly dnsOverwrite: DnsOverwriteMode;
 
   /** Call counters, by adapter method: `calls.register` is the number of times the caller invoked it. */
   readonly calls = { checkAvailability: 0, checkAvailabilityNoCache: 0, quote: 0, register: 0, renew: 0, getDomain: 0, getOrdersByDomain: 0, cancelPendingOrder: 0, getFundingStatus: 0, health: 0,
     setLock: 0, setNameservers: 0, issueAuthCode: 0, rerandomizeAuthCode: 0, getDns: 0, replaceZone: 0, getDs: 0, addDs: 0, removeDs: 0, updateContact: 0,
-    getTransfersAway: 0, cancelTransfer: 0, stopTransferAway: 0, setAutoRenew: 0, listDomains: 0, getDeletedDomains: 0, restore: 0, getBalance: 0 };
+    getTransfersAway: 0, cancelTransfer: 0, stopTransferAway: 0, setAutoRenew: 0, listDomains: 0, getDeletedDomains: 0, restore: 0, getBalance: 0,
+    checkTransferIn: 0, startTransferIn: 0, getTransferInStatus: 0, cancelTransferIn: 0 };
   /** What actually reached the upstream (differs from `calls` under `duplicateSubmit`). */
   readonly upstream = { registerSubmissions: 0, registerApplied: 0, renewApplied: 0, duplicateRejected: 0 };
   /** Every debit of the funding balance, in order. */
   readonly debits: { orderId: string; minor: bigint }[] = [];
+  /** Funds returned to the balance (a transfer-in that failed after its funds were taken). */
+  readonly credits: { orderId: string; minor: bigint }[] = [];
 
   readonly faults = {
     set: (name: FaultName, opts: FaultOptions | boolean = {}): void => {
@@ -162,6 +217,7 @@ export class MockRegistrarPort implements RegistrarPort {
     for (const o of this.orderList) {
       if (o.status === "waiting" && o.completeAt && o.completeAt.getTime() <= now) this.complete(o);
     }
+    this.tickTransfersIn();
   }
   /** Add funds; clears the `insufficientFunds` fault and completes forced-pending orders the balance now covers, oldest first. */
   topUp(minor: bigint): void {
@@ -429,6 +485,8 @@ export class MockRegistrarPort implements RegistrarPort {
   seedTransferIn(fqdn: string) { this.transfersIn.add(fqdn.toLowerCase()); }
   async cancelTransfer(fqdn: string): Promise<{ cancelled: boolean }> {
     this.calls.cancelTransfer++; this.tick(); const d = fqdn.trim().toLowerCase(); this.guardCall(d);
+    const live = this.liveInbound(d);
+    if (live) { this.endInbound(live, "cancelled_by_us"); this.transfersIn.delete(d); return { cancelled: true }; }
     return { cancelled: this.transfersIn.delete(d) };
   }
   async stopTransferAway(fqdn: string) {
@@ -508,6 +566,158 @@ export class MockRegistrarPort implements RegistrarPort {
   /** Restore fee table (mock fixture from the rate card in docs/research/reg-opensrs.md). */
   restoreFee(tld: string): bigint | undefined { return this.restorePrice[tld]; }
 
+  // ---- Phase 5: transfer-in ----------------------------------------------------------------------------------------
+  /** Test controls for the transfer-in simulator. None of them counts as an adapter call. */
+  readonly transferIn = {
+    /** A name registered at another registrar, with the code its owner holds. */
+    seedForeign: (fqdn: string, o: ForeignSeed): void => {
+      const d = fqdn.toLowerCase(); const now = this.clock.now();
+      const createdAt = o.createdAt ?? new Date(now.getTime() - 3 * 365 * 86_400_000);
+      this.foreign.set(d, {
+        fqdn: d, authHash: sha(o.authCode), createdAt, ...(o.lastTransferAt ? { lastTransferAt: o.lastTransferAt } : {}), expiresAt: o.expiresAt ?? addYears(now, 1),
+        locked: o.locked ?? false, registryLock: o.registryLock ?? false, dsPresent: o.dsPresent ?? false, status: o.status ?? "active",
+        nameservers: o.nameservers ?? ["ns1.elsewhere.example", "ns2.elsewhere.example"], owner: o.owner ?? "confirm", losing: o.losing ?? "silent",
+      });
+    },
+    /** Change what the losing side looks like after the seed (the owner re-locks, the registry locks, a DS record appears). */
+    updateForeign: (fqdn: string, patch: Partial<Pick<MockForeign, "locked" | "registryLock" | "dsPresent" | "status" | "owner" | "losing">>): void => {
+      const f = this.foreign.get(fqdn.toLowerCase()); if (!f) throw new Error("no such foreign domain"); Object.assign(f, patch);
+    },
+    ownerConfirm: (fqdn: string): void => { const t = this.liveInbound(fqdn); if (t?.status === "pending_owner") { t.ownerActAt = this.clock.now(); this.foreignOf(t).owner = "confirm"; this.tickTransfersIn(); } },
+    ownerDecline: (fqdn: string): void => { const t = this.liveInbound(fqdn); if (t?.status === "pending_owner") this.endInbound(t, "owner_declined"); },
+    losingAck: (fqdn: string): void => { const t = this.liveInbound(fqdn); if (t?.status === "pending_registry" && t.registrySentAt) this.completeInbound(t); },
+    losingNack: (fqdn: string, reason: TransferDenialReason): void => { const t = this.liveInbound(fqdn); if (t?.status === "pending_registry" && t.registrySentAt) this.endInbound(t, "nack", reason); },
+    /** Inspection. */
+    list: (): readonly Readonly<MockTransferIn>[] => this.inbound,
+    isForeign: (fqdn: string): boolean => this.foreign.has(fqdn.toLowerCase()),
+  };
+  private foreignOf(t: MockTransferIn): MockForeign { return this.foreign.get(t.fqdn) ?? { fqdn: t.fqdn, authHash: "", createdAt: new Date(0), expiresAt: new Date(0), locked: false, registryLock: false, dsPresent: false, status: "active", nameservers: [], owner: "silent", losing: "silent" }; }
+  private liveInbound(fqdn: string): MockTransferIn | undefined { const d = fqdn.toLowerCase(); return this.inbound.find((t) => t.fqdn === d && (t.status === "pending_owner" || t.status === "pending_registry")); }
+  private latestInbound(fqdn: string): MockTransferIn | undefined { const d = fqdn.toLowerCase(); return [...this.inbound].reverse().find((t) => t.fqdn === d); }
+  private upstreamOf(t: MockTransferIn) { return this.orderList.find((o) => o.registrarOrderId === t.orderId); }
+  private endInbound(t: MockTransferIn, failure: TransferInFailure, nack?: TransferDenialReason) {
+    t.status = "cancelled"; t.failure = failure; if (nack) t.nackReason = nack; t.updatedAt = this.clock.now();
+    const o = this.upstreamOf(t); if (o && o.status !== "cancelled") { o.status = "cancelled"; this.balance += t.costMinor; this.credits.push({ orderId: t.orderId, minor: t.costMinor }); }
+  }
+  private completeInbound(t: MockTransferIn) {
+    const f = this.foreignOf(t); const now = this.clock.now();
+    const cap = addYears(now, MAX_TERM);
+    const grown = addYears(f.expiresAt, t.years);
+    this.domains.set(t.fqdn, {
+      fqdn: t.fqdn, profileUsername: t.regUsername, registrantFingerprint: t.fingerprint, createdAt: f.createdAt, expiresAt: grown > cap ? cap : grown, orderId: t.orderId,
+      locked: true, nameservers: [...f.nameservers], foreign: false, registrant: { ...t.registrant }, autoRenew: false, letExpire: false,
+      ds: f.dsPresent ? [{ keyTag: 12345, algorithm: 13, digestType: 2, digest: "a".repeat(64) }] : [], zone: new Map(), lastTransferAt: now,
+    });
+    this.foreign.delete(t.fqdn);
+    t.status = "completed"; t.updatedAt = now;
+    const o = this.upstreamOf(t); if (o) o.status = "completed";
+  }
+  /** Moves every pending transfer-in along the clock. Called from `tick()`, so every adapter method sees current state. */
+  private tickTransfersIn(): void {
+    const now = this.clock.now();
+    for (const t of this.inbound) {
+      if (t.status === "pending_owner") {
+        const f = this.foreignOf(t);
+        if (f.owner === "decline" && t.ownerActAt && t.ownerActAt <= now) { this.endInbound(t, "owner_declined"); continue; }
+        if (f.owner === "confirm" && t.ownerActAt && t.ownerActAt <= now) { t.status = "pending_registry"; t.reviewAt = new Date(t.ownerActAt.getTime() + TRANSFER_REVIEW_MS); t.updatedAt = now; }
+        else if (t.ownerDeadlineAt && now >= t.ownerDeadlineAt) { this.endInbound(t, "owner_timeout"); continue; }
+      }
+      if (t.status === "pending_registry" && !t.registrySentAt && t.reviewAt && now >= t.reviewAt) {
+        const f = this.foreignOf(t);
+        // The registry checks the code and its own lock when the request arrives; a wrong code ends the transfer at once.
+        if (!this.foreign.has(t.fqdn)) { this.endInbound(t, "unknown"); continue; }
+        if (f.authHash !== t.authHash) { this.endInbound(t, "invalid_auth_code"); continue; }
+        if (f.registryLock) { this.endInbound(t, "registry_lock"); continue; }
+        if (f.locked) { this.endInbound(t, "locked_at_losing"); continue; }
+        t.registrySentAt = t.reviewAt; t.registryDeadlineAt = new Date(t.reviewAt.getTime() + TRANSFER_REGISTRY_WINDOW_MS); t.updatedAt = now;
+        if (typeof f.losing === "object") { this.endInbound(t, "nack", f.losing.nack); continue; }
+        if (f.losing === "ack") { this.completeInbound(t); continue; }
+      }
+      if (t.status === "pending_registry" && t.registryDeadlineAt && now >= t.registryDeadlineAt) this.completeInbound(t);
+    }
+  }
+  private checkOf(d: string): TransferInCheck {
+    const now = this.clock.now();
+    const ours = this.domains.get(d);
+    if (ours) return { fqdn: d, transferable: false, reason: "already_here", registryStatuses: [], ...(ours.foreign ? {} : { createdAt: ours.createdAt }) };
+    const f = this.foreign.get(d);
+    if (!f) return { fqdn: d, transferable: false, reason: this.classify(d) === "available" ? "not_registered" : "other", registryStatuses: [] };
+    const statuses = [...(f.locked ? ["clientTransferProhibited"] : []), ...(f.registryLock ? ["serverTransferProhibited"] : []),
+      ...(f.status === "redemption" ? ["redemptionPeriod"] : f.status === "pending_delete" ? ["pendingDelete"] : [])];
+    const base = { fqdn: d, createdAt: f.createdAt, expiresAt: f.expiresAt, registryStatuses: statuses, dsPresent: f.dsPresent, ...(f.lastTransferAt ? { lastTransferAt: f.lastTransferAt } : {}) };
+    const since = f.lastTransferAt && f.lastTransferAt > f.createdAt ? f.lastTransferAt : f.createdAt;
+    const opens = new Date(since.getTime() + TRANSFER_LOCK_MS);
+    const block = (reason: TransferInCheck["reason"], extra: Partial<TransferInCheck> = {}): TransferInCheck => ({ ...base, transferable: false, reason, ...extra });
+    if (this.liveInbound(d)) return block("pending_transfer");
+    if (f.status === "redemption") return block("redemption");
+    if (f.status === "pending_delete") return block("pending_delete");
+    if (f.status === "udrp") return block("dispute");
+    if (now < opens) return block(f.lastTransferAt && f.lastTransferAt > f.createdAt ? "recently_transferred" : "too_new", { transferableAt: opens });
+    if (f.registryLock) return block("registry_lock");
+    if (f.locked) return block("locked_at_losing");
+    return { ...base, transferable: true };
+  }
+  async checkTransferIn(fqdn: string): Promise<TransferInCheck> {
+    this.calls.checkTransferIn++; this.tick();
+    const d = fqdn.trim().toLowerCase(); this.tldOf(d); this.guardCall(d);
+    return this.checkOf(d);
+  }
+  async startTransferIn(req: TransferInRequest): Promise<TransferInStart> {
+    this.calls.startTransferIn++; this.tick();
+    const d = req.fqdn.trim().toLowerCase(); const tld = this.tldOf(d); this.guardCall(d);
+    if (req.years === undefined || req.years === null) throw rejected("period_required", "period must be sent explicitly");
+    if (req.years !== TRANSFER_YEARS[tld]) throw rejected("invalid_period", `a .${tld} transfer adds ${TRANSFER_YEARS[tld]} years`);
+    if (typeof req.authCode !== "string" || req.authCode.length < 6 || req.authCode.length > 64) throw rejected("auth_code_required", "an authorization code is required");
+    const chk = this.checkOf(d);
+    if (!chk.transferable) {
+      const code = chk.reason === "too_new" || chk.reason === "recently_transferred" ? "552" : chk.reason === "pending_transfer" ? "order_exists" : `not_transferable_${chk.reason ?? "other"}`;
+      throw rejected(code, "domain is not transferable now");
+    }
+    const prof = this.profiles.get(req.regUsername);
+    if (prof && prof.password !== req.regPassword) throw rejected("profile_exists", "profile username is taken");
+    if (req.regUsername.length < 3 || req.regUsername.length > 20 || req.regPassword.length < 10 || req.regPassword.length > 20) throw rejected("bad_profile", "reg_username needs 3 to 20 and reg_password 10 to 20 characters");
+    const cost = this.wholesale[tld]! * BigInt(req.years);
+    if (this.consumeFault("insufficientFunds", d) || this.balance < cost) throw new RegistrarError("insufficient_funds", "insufficient funds", { retryable: true, outcomeUnknown: false, code: "440" });
+    if (!prof) this.profiles.set(req.regUsername, { password: req.regPassword, createdAt: this.clock.now() });
+    const id = this.nextId(); const now = this.clock.now();
+    // Funds for the added year are taken when the order is placed and returned if the transfer fails.
+    this.balance -= cost; this.debits.push({ orderId: id, minor: cost });
+    this.orderList.push({ registrarOrderId: id, fqdn: d, type: "transfer", status: "pending", orderDate: now, profileUsername: req.regUsername, years: req.years, registrantFingerprint: registrantFingerprint(req.registrant), costMinor: cost });
+    const ownerStep = this.transferOwnerStep === "always_email";
+    const f = this.foreign.get(d)!;
+    const t: MockTransferIn = {
+      fqdn: d, orderId: id, status: ownerStep ? "pending_owner" : "pending_registry", requestedAt: now, updatedAt: now,
+      years: req.years, regUsername: req.regUsername, registrant: { ...req.registrant }, fingerprint: registrantFingerprint(req.registrant), authHash: sha(req.authCode), costMinor: cost,
+      ...(ownerStep ? { ownerDeadlineAt: new Date(now.getTime() + TRANSFER_OWNER_WINDOW_MS), ...(f.owner === "silent" ? {} : { ownerActAt: new Date(now.getTime() + 3_600_000) }) } : { reviewAt: new Date(now.getTime() + TRANSFER_REVIEW_MS) }),
+    };
+    this.inbound.push(t);
+    if (ownerStep) this.ownerApprovalEmails.push({ fqdn: d, at: now });
+    if (this.consumeFault("workerDeath", d)) throw new DeathSignal("register", d);
+    if (this.consumeFault("timeoutAfterAccept", d)) throw new RegistrarError("unknown", "request timed out after submit", { retryable: false, outcomeUnknown: true, code: "timeout" });
+    return { status: t.status as TransferInStart["status"], registrarOrderId: id, ownerEmailSent: ownerStep };
+  }
+  async getTransferInStatus(fqdn: string): Promise<TransferInState | null> {
+    this.calls.getTransferInStatus++; this.tick();
+    const d = fqdn.trim().toLowerCase(); this.tldOf(d); this.guardCall(d);
+    const t = this.latestInbound(d);
+    if (!t) return null;
+    const out: TransferInState = { fqdn: d, status: t.status, registrarOrderId: t.orderId, requestedAt: new Date(t.requestedAt), updatedAt: new Date(t.updatedAt) };
+    if (t.failure) out.failure = t.failure;
+    if (t.nackReason) out.nackReason = t.nackReason;
+    if (t.status === "pending_owner" && t.ownerDeadlineAt) out.ownerDeadlineAt = new Date(t.ownerDeadlineAt);
+    if (t.status === "pending_registry" && t.registryDeadlineAt) out.registryDeadlineAt = new Date(t.registryDeadlineAt);
+    if (t.status === "completed") { const dom = this.domains.get(d); if (dom) out.expiresAt = new Date(dom.expiresAt); }
+    return out;
+  }
+  async cancelTransferIn(fqdn: string): Promise<{ cancelled: boolean }> {
+    this.calls.cancelTransferIn++; this.tick();
+    const d = fqdn.trim().toLowerCase(); this.tldOf(d); this.guardCall(d);
+    const t = this.liveInbound(d);
+    if (!t) return { cancelled: false };
+    this.endInbound(t, "cancelled_by_us");
+    return { cancelled: true };
+  }
+
   // ---- internals -----------------------------------------------------------------------------------------------
   private nextId() { return `mock-ord-${String(++this.seq).padStart(5, "0")}`; }
   private tldOf(d: string): string {
@@ -544,7 +754,7 @@ export class MockRegistrarPort implements RegistrarPort {
     const o = this.kindOverrides.get(d);
     if (o) return o;
     const dom = this.domains.get(d);
-    if (dom) return "taken";
+    if (dom || this.foreign.has(d)) return "taken";
     const label = d.slice(0, d.indexOf("."));
     if (label.startsWith("taken-") || KNOWN_TAKEN.has(d)) return "taken";
     if (label.startsWith("reserved-") || KNOWN_RESERVED.has(d)) return "reserved";

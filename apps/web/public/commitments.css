@@ -1,7 +1,24 @@
-body { margin: 0; background: #131a33; color: #f1ead8; font: 400 1.05rem/1.55 "Atkinson Hyperlegible", system-ui, sans-serif; }
-main { max-width: 42rem; margin: 0 auto; padding: 48px 20px; }
-h1, h2 { font-family: "Young Serif", Georgia, serif; font-weight: 400; }
-a { color: #ffb257; }
-a:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }
+/* Public pages (commitments, legal, security, report, errors). Colours from the brand pairs checked in PLAN 4.10. */
 @font-face { font-family: "Young Serif"; src: url(/fonts/young-serif-latin-400-normal.woff2) format("woff2"); font-display: swap; }
 @font-face { font-family: "Atkinson Hyperlegible"; src: url(/fonts/atkinson-hyperlegible-latin-400-normal.woff2) format("woff2"); font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; font-weight: 700; src: url(/fonts/atkinson-hyperlegible-latin-700-normal.woff2) format("woff2"); font-display: swap; }
+body { margin: 0; background: #131a33; color: #f1ead8; font: 400 1.05rem/1.55 "Atkinson Hyperlegible", system-ui, sans-serif; }
+main { max-width: 42rem; margin: 0 auto; padding: 24px 20px 48px; }
+h1, h2 { font-family: "Young Serif", Georgia, serif; font-weight: 400; line-height: 1.2; }
+a { color: #ffb257; }
+a:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; box-shadow: 0 0 0 6px #131a33; }
+header.site, footer.site { max-width: 42rem; margin: 0 auto; padding: 16px 20px; }
+header.site { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
+header.site nav { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+header.site nav a, .wordmark { display: inline-block; min-height: 44px; line-height: 44px; }
+.wordmark { font-family: "Young Serif", Georgia, serif; font-size: 1.35rem; color: #f1ead8; text-decoration: none; }
+footer.site { border-top: 1px solid #2c365e; font-size: 0.95rem; }
+.draft-banner { border: 2px solid #ffb257; border-radius: 8px; padding: 12px 14px; background: #1c2547; }
+.skip { position: absolute; left: -9999px; top: 8px; background: #ffb257; color: #131a33; padding: 8px 12px; border-radius: 6px; }
+.skip:focus { left: 8px; }
+.doc-list li { margin: 6px 0; }
+.table-wrap { overflow-x: auto; }
+table.fees { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+table.fees caption { text-align: left; padding-bottom: 8px; color: rgba(241, 234, 216, 0.85); }
+table.fees th, table.fees td { border-bottom: 1px solid rgba(241, 234, 216, 0.25); padding: 8px 10px 8px 0; text-align: left; vertical-align: top; }
+.site-foot { margin-top: 40px; font-size: 0.9rem; color: rgba(241, 234, 216, 0.85); }

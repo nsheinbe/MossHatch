@@ -22,7 +22,12 @@ export async function isHeld(ctx: Pick<AppContext, "clock">, client: PoolClient,
 
 /** Throws 423 `recovery_hold` while a hold covers the action. */
 export async function assertNotHeld(ctx: Pick<AppContext, "clock">, client: PoolClient, userId: string, actionType: ActionType): Promise<void> {
-  if (await isHeld(ctx, client, userId, actionType)) throw new HttpError(423, "recovery_hold");
+  if (await isHeld(ctx, client, userId, actionType)) {
+    // ST-24: the refusal says when the hold ends (the latest covering hold).
+    const r = await client.query("select max(until) as until from action_holds where user_id = $1 and until > $2 and (scope = 'all_held' or scope = $3)", [userId, ctx.clock.now(), actionType]);
+    const until = r.rows[0]?.until ? new Date(r.rows[0].until).toISOString() : undefined;
+    throw new HttpError(423, "recovery_hold", undefined, undefined, until ? { hold_until: until } : undefined);
+  }
 }
 
 /** Any recovery activity that freezes account changes: an all-held hold, or a request still open (pending, cooling off, holding). */
