@@ -152,7 +152,7 @@ test("fee page and registry addenda: static HTML under the CSP, axe clean at des
   await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toHaveCount(0);   // last page is the .io addendum
   await nojs.goto("/fees.html");
   await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toBeVisible();
-  await expect(nojs.getByText("Tucows Domains Inc. (IANA ID 69)", { exact: false }).first()).toBeVisible();
+  await expect(nojs.getByText("Openprovider (IANA ID 1647)", { exact: false }).first()).toBeVisible();
   await ctx.close();
   const violations: string[] = [];
   page.on("console", (m) => { if (/Content Security Policy/i.test(m.text())) violations.push(m.text()); });

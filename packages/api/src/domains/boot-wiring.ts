@@ -1,4 +1,4 @@
-import type { RegistrarPort } from "@mosshatch/registrar/port";
+import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import type { AppContext, Config } from "../ports.ts";
 import { connectRegistrarRpc, type RpcSend } from "../registrar-rpc/client.ts";
 import type { DomainsServices, EndUserProbe } from "./common.ts";
@@ -25,7 +25,20 @@ export async function registrarFromEnv(env: Record<string, string | undefined>, 
     return { status: res.status, body: await res.text() };
   };
   try { return await connectRegistrarRpc({ secret, send }); }
-  catch { throw new NotConfigured("registrar_rpc_unreachable"); }
+  catch (e) { throw new NotConfigured(registrarRpcBootReason(e)); }
+}
+
+/**
+ * Why the first signed call to the registrar project failed, as one reason code: the registrar project's own configuration codes come
+ * through as they are (`openprovider_credentials_missing`, `registrar_scope_missing`, `live_outside_production`, ...; serve.ts), a
+ * signature refusal is a secret that differs between the two projects, anything else is unreachable.
+ */
+export function registrarRpcBootReason(e: unknown): string {
+  const code = e instanceof RegistrarError ? e.code ?? "" : "";
+  if (code === "unauthorized") return "registrar_rpc_secret_mismatch";
+  if (code === "rpc_not_configured") return "registrar_project_secret_missing";
+  if (/^(openprovider_[a-z_]+|registrar_[a-z_]+|live_outside_production|live_registrar_key_outside_production)$/.test(code)) return code;
+  return "registrar_rpc_unreachable";
 }
 
 /**

@@ -7,6 +7,8 @@ export interface Me {
   credentials: { id: string; label: string; backup_eligible: boolean; created_at?: string }[];
   addresses: { id: string; address: string; kind: string; verified: boolean }[];
   recovery?: { banner?: string | null } | null;
+  /** Invite-only live gate (server): whether this account may use the shop. Absent from older servers, read as no in an invite build. */
+  live_access?: boolean;
 }
 
 export async function whoAmI(): Promise<Me | null> {

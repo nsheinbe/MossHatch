@@ -1,6 +1,7 @@
 import { useUi } from "../store";
 import { sound } from "../audio/synth";
 import { handle } from "../world/handle";
+import { buildSiteMode } from "../lib/site";
 
 export function WordmarkMark() {
   // A hatched egg: ink lines at two angles inside an egg outline.
@@ -18,7 +19,7 @@ export function WordmarkMark() {
 }
 
 export function Header() {
-  const { view, calm, sound: on, apiReady, account, set } = useUi();
+  const { view, calm, sound: on, apiReady, apiReachable, account, set } = useUi();
   return (
     <header className="site-header">
       <span className="wordmark"><WordmarkMark /><span>Mosshatch</span></span>
@@ -28,9 +29,9 @@ export function Header() {
         {apiReady && account && <button type="button" aria-current={view === "ledger" ? "page" : undefined} onClick={() => set({ view: "ledger" })}>Ledger</button>}
       </nav>
       <div className="tools">
-        {apiReady && (
+        {(apiReady || apiReachable) && (
           <button type="button" onClick={() => set({ accountOpen: true })} aria-haspopup="dialog">
-            <span className="label">{account ? "Account" : "Sign in"}</span>
+            <span className="label">{account ? "Account" : buildSiteMode === "invite" ? "Invited? Sign in" : "Sign in"}</span>
           </button>
         )}
         <button type="button" aria-pressed={on} onClick={() => { const n = !on; sound.setEnabled(n); set({ sound: n }); }}>

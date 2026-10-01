@@ -223,7 +223,8 @@ describe("ST-117: the production registrar key is absent from Preview, Developme
     const hits: string[] = [];
     const walk = (dir: string) => {
       for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (["node_modules", "dist", ".next", ".vercel", "registrar-rpc", "config"].includes(ent.name)) continue;
+        // apps/registrar is the registrar project itself (the one place the credentials belong); its bundle carries the adapter.
+        if (["node_modules", "dist", ".next", ".vercel", "registrar-rpc", "config"].includes(ent.name) || (ent.name === "registrar" && dir.endsWith("apps"))) continue;
         const p = path.join(dir, ent.name);
         if (ent.isDirectory()) walk(p);
         else if (/\.(ts|tsx|js|mjs|json|html)$/.test(ent.name) && !/\.test\./.test(ent.name) && /OPENSRS_|REGISTRAR_LIVE_|REGISTRAR_PROD/.test(fs.readFileSync(p, "utf8"))) hits.push(path.relative(root, p));

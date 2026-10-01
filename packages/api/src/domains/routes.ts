@@ -56,7 +56,7 @@ export const domainRoutes: Route[] = [
   },
   {
     // Renew now. The scheduled charge and this click meet at one order per term and one PaymentIntent per order (ST-101).
-    method: "POST", path: "/api/v1/domains/:id/renew", principals: ["session"], tag: "domains",
+    method: "POST", path: "/api/v1/domains/:id/renew", principals: ["session"], tag: "domains", liveGate: true,
     async handler(r) {
       const userId = uid(r), domainId = idOf(r), ctx = r.ctx;
       // Optional: the person ticked the auto-renew authorisation, so a Checkout for this renewal also saves the card (C-31).

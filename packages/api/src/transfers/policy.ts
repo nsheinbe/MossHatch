@@ -1,5 +1,6 @@
 import type { TransferDenialReason, TransferInBlock, TransferInFailure } from "@mosshatch/registrar/port";
 import type { PoolClient } from "@mosshatch/db";
+import { priceTableFor } from "../pricing/registrar.ts";
 
 /**
  * Transfer policy in one place (C-01, C-06, C-10). Every number here is today's Transfer Policy text or an own target, and each is also a
@@ -7,6 +8,7 @@ import type { PoolClient } from "@mosshatch/db";
  */
 export const DAY_MS = 86_400_000;
 export const HOUR_MS = 3_600_000;
+/** The default registrar's policy rows; each extension is read from its own registrar's rows (`priceTableFor`). */
 export const REGISTRAR = "opensrs";
 
 /** The registrant-email confirmation code (C-08 inbound): lifetime and tries (own targets). */
@@ -37,7 +39,7 @@ export interface TldTransferPolicy { tld: string; addYears: number; lockDays: nu
 export async function transferPolicy(c: Pick<PoolClient, "query">, tld: string): Promise<TldTransferPolicy | null> {
   const r = (await c.query(
     "select tld, transfer_add_years, transfer_lock_days, owner_confirm_days, registry_window_days, longest_seen_days, policy_profile from tld_policy where registrar = $1 and tld = $2",
-    [REGISTRAR, tld])).rows[0];
+    [priceTableFor(tld), tld])).rows[0];
   if (!r) return null;
   return { tld, addYears: r.transfer_add_years, lockDays: r.transfer_lock_days, ownerConfirmDays: r.owner_confirm_days, registryWindowDays: r.registry_window_days, longestSeenDays: r.longest_seen_days, profile: r.policy_profile };
 }

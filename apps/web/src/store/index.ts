@@ -57,6 +57,8 @@ export interface UiState {
   flash: number;
   /** null = not asked yet, false = accounts are not connected in this deployment. */
   apiReady: boolean | null;
+  /** The API answered (an invite build can reach it while `apiReady`, the live shop, stays false for a visitor). */
+  apiReachable: boolean | null;
   account: Me | null;
   accountOpen: boolean;
   /** The Visitors view (tokens, connected apps, requests waiting for a decision). Never persisted. */
@@ -102,7 +104,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
       rescue: null,
       set: (p) => set(p),

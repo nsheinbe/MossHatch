@@ -6,6 +6,7 @@ import { hit } from "../ratelimit.ts";
 import { appendAudit } from "../audit.ts";
 import { loadRegistrant, storeRegistrant } from "../orders/registrant.ts";
 import { authRoutes } from "../auth/routes.ts";
+import { liveAccessFor } from "../waitlist/gate.ts";
 
 const UID = (r: HandlerReq) => { if (!r.principal.userId) throw new HttpError(401, "unauthorized"); return r.principal.userId; };
 
@@ -27,9 +28,12 @@ export function registerAccountRoutes(router: Router): Router {
       // Who am I, without an error status when nobody is signed in: the page asks on every load, and a 401 would print a console error each time.
       method: "GET", path: "/api/v1/session", principals: ["anonymous", "session"], tag: "account",
       async handler(r) {
-        if (r.principal.kind !== "session" || !meRoute) return json({ signedIn: false });
+        // `live_access`: whether this account may use the shop (always, unless the invite-only live gate is on; then only invited accounts).
+        // The web shows the demo (banner, practice hatch, waitlist) to everyone else from the same build.
+        const gated = (r.ctx.services as { liveGate?: boolean }).liveGate === true;
+        if (r.principal.kind !== "session" || !meRoute) return json({ signedIn: false, live_gate: gated });
         const res = await meRoute.handler(r);
-        return { ...res, json: { signedIn: true, ...(res.json as object) } };
+        return { ...res, json: { signedIn: true, ...(res.json as object), live_gate: gated, live_access: await liveAccessFor(r.ctx, r.principal.userId) } };
       },
     },
     {

@@ -55,3 +55,32 @@ export async function useInvite(req: HandlerReq, c: PoolClient, email: string, u
   const used = (await c.query("select waitlist_invite_use($1,$2,$3) as ok", [tok.id, userId, now])).rows[0].ok === true;
   if (!used) throw new HttpError(403, "invite_required");
 }
+
+/**
+ * The invite-only live shop (docs/GO-LIVE.md). With the gate on, the production site sells only to accounts activated with an invite:
+ * routes marked `liveGate` (search, quote, orders, pay links, renewals, transfers-in, agent checkout) answer 403 `invite_required` to
+ * anyone else, and the web keeps showing them the demo (banner, practice hatch, public RDAP lookup, waitlist).
+ *
+ * MH_LIVE_GATE=1 turns it on, =0 off; unset, it is on in production (whatever MH_INVITE_ONLY says: opening sign-up alone never
+ * opens the shop) and off elsewhere.
+ */
+export function liveGateFromEnv(env: Record<string, string | undefined>, mode: Mode): boolean {
+  if (env.MH_LIVE_GATE === "1") return true;
+  if (env.MH_LIVE_GATE === "0") return false;
+  return mode === "production";
+}
+
+/** Whether this account may use the live shop now: always when the gate is off; with it on, only when it used an invite (migration 1120). */
+export async function liveAccessFor(ctx: AppContext, userId: string | undefined): Promise<boolean> {
+  if ((ctx.services as { liveGate?: boolean }).liveGate !== true) return true;
+  if (!userId) return false;
+  try { return (await withNoUser(ctx.runtime, (c) => c.query("select user_live_access($1) as ok", [userId]))).rows[0]?.ok === true; }
+  catch { return false; } // fails closed
+}
+
+/** The router's check for `liveGate` routes (installed by buildRouter). Session and binding principals of invited accounts pass. */
+export async function requireLiveAccess(req: HandlerReq): Promise<void> {
+  const p = req.principal;
+  const userId = p.kind === "session" || p.kind === "binding" ? p.userId : undefined;
+  if (!(await liveAccessFor(req.ctx, userId))) throw new HttpError(403, "invite_required");
+}

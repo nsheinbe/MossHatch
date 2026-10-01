@@ -65,8 +65,9 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
     try {
       const reg = await q({ fqdn: "moonfern.dev", kind: "register" }, "2026-12-05T00:00:00Z");
       const ren = await q({ fqdn: "moonfern.dev", kind: "renew" }, "2026-12-05T00:00:00Z");
-      expect(reg.subtotalMinor).toBe(2100n);
-      expect(ren.subtotalMinor).toBe(2200n); expect(ren.wholesalePriceId).toBe(id); expect(ren.kind).toBe("renew");
+      // Renewal floor: a renewal dearer than the registration lifts the first year to the renewal price, so both cost the same.
+      expect(reg.subtotalMinor).toBe(2200n); expect(reg.wholesaleMinor).toBe(1700n); expect(reg.renewalLevelMinor).toBe(100n);
+      expect(ren.subtotalMinor).toBe(2200n); expect(ren.renewalLevelMinor).toBe(0n); expect(ren.wholesalePriceId).toBe(id); expect(ren.kind).toBe("renew");
       const early = await q({ fqdn: "moonfern.dev", kind: "renew" }, "2026-11-05T00:00:00Z");
       expect(early.subtotalMinor).toBe(2100n);
     } finally { await app.db.owner.query("delete from wholesale_prices where id = $1", [id]); }

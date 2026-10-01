@@ -347,16 +347,16 @@ The vault group is all-or-nothing: some but not all of the five gives `vault_not
 `AWS_SECRET_ACCESS_KEY` or any other static AWS credential. Redeploy production after changing variables.
 
 Production also needs the variables the app already had (`DATABASE_URL`, `DATABASE_URL_CRON`, `MH_ORIGIN`, `CRON_SECRET`,
-Resend). Stripe live and the live registrar are wired in the next task.
+Resend). Stripe live and the live registrar (Openprovider through the `mosshatch-registrar` project) are in `docs/GO-LIVE.md`.
 
 ## 9. Verify
 
 After the production redeploy, request any API route that is not the waitlist or the lookup, for example
 `https://mosshatch.com/api/health/ticks`. Production boots only when everything is configured, so today it answers 503 with
-the codes still missing. **When the AWS side is right, the reason is exactly**
+the codes still missing. **When the AWS side is right, the reason lists only live-money codes** (before `docs/GO-LIVE.md` is done):
 
 ```json
-{"error":{"code":"not_configured","reason":"stripe_live_not_configured,registrar_live_not_configured"}}
+{"error":{"code":"not_configured","reason":"stripe_secret_key_missing,stripe_webhook_secret_missing,registrar_mode_not_live,registrar_provider_not_openprovider,registrar_rpc_url_missing,registrar_rpc_secret_missing"}}
 ```
 
 because the boot probe has just, live: exchanged the OIDC token for the custom audience, called `AssumeRoleWithWebIdentity`
@@ -365,7 +365,7 @@ configuration. It writes nothing to the bucket. A failed boot is retried at most
 
 | Code in `reason` | Meaning and fix |
 |---|---|
-| `database_not_configured`, `config_missing` | `DATABASE_URL`, `MH_ORIGIN` or `CRON_SECRET` (32+ characters) missing |
+| `database_not_configured`, `origin_not_configured`, `cron_secret_not_configured` | `DATABASE_URL`, `MH_ORIGIN` or `CRON_SECRET` (32+ characters) missing |
 | `aws_oidc_not_configured` | `MH_AWS_ROLE_ARN` missing or not a role ARN, or `MH_OIDC_AUDIENCE` not 43 base64url characters |
 | `kms_not_configured` | `MH_KMS_MAC_KEY_ARN` or `MH_KMS_PII_KEY_ARN` missing, an alias, outside us-east-1, or the same key twice |
 | `anchor_not_configured` | `MH_ANCHOR_BUCKET` missing or not a dot-free bucket name, or `MH_ANCHOR_RETAIN_DAYS` not a whole number |
@@ -381,7 +381,7 @@ configuration. It writes nothing to the bucket. A failed boot is retried at most
 | `anchor_probe_failed:AccessDenied` | `s3:GetBucketObjectLockConfiguration` missing from the role, or a wrong bucket |
 | `anchor_probe_failed:NoSuchBucket` | bucket name or Region wrong |
 | `anchor_probe_failed:ObjectLockConfigurationNotFoundError`, `anchor_bucket_not_compliance_locked` | Object Lock not enabled at creation (make a new bucket), or the default retention is not Compliance |
-| `stripe_live_not_configured`, `registrar_live_not_configured` | expected until the next task wires and verifies the live Stripe and registrar paths |
+| `stripe_*`, `registrar_*`, `openprovider_*`, `vercel_env_not_production` | the live money paths: `docs/GO-LIVE.md` steps 3 to 7 list each code |
 
 Then, in the AWS console, CloudTrail, Event history (us-east-1): you should see `AssumeRoleWithWebIdentity` with the role
 `mosshatch-app` and session name `mh-dpl_…`, then `GenerateMac`, `VerifyMac`, `GenerateDataKey` and `Decrypt` from

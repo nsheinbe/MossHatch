@@ -46,9 +46,9 @@ export function Chip({ r, list, row, onPick }: { r: Result; list: boolean; row: 
     );
   }
   return (
-    <button ref={ref as React.RefObject<HTMLButtonElement>} type="button" className="chip" data-row={row} style={style} onClick={() => onPick(r)} aria-label={`${r.domain}, ${r.price}${r.years === 2 ? " for two years" : ""}, sample price. Hatch it.`}>
+    <button ref={ref as React.RefObject<HTMLButtonElement>} type="button" className="chip" data-row={row} style={style} onClick={() => onPick(r)} aria-label={`${r.domain}, ${r.price}${r.years === 2 ? " for two years" : ""}${r.sample ? ", sample price" : ""}. Hatch it.`}>
       <span><span className="dot" aria-hidden="true" style={{ background: "var(--st-egg)" }} /><span className="name">{label}</span><span className="ext">{tld}</span> <span className="price">{r.price}</span></span>
-      <small>{r.years === 2 ? "for 2 years · " : ""}renews the same · <span className="sample-tag">sample price</span></small>
+      <small>{r.years === 2 ? "for 2 years · " : ""}renews the same{r.sample ? <> · <span className="sample-tag">sample price</span></> : null}</small>
     </button>
   );
 }

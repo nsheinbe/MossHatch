@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI } from "../lib/account";
 import { currentInvite, openWaitlist } from "../lib/waitlist";
+import { buildSiteMode } from "../lib/site";
 
 type Step = "choose" | "code" | "codes";
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
@@ -18,7 +19,7 @@ export function AccountPanel() {
   const [msg, setMsg] = useState<string | null>(null);
   const [data, setData] = useState<"export" | "close" | null>(null);
   // Invite-only rollout: without an invite, sign-up shows the waitlist instead (the server answers 403 invite_required).
-  const [needInvite, setNeedInvite] = useState(() => import.meta.env.VITE_INVITE_ONLY === "1" && !currentInvite());
+  const [needInvite, setNeedInvite] = useState(() => (import.meta.env.VITE_INVITE_ONLY === "1" || buildSiteMode === "invite") && !currentInvite());
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {

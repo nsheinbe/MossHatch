@@ -1,4 +1,5 @@
 import type { PoolClient } from "@mosshatch/db";
+import type { AppContext } from "../ports.ts";
 
 /**
  * New-account velocity and exposure limits (PLAN.md 4.6 row 37; own targets, all tunable through `flags`).
@@ -14,15 +15,31 @@ export const EXPOSURE_STATES = ["review_hold", "authorized", "registering", "reg
 /** Order states that never reached payment authorization and so do not count as a registration. */
 const PRE_COMMIT_STATES = ["draft", "checkout_open", "checkout_expired", "payment_failed"];
 
-export type VelocityReason = "global_daily_cap" | "review_hold" | "new_account_daily_registrations" | "new_account_exposure" | "account_not_found";
+export type VelocityReason = "global_daily_cap" | "global_total_cap" | "review_hold" | "new_account_daily_registrations" | "new_account_exposure" | "account_not_found";
 export type VelocityDecision = { allowed: true; newAccount: boolean } | { allowed: false; reasons: VelocityReason[]; newAccount: boolean };
+
+/**
+ * The dogfood spend fuse (docs/GO-LIVE.md): a live process caps registrations below the flags so a bug cannot drain the registrar
+ * balance. `daily` lowers `limits.daily_registrations` (trailing 24 hours, all accounts); `total` caps every registration ever
+ * taken (with `limits.total_live_registrations`). Null means no extra cap. Read from the environment once at boot (`spendFuseFromEnv`).
+ */
+export interface SpendFuse { daily: number | null; total: number | null }
+export const LIVE_DEFAULT_FUSE: SpendFuse = { daily: 3, total: 10 };
+/** MH_LIVE_DAILY_REGISTRATIONS / MH_LIVE_TOTAL_REGISTRATIONS (whole numbers; 0 stops registrations). Live processes default to 3 a day and 10 in total. */
+export function spendFuseFromEnv(env: Record<string, string | undefined>, livemode: boolean): SpendFuse {
+  const num = (v: string | undefined, dflt: number | null) => (v !== undefined && /^\d{1,6}$/.test(v.trim()) ? Number(v.trim()) : dflt);
+  return { daily: num(env.MH_LIVE_DAILY_REGISTRATIONS, livemode ? LIVE_DEFAULT_FUSE.daily : null), total: num(env.MH_LIVE_TOTAL_REGISTRATIONS, livemode ? LIVE_DEFAULT_FUSE.total : null) };
+}
+
+/** The spend fuse `bootFromEnv` puts on the context; absent in tests that never set one. */
+export const spendFuseOf = (ctx: Pick<AppContext, "services">): SpendFuse | undefined => (ctx.services as { spendFuse?: SpendFuse }).spendFuse;
 
 async function flagNumber(c: PoolClient, name: string, dflt: number): Promise<number> {
   const v = (await c.query("select value from flags where name = $1", [name])).rows[0]?.value;
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : dflt;
 }
 
-export async function checkNewAccountLimits(c: PoolClient, userId: string, order: { wholesaleMinor: bigint; kind?: "register" | "renew" | "transfer_in" | "restore" }, now: Date): Promise<VelocityDecision> {
+export async function checkNewAccountLimits(c: PoolClient, userId: string, order: { wholesaleMinor: bigint; kind?: "register" | "renew" | "transfer_in" | "restore" }, now: Date, fuse?: SpendFuse): Promise<VelocityDecision> {
   const u = (await c.query("select created_at, risk_state from users where id = $1", [userId])).rows[0];
   if (!u) return { allowed: false, reasons: ["account_not_found"], newAccount: false };
   const newAccount = now.getTime() - new Date(u.created_at).getTime() < NEW_ACCOUNT_DAYS * 86_400_000;
@@ -30,10 +47,16 @@ export async function checkNewAccountLimits(c: PoolClient, userId: string, order
   const reasons: VelocityReason[] = [];
   const isRegistration = (order.kind ?? "register") === "register";
 
-  const cap = await flagNumber(c, "limits.daily_registrations", 200);
+  const flagCap = await flagNumber(c, "limits.daily_registrations", 200);
+  const cap = fuse?.daily != null ? Math.min(flagCap, fuse.daily) : flagCap;
   if (isRegistration) {
     const global = (await c.query("select velocity_global_registrations($1) as n", [since])).rows[0].n as number;
     if (global + 1 > cap) reasons.push("global_daily_cap");
+    if (fuse?.total != null) {
+      const totalCap = Math.min(fuse.total, await flagNumber(c, "limits.total_live_registrations", fuse.total));
+      const total = (await c.query("select velocity_global_registrations($1) as n", [new Date(0)])).rows[0].n as number;
+      if (total + 1 > totalCap) reasons.push("global_total_cap");
+    }
   }
   if (u.risk_state === "review" && order.wholesaleMinor > BigInt(await flagNumber(c, "limits.review_order_wholesale_minor", 5000))) reasons.push("review_hold");
   if (newAccount) {

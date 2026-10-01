@@ -78,6 +78,17 @@ function devApi(): Plugin {
             res.setHeader("content-type", "application/json");
             return res.end(JSON.stringify(app.email.to(to).map((m: any) => ({ kind: m.kind, text: m.text }))));
           }
+          if (url.startsWith("/__dev/invite")) {
+            // The owner's invite script (scripts/waitlist-invite.mjs) for one address: a confirmed waitlist entry, then the real
+            // createInvites, which mails the /invite link to the recording mailbox (read it back with /__dev/mail).
+            const to = (new URL(url, origin).searchParams.get("email") ?? "").toLowerCase();
+            if (!/^[a-z0-9.+-]+@[a-z0-9.-]+$/.test(to)) { res.statusCode = 400; return res.end("{}"); }
+            await app.ctx.cron.query("insert into waitlist (email, consent_hash, consented_at, source, created_at, confirmed_at) values ($1, $2, now(), 'page', now(), now()) on conflict (email) do nothing", [to, Buffer.alloc(32, 1)]);
+            const owner: any = await server.ssrLoadModule(root + "../../packages/api/src/waitlist/owner.ts");
+            const out = await owner.createInvites(app.ctx.cron, app.email, origin, { email: to });
+            res.setHeader("content-type", "application/json");
+            return res.end(JSON.stringify(out));
+          }
           if (url.startsWith("/__dev/transfer-away")) {
             // The mock registrar's out-of-band simulator: someone at another registrar starts a transfer of this name. The poll runs at once
             // (in production it runs every 5 minutes) so the page can show "needs attention" and the Stop button.

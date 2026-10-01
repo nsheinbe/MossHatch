@@ -91,7 +91,7 @@ const base = { principals: ["session" as const], tag: "transfers" };
  */
 export const transferRoutes: Route[] = [
   {
-    ...base, method: "POST", path: "/api/v1/transfers",
+    ...base, method: "POST", path: "/api/v1/transfers", liveGate: true,
     async handler(r) {
       const key = r.request.headers.get("idempotency-key");
       if (!key) throw new HttpError(400, "idempotency_key_required");
@@ -109,7 +109,7 @@ export const transferRoutes: Route[] = [
     },
   },
   {
-    ...base, method: "POST", path: "/api/v1/transfers/:id/confirm",
+    ...base, method: "POST", path: "/api/v1/transfers/:id/confirm", liveGate: true,
     async handler(r) {
       const userId = uid(r);
       const res = await confirmTransfer(r.ctx, userId, r.params.id ?? "", r.body);

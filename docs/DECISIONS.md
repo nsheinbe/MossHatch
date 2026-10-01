@@ -461,6 +461,18 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 **Why.** Demand is the largest unknown and a waitlist measures it cheaply; strangers only pay once the terms are reviewed and the liability sits in an entity.
 **Would change if.** You decide to raise money (entity type), the waitlist signal is weak (stay small), or the audit finds issues (launch waits for fixes).
 
+## D-059 Same price every year: the renewal floor
+**Status:** Proposed default (2026-10-01, go-live).
+**Context.** Mosshatch promises that a name renews at the price of its first year. Openprovider's non-member prices are not flat: .com create 11.98, renew 16.98; .io 74.98 and 89.98; .ai 109.00 and 134.00 a year. Pricing the first year from the create price would sell every renewal below cost or break the promise.
+**Choice.** Per year the customer pays max(upstream create, upstream renew) plus the D-003 fee, with the fee level read from that higher price (`computeAmounts`, `renewalLevelMinor`). `wholesale_minor` stays the upstream charge for the operation, so the D-031 price guard and the funding gates still compare the real debit; the guard also refuses when the registrar's live renewal price is above our row. The hatch sheet and the fees page say the first year is charged at the renewal price. .com is USD 20.98 every year; the alternative (buy membership before the first renewal and price from 11.98) was rejected because a lapsed membership would sell renewals below cost.
+**Would change if.** A membership is bought (prices fall through a new dated row) or counsel prefers a lower first-year price with a disclosed renewal price (D-003 allows showing both).
+
+## D-060 Live registrar boundary and the invite-only build
+**Status:** Proposed default (2026-10-01, go-live).
+**Context.** PLAN 4.3b keeps the reseller credential out of everything web-reachable by putting the adapter in a separate `registrar` Vercel project reached by signed RPC. The RPC client, server and scope guards existed; nothing served them.
+**Choice.** (1) `apps/registrar`: a second Vercel project from the same repository whose one function serves `createRegistrarRpc` over the Openprovider adapter (`registrar-rpc/serve.ts`), with no database, Stripe key or vault; its bundle build fails if web, database or Stripe code is pulled in. Its own configuration problems reach web's boot as reason codes, only for signed calls. No Static IPs yet (D-005): the Openprovider IP allow-list stays off for the dogfood, and the USD 20 balance and fuses bound the exposure. (2) One production web build, `VITE_SITE_MODE=invite`: static pages are the demo; `/api/v1/session` says whether the signed-in account may buy (it used an invite: `user_live_access`), and only then does the app hide the banner and use the shop routes. The server enforces the same rule on every purchase route (`liveGate`, 403 `invite_required`). (3) Spend fuses: 3 registrations a day and 10 in total by default when live, plus 5 paid operations a day per registrar instance.
+**Would change if.** Strangers are invited (turn on Static IPs and the allow-list first), or a self-run gateway replaces the registrar project (D-005's stronger option).
+
 ## Where to veto
 An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 and D-050 are records with nothing to veto.
 
@@ -511,3 +523,5 @@ An entry with status Needs your decision is answered in `PLAN.md` under Open dec
 | D-056 | OAuth metadata-fetch and authorize rate limits | new assumption to add |
 | D-057 | The computed SVG as the link-preview image | new assumption to add |
 | D-058 | Launch sequence: waitlist-only, dogfood, audit, entity, invite-only launch | decided by you |
+| D-059 | First year charged at the renewal price when renewal costs more (same price every year) | new assumption to add |
+| D-060 | Registrar credentials only in the `mosshatch-registrar` project; one invite-only build; spend fuses | new assumption to add |
