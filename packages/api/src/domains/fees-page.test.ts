@@ -102,10 +102,14 @@ describe("public fee page (C-27, C-28, C-29, C-26)", () => {
     expect(c).toMatch(/never register a name because you searched/);
     expect(c).toMatch(/They see the name/);
     expect(c).toMatch(/do not send your searches to public WHOIS or RDAP services in bulk/);
-    // And the code agrees: no RDAP client exists in the API or the web app.
+    // The preview's registered-or-not check (packages/api/src/lookup) is described, and nothing says searches stay in the browser.
+    expect(c).toMatch(/our server asks each extension's registry through its public RDAP service/);
+    expect(c).toMatch(/at most ten minutes in the preview/);
+    expect(c).not.toMatch(/stays in your browser/);
+    // And the code agrees: the only RDAP client is that preview check (rate-limited and cached); none in the web app or elsewhere in the API.
     const grep = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? (e.name === "node_modules" ? [] : grep(path.join(dir, e.name))) : e.name.endsWith(".ts") || e.name.endsWith(".tsx") ? [path.join(dir, e.name)] : []);
     const offenders = [...grep(path.resolve(WEB, "../src")), ...grep(path.resolve(WEB, "../../../packages/api/src"))]
-      .filter((f) => !f.endsWith(".test.ts") && /https?:\/\/[^"'\s]*rdap/i.test(fs.readFileSync(f, "utf8")));
+      .filter((f) => !f.endsWith(".test.ts") && !f.includes(`${path.sep}lookup${path.sep}`) && /https?:\/\/[^"'\s]*rdap/i.test(fs.readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
 });

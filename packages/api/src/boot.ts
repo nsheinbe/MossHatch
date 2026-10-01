@@ -25,6 +25,8 @@ import { installClosureFromEnv } from "./closure/services.ts";
 import { inviteOnlyFromEnv } from "./waitlist/gate.ts";
 // The waitlist is served by api/index.ts before (and without) the full boot, so it works while production refuses to start.
 export { handleWaitlist } from "./waitlist/http.ts";
+// The preview's registered-or-not check (public RDAP) needs no database either, and is served the same way.
+export { handleLookup } from "./lookup/http.ts";
 
 export class NotConfigured extends Error {
   override name = "NotConfigured";

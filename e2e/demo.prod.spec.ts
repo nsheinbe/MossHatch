@@ -35,26 +35,47 @@ test("demo banner: in the app, permanent, axe clean; no account or purchase entr
   expect(bad).toEqual([]);
 });
 
-test("demo: every price and availability chip is labelled simulated, and the practice hatch says the name isn't registered", async ({ page }) => {
+test("demo: registered-or-not comes from the registry lookup, no made-up prices, and the practice hatch says the name isn't registered", async ({ page }) => {
   const bad = watch(page);
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await page.waitForFunction(() => document.querySelector("canvas.world"));
   await cancelDemo(page);
-  await page.fill("#name-input", "google");   // a taken sample name gives both kinds of chip
-  await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
+  const noPriceOrSimulation = async () => {
+    for (const chip of await page.locator(".chip").all()) {
+      expect(await chip.textContent()).not.toMatch(/simulated|\$\d|sample price/i);
+      expect(await chip.getAttribute("aria-label")).not.toMatch(/simulated|\$\d|sample price/i);
+    }
+  };
+  // Registered everywhere (the fake registries in e2e/serve-dist.mjs): every chip is taken, with no "Simulated" tag.
+  await page.fill("#name-input", "google");
+  await expect(page.locator(".chip.taken")).toHaveCount(6, { timeout: 15000 });
+  await expect(page.locator(".chip.taken").first()).toHaveText(/Taken\. Sleeping on the far bank\./);
+  expect(await page.locator(".chip.taken").first().getAttribute("aria-label")).toMatch(/is taken, already registered$/);
+  await expect(page.locator("button.chip")).toHaveCount(0);
+  await noPriceOrSimulation();
+  // A registry that cannot be asked: "Couldn't check right now", and nothing to hatch.
+  await page.fill("#name-input", "nocheckfern");
+  await expect(page.locator(".chip.unknown")).toHaveCount(6, { timeout: 15000 });
+  await expect(page.locator(".chip.unknown").first()).toHaveText(/Couldn't check right now\./);
+  await expect(page.locator("button.chip")).toHaveCount(0);
+  expect(await violations(page, ".chips-list")).toEqual([]);
+  // Unregistered names: hatchable, with no dollar figure.
   await page.fill("#name-input", "emberwick");
   await expect(page.locator("button.chip").first()).toBeVisible({ timeout: 15000 });
-  for (const chip of await page.locator(".chip").all()) {
-    expect(await chip.textContent()).toMatch(/simulated/i);
-    expect(await chip.getAttribute("aria-label")).toMatch(/simulated/i);
-  }
+  for (const chip of await page.locator("button.chip").all()) await expect(chip).toContainText("Looks unregistered · price at launch");
+  await noPriceOrSimulation();
+  await expect(page.getByText("To check whether a name is taken, we ask the public registry. We don't log or sell your searches.")).toBeVisible();
+  await expect(page.getByText(/stay in this browser/)).toHaveCount(0);
   await page.getByRole("button", { name: "The deal" }).click();
-  await expect(page.getByText("Prices and availability here are simulated for this preview.")).toBeVisible();
+  await expect(page.getByText("Whether a name is already registered comes from the public registry. Prices are set at launch.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Got it" }).press("Enter");
   await page.locator("button.chip").first().press("Enter");
   const sheet = page.getByRole("region", { name: /^Hatch / });
   await expect(sheet.getByText("Practice hatch — this name isn't registered.")).toBeVisible();
+  await expect(sheet.getByText("Set at launch")).toBeVisible();
+  await expect(sheet.getByText("Nothing is bought or charged.", { exact: false })).toBeVisible();
+  expect(await sheet.textContent()).not.toMatch(/\$\d|simulated|sample price/i);
   await expect(sheet.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
   expect(await violations(page, ".panel.side")).toEqual([]);
   const domain = (await sheet.getByRole("heading", { level: 2 }).textContent())!.trim();
@@ -153,7 +174,11 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
   await fb.fill("#fb-name", "moonfern");
   await fb.getByRole("button", { name: "Search" }).click();
   await expect(fb.getByText("moonfern.com")).toBeVisible();
-  await expect(fb.locator(".static-prices[aria-label='Results'] li").first()).toContainText(/simulated/);
+  // moonfern.com is registered (the fake registries mirror the real ones); the rest of the list says what the registry said, with no price.
+  const rows = fb.locator(".static-prices[aria-label='Results'] li");
+  await expect(rows.first()).toContainText("moonfern.comTaken, already registered");
+  await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · price at launch");
+  expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/simulated|\$\d/));
   expect(await violations(fb)).toEqual([]);
   await fb.getByRole("link", { name: "Join the waitlist" }).click();
   await expect(fb.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();

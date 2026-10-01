@@ -1,9 +1,7 @@
 import { formatUsd, feePerYear, usd, splitDomain } from "@mosshatch/core";
-import { EXTENSIONS, MockRegistrar, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
-import type { Result } from "../store";
+import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
+import type { LookupStatus, Result } from "../store";
 import { api } from "./api";
-
-const registrar = new MockRegistrar();
 
 /** Lowercase letters, digits and hyphens; 1 to 63 characters; no leading or trailing hyphen. */
 export function parseQuery(raw: string): { label: string; tld?: string } | null {
@@ -15,26 +13,42 @@ export function parseQuery(raw: string): { label: string; tld?: string } | null 
   return { label: v, tld: (EXTENSIONS as readonly string[]).includes(tld) ? tld : undefined };
 }
 
+/**
+ * Whether each extension of a name is already registered, from our /api/lookup (which asks each registry's public RDAP service:
+ * packages/api/src/lookup). Anything it cannot answer, or a failed request, is "unknown"; this never guesses. Answers are kept in
+ * memory for five minutes so retyping a name does not ask again.
+ */
+const memo = new Map<string, { at: number; statuses: Map<string, LookupStatus> }>();
+async function lookup(label: string): Promise<Map<string, LookupStatus>> {
+  const hit = memo.get(label);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.statuses;
+  const statuses = new Map<string, LookupStatus>();
+  try {
+    const res = await fetch(`/api/lookup?name=${encodeURIComponent(label)}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (!res.ok) return statuses;
+    const body = (await res.json()) as { results?: { tld?: unknown; status?: unknown }[] };
+    for (const r of body.results ?? []) {
+      if (typeof r.tld === "string" && (r.status === "registered" || r.status === "unregistered" || r.status === "unknown")) statuses.set(r.tld, r.status);
+    }
+  } catch { return statuses; }
+  if ([...statuses.values()].every((s) => s !== "unknown") && statuses.size > 0) {
+    if (memo.size >= 50) memo.delete(memo.keys().next().value!);
+    memo.set(label, { at: Date.now(), statuses });
+  }
+  return statuses;
+}
+
+/** The preview's search: real registered-or-not answers from the public registries, and no price (prices are set at launch). */
 export async function search(raw: string): Promise<{ results: Result[]; alternatives: string[] } | null> {
   const q = parseQuery(raw);
   if (!q) return null;
   const order = q.tld ? [q.tld, ...EXTENSIONS.filter((e) => e !== q.tld)] : [...EXTENSIONS];
-  const quotes = await Promise.all(order.map((tld) => registrar.quote(`${q.label}.${tld}`)));
-  const results: Result[] = quotes.map((qt) => {
-    const tld = splitDomain(qt.domain).tld;
-    const avail = qt.availability === "available";
-    const w = SAMPLE_WHOLESALE_CENTS[tld] ?? 0;
-    return {
-      domain: qt.domain, tld, available: avail, sample: true,
-      price: avail && qt.firstYear ? formatUsd(qt.firstYear) : undefined,
-      years: qt.years,
-      wholesale: avail ? formatUsd(usd(w * qt.years)) : undefined,
-      fee: avail ? formatUsd(usd(feePerYear(usd(w)).cents * qt.years)) : undefined,
-    };
+  const statuses = await lookup(q.label);
+  const results: Result[] = order.map((tld) => {
+    const status = statuses.get(tld) ?? "unknown";
+    return { domain: `${q.label}.${tld}`, tld, status, available: status === "unregistered", sample: true, years: tld === "ai" ? 2 : 1 };
   });
-  const primary = results[0]!;
-  const alternatives = primary.available ? [] : await registrar.suggestAlternatives(q.label, 3);
-  return { results, alternatives };
+  return { results, alternatives: [] };
 }
 
 export function staticPrices(): { tld: string; price: string; years: number }[] {

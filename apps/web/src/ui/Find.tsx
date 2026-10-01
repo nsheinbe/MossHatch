@@ -39,7 +39,8 @@ export function Find() {
     const w = handle.world;
     if (!r) { set({ results: [], alternatives: [], checking: false }); w?.clearResults(); return; }
     set({ results: r.results, alternatives: r.alternatives, checking: false });
-    w?.setResults(r.results.map((x) => ({ domain: x.domain, available: x.available })));
+    // A name the registry could not be asked about is neither an egg nor a sleeper: it is only listed, as "couldn't check".
+    w?.setResults(r.results.filter((x) => x.status !== "unknown").map((x) => ({ domain: x.domain, available: x.available })));
   }, [set]);
 
   // Every change of the query (typed or demo-typed) runs a search after a short pause.
@@ -59,7 +60,8 @@ export function Find() {
 
   const list = narrow;
   let ai = 0;
-  const chips = results.map((r) => <Chip key={r.domain} r={r} list={list} row={r.available ? ai++ % 2 : 0} onPick={onPick} />);
+  const chip = (r: Result, inList: boolean) => <Chip key={r.domain} r={r} list={inList} row={r.available ? ai++ % 2 : 0} onPick={onPick} />;
+  const checked = results.filter((r) => r.status !== "unknown"), unchecked = results.filter((r) => r.status === "unknown");
   const hiding = hatchPhase === "hatching";
   // Rescue: a taken name may be the person's own at another registrar (the pre-check says whether it can move).
   const rescuable = alternatives.length === 0 ? results.find((r) => !r.available) : undefined;
@@ -71,11 +73,13 @@ export function Find() {
         <p>Type a name and every free extension rises as an egg.</p>
       </div>
 
-      {list ? <div className="chips-list" aria-label="Results">{chips}</div> : chips}
+      {list
+        ? <div className="chips-list" aria-label="Results">{results.map((r) => chip(r, true))}</div>
+        : <>{checked.map((r) => chip(r, false))}{unchecked.length > 0 && <div className="chips-list" aria-label="Not checked">{unchecked.map((r) => chip(r, true))}</div>}</>}
 
       {alternatives.length > 0 && (
         <div className="alternatives" role="group" aria-label="Open alternatives">
-          <p className="lead">{preview ? "That name is taken in this simulation. These are open (simulated):" : "That name is taken. These are open:"}</p>
+          <p className="lead">That name is taken. These are open:</p>
           {alternatives.map((a) => (
             <button key={a} type="button" className="link-btn" onClick={() => set({ query: a.slice(0, a.indexOf(".")) })}>{a}</button>
           ))}
@@ -88,7 +92,7 @@ export function Find() {
           <div className="body">
             <p>One flat price per year. It is what the registry charges plus one small fee, and it renews at the same price.</p>
             <p>WHOIS privacy is free. No add-ons. Nothing is pre-checked.</p>
-            <p className="notice">{preview ? "Prices and availability here are simulated for this preview. Nothing is registered, reserved or charged." : "Prices here are sample prices for this preview."}</p>
+            <p className="notice">{preview ? "Whether a name is already registered comes from the public registry. Prices are set at launch. In this preview nothing is registered, reserved or charged." : "Prices here are sample prices for this preview."}</p>
             <button type="button" className="btn secondary" onClick={() => set({ dealOpen: false })}>Got it</button>
           </div>
         </div>
@@ -110,7 +114,7 @@ export function Find() {
             <button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button>
           </div>
         )}
-        <p className="search-note">{apiReady ? "We check names with our registrar, never register one because you searched, and never sell your searches." : "Your searches stay in this browser."} <a href="/commitments.html">Our commitments</a> · <a href="/fees.html">Fees</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
+        <p className="search-note">{apiReady ? "We check names with our registrar, never register one because you searched, and never sell your searches." : "To check whether a name is taken, we ask the public registry. We don't log or sell your searches."} <a href="/commitments.html">Our commitments</a> · <a href="/fees.html">Fees</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
       </form>
 
       {demo === "playing" && <p className="demo-note" role="status">Demo: watching “moonfern” hatch. Type to try your own.</p>}

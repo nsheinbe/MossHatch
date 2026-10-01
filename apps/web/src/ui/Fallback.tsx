@@ -18,7 +18,7 @@ export function Fallback() {
       <p className="lede">Type a name and see what is open.</p>
       <div id="boot-panel" className="boot-panel" role="status">
         <p className="boot-title">This browser can't light the lanterns.</p>
-        <p className="boot-msg">Mosshatch draws its grove with WebGL 2. The search and prices below work without it.</p>
+        <p className="boot-msg">Mosshatch draws its grove with WebGL 2. The search below works without it.</p>
       </div>
       <form className="static-search" role="search" onSubmit={go}>
         <label htmlFor="fb-name">What will you name it?</label>
@@ -28,8 +28,8 @@ export function Fallback() {
       {res && (
         <ul className="static-prices" aria-label="Results">
           {res.length === 0 ? <li>Type letters, numbers or hyphens.</li> : res.map((r) => (
-            <li key={r.domain}><span className="ext" style={r.available ? undefined : { textDecoration: "line-through", color: "var(--st-sleeping)" }}>{r.domain}</span>
-              {r.available ? <><span className="price">{r.price}</span><span className="note">{r.years === 2 ? "for 2 years, " : "first year, "}renews the same, <span className="sample-tag">sample price, simulated availability</span></span></> : <span className="note">Taken <span className="sample-tag">(simulated)</span></span>}</li>
+            <li key={r.domain}><span className="ext" style={r.status === "registered" ? { textDecoration: "line-through", color: "var(--st-sleeping)" } : undefined}>{r.domain}</span>
+              <span className="note">{r.status === "unknown" ? "Couldn't check right now" : r.available ? "Looks unregistered · price at launch" : "Taken, already registered"}</span></li>
           ))}
         </ul>
       )}
@@ -37,7 +37,7 @@ export function Fallback() {
       <ul className="static-prices">
         {staticPrices().map((p) => <li key={p.tld}><span className="ext">.{p.tld}</span><span className="price">{p.price}</span><span className="note">{p.years === 2 ? "for 2 years" : "first year"}, renews the same</span></li>)}
       </ul>
-      <p className="fineprint">These are sample prices, and availability is simulated. Nothing is for sale in this preview, and nothing you search is registered or reserved.</p>
+      <p className="fineprint">To check whether a name is taken, we ask the public registry; we don't log or sell your searches. The prices above are samples, not final: real prices are set at launch. Nothing is for sale in this preview, and nothing you search is registered or reserved.</p>
     </main>
   );
 }

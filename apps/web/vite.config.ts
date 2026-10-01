@@ -146,11 +146,40 @@ function devApi(): Plugin {
   };
 }
 
+/**
+ * Dev-server /api/lookup (the preview's registered-or-not check, packages/api/src/lookup), as api/index.ts serves it in production.
+ * MH_FAKE_LOOKUP=1 answers from a deterministic fake of the registries instead of the network (the Playwright dev project). Never
+ * part of a build. With MH_DEV_API=1 the page is in live mode and searches through the registrar port instead.
+ */
+function devLookup(): Plugin {
+  return {
+    name: "mosshatch-dev-lookup",
+    apply: "serve",
+    configureServer(server) {
+      let handler: ((r: Request) => Promise<Response | null>) | undefined;
+      server.middlewares.use(async (req, res, next) => {
+        if (!(req.url ?? "").startsWith("/api/lookup")) return next();
+        try {
+          if (!handler) {
+            const mod: any = await server.ssrLoadModule(root + "../../packages/api/src/lookup/index.ts");
+            handler = mod.createLookup(process.env.MH_FAKE_LOOKUP === "1" ? { fetch: mod.fakeRdapFetch, perMinute: 10_000, perHour: 100_000 } : {});
+          }
+          const out = await handler!(new Request("http://localhost" + req.url, { method: req.method, headers: { "x-forwarded-for": req.socket.remoteAddress ?? "" } }));
+          if (!out) return next();
+          res.statusCode = out.status;
+          out.headers.forEach((v, k) => res.setHeader(k, v));
+          res.end(Buffer.from(await out.arrayBuffer()));
+        } catch { res.statusCode = 500; res.end(); }
+      });
+    },
+  };
+}
+
 // The debug entry (?debug=states via /debug.html) is a review tool. It is only part of a build when asked for.
 const withDebug = process.env.MOSSHATCH_DEBUG_ENTRY === "1";
 
 export default defineConfig({
-  plugins: [glslMinify(), react(), staticPrices(), siteMeta(), devApi()],
+  plugins: [glslMinify(), react(), staticPrices(), siteMeta(), devLookup(), devApi()],
   build: {
     target: "es2022",
     modulePreload: { polyfill: false },

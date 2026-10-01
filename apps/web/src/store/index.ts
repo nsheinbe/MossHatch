@@ -1,10 +1,16 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+/** The preview's registered-or-not answer from the public registry (packages/api/src/lookup). */
+export type LookupStatus = "registered" | "unregistered" | "unknown";
+
 export interface Result {
   domain: string;
   tld: string;
+  /** Hatchable: free at the registrar (live), or not in the public registry (preview, `status` "unregistered"). */
   available: boolean;
+  /** Preview only: what the public registry said. Absent in live mode, where the registrar answers. */
+  status?: LookupStatus;
   /** Formatted all-in first-year price, present only when available. */
   price?: string;
   years?: number;

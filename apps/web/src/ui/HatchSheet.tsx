@@ -44,6 +44,8 @@ export function HatchSheet() {
   const r = selected;
   const years = r.years ?? 1;
   const live = apiReady === true;
+  // The preview has no prices: a name the public registry does not list says "set at launch" instead of a made-up figure.
+  const priced = live || !!r.price;
   const tld = r.domain.split(".").pop() ?? "";
   const doc = (kind: string) => docs.find((d) => d.kind === kind);
   const addendum = tld === "ai" || tld === "io" ? doc(`tld_addendum_${tld}`) : undefined;
@@ -69,8 +71,9 @@ export function HatchSheet() {
       <div className="body">
         {live
           ? <p className="notice">You pay on Stripe next. Nothing is charged until the name is registered.</p>
-          : <p className="notice"><span className="sample-tag">Preview.</span> Nothing is bought or charged. Prices are sample prices.</p>}
+          : <p className="notice"><span className="sample-tag">Preview.</span> Nothing is bought or charged.{priced ? " Prices are sample prices." : ""}</p>}
         <PracticeHatchNotice domain={r.domain} />
+        {priced ? <>
         <dl className="rows">
           <dt>{years === 2 ? "First 2 years" : "First year"}</dt><dd>{quote?.subtotal ?? r.price}</dd>
           <dt>Renews at</dt><dd>{years === 2 ? `${quote?.subtotal ?? r.price} per 2 years` : (quote?.subtotal ?? r.price)} (same)</dd>
@@ -84,7 +87,13 @@ export function HatchSheet() {
             <dt>Flat fee</dt><dd>{quote?.fee ?? r.fee}</dd>
           </dl>
         </details>
-        {tld === "ai" && <p className="notice">.ai is sold for 2 years at a time, so the price is the total for 2 years. Its contact details show in public lookups, and it cannot be refunded.</p>}
+        </> : (
+          <dl className="rows">
+            <dt>Price</dt><dd>Set at launch</dd>
+            <dt>WHOIS privacy</dt><dd>Free</dd>
+          </dl>
+        )}
+        {tld === "ai" && <p className="notice">.ai is sold for 2 years at a time{priced ? ", so the price is the total for 2 years" : ""}. Its contact details show in public lookups, and it cannot be refunded.</p>}
         {tld === "io" && <p className="notice">.io follows its registry's own rules, needs at least two nameservers, and cannot be refunded. Its future depends on a treaty about the Chagos Archipelago that is not in force.</p>}
         {/* C-58: .dev and .app are HSTS-preloaded; the same words come with the quote from the server (closure/tld-https.ts). */}
         {(tld === "dev" || tld === "app") && <p className="notice">.{tld} names work only over HTTPS: browsers refuse plain HTTP for every site and subdomain on .{tld}, so each one needs a TLS certificate before it serves anything.</p>}

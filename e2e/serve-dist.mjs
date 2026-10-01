@@ -1,6 +1,8 @@
 // Serve apps/web/dist with the headers from vercel.json, to test the enforced CSP locally.
 // Like Vercel with cleanUrls: /x serves x.html, a directory serves its index.html, and a miss serves 404.html with status 404.
 import http from "node:http"; import fs from "node:fs"; import path from "node:path";
+// The real /api/lookup handler (packages/api/src/lookup) with a fake of the registries' RDAP services: no network in tests.
+import { createLookup, fakeRdapFetch } from "../packages/api/src/lookup/index.ts";
 const dist = path.resolve("apps/web/dist");
 const cfg = JSON.parse(fs.readFileSync("vercel.json", "utf8"));
 const base = Object.fromEntries(cfg.headers[0].headers.map((h) => [h.key, h.value]));
@@ -8,6 +10,11 @@ const base = Object.fromEntries(cfg.headers[0].headers.map((h) => [h.key, h.valu
 const pathRules = cfg.headers.slice(1).map((h) => [new RegExp("^" + h.source.replace(/\(\.\*\)/g, "(.*)") + "$"), h.headers, h.has ?? []]);
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8", ".xml": "application/xml", ".svg": "image/svg+xml", ".png": "image/png" };
 const file = (p) => fs.existsSync(p) && fs.statSync(p).isFile();
+const lookup = createLookup({ fetch: fakeRdapFetch, perMinute: 10_000, perHour: 100_000 });
+async function fakeLookup(q, r) {
+  const res = await lookup(new Request("http://127.0.0.1" + q.url, { method: q.method, headers: { "sec-fetch-site": q.headers["sec-fetch-site"] ?? "none" } }));
+  r.writeHead(res.status, Object.fromEntries(res.headers)); r.end(Buffer.from(await res.arrayBuffer()));
+}
 let lastWaitlist = null;
 function fakeWaitlist(q, r) {
   if (q.method === "GET") { r.writeHead(200, { "Content-Type": "application/json" }); return r.end(JSON.stringify(lastWaitlist)); }
@@ -29,6 +36,7 @@ http.createServer((q, r) => {
   for (const [re, hs, has] of pathRules) if (re.test(decodeURIComponent(q.url.split("?")[0])) && has.every((c) => c.type === "query" && qs.has(c.key))) for (const h of hs) r.setHeader(h.key, h.value);
   // A fake of the standalone waitlist endpoint (packages/api/src/waitlist), for the prod e2e: same shapes, no database.
   if (q.url.split("?")[0] === "/api/waitlist" || q.url.startsWith("/__e2e/waitlist")) return fakeWaitlist(q, r);
+  if (q.url.split("?")[0] === "/api/lookup") return void fakeLookup(q, r);
   let p = path.join(dist, decodeURIComponent(q.url.split("?")[0])); if (p.endsWith("/")) p += "index.html";
   if (!p.startsWith(dist)) { r.writeHead(404); return r.end(); }
   if (!file(p) && file(p + ".html")) p += ".html";
