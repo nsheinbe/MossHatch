@@ -10,7 +10,7 @@ import { MemoryErasureLedger } from "./erasure.ts";
 import { FakeDns } from "../mail/dns.ts";
 import { registerOpsJobs } from "./jobs.ts";
 import {
-  AUDIT_SETTLE_MS, CloudTrailLookupEvents, FakeCloudTrail, KMS_RECONCILE_EVERY_SEC, kmsReconcile, parseCloudTrailDecrypt, UNAUDITED_ALERT_TARGET_MS, type CloudTrailPort, type KmsDecryptEvent,
+  AUDIT_SETTLE_MS, CloudTrailLookupEvents, FakeCloudTrail, KMS_RECONCILE_EVERY_SEC, kmsReconcile, parseCloudTrailDecrypt, UNAUDITED_ALERT_TARGET_MS, UnwiredCloudTrail, type CloudTrailPort, type KmsDecryptEvent,
 } from "./kms-reconcile.ts";
 
 let app: TestApp;
@@ -183,5 +183,16 @@ describe("ST-10: KMS reconcile under real KMS semantics (token from the original
     expect(calls[1]!.body.NextToken).toBe("p2");
     expect(parseCloudTrailDecrypt("not json")).toBeNull();
     expect(() => new CloudTrailLookupEvents({ region: "", credentials: async () => ({ accessKeyId: "a", secretAccessKey: "b" }), fetch: async () => ({ status: 200, text: async () => "{}" }) })).toThrow();
+  });
+});
+
+describe("production without a joinable CloudTrail", () => {
+  it("the unwired port never passes silently: every run raises kms.reconcile_not_configured (once while open) and judges nothing", async () => {
+    const ct = new UnwiredCloudTrail("vault_not_configured");
+    expect(await kmsReconcile(app.ctx, ct)).toEqual({ events: 0, unaudited: [], auditWithoutEvent: 0 });
+    await kmsReconcile(app.ctx, ct);
+    const rows = await q("select severity, kind, subject, detail from alerts where kind = 'kms.reconcile_not_configured'");
+    expect(rows).toEqual([{ severity: "warn", kind: "kms.reconcile_not_configured", subject: "cloudtrail", detail: { reason: "vault_not_configured" } }]);
+    expect(await q("select 1 from flags where name like 'audit.kms_reconcile.%'")).toHaveLength(0);
   });
 });

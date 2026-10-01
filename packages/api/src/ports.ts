@@ -14,7 +14,8 @@ export interface PiiPort {
   encrypt(plaintext: string, aad: string): Promise<Envelope>;
   decrypt(env: Envelope, aad: string): Promise<string>;
 }
-export interface Envelope { v: 1; alg: "A256GCM"; nonce: string; ct: string; tag: string; kek: string }
+/** `kek` is `local` or the KMS key ARN; `wk` is the KMS-wrapped data key (AWS envelopes only). */
+export interface Envelope { v: 1; alg: "A256GCM"; nonce: string; ct: string; tag: string; kek: string; wk?: string }
 
 export interface EmailMessage {
   /** Idempotency: a second send with the same key is a no-op. */

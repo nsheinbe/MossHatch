@@ -33,6 +33,7 @@ export type KmsErrorCode =
   | "NotFoundException"
   | "ThrottlingException"
   | "KMSInternalException"
+  | "KMSInvalidMacException"
   | "Timeout"
   | "Unavailable";
 

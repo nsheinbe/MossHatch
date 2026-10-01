@@ -4,9 +4,10 @@ import { KmsError, type KmsErrorCode, type VaultEncryptionContext, type VaultKek
 /**
  * AWS KMS adapter over the JSON protocol (`X-Amz-Target: TrentService.<Op>`, `application/x-amz-json-1.1`) with a
  * Signature Version 4 signer written here, because `@aws-sdk/client-kms` is not a dependency and adding one needs a
- * reason the lead has not approved. NEVER CALLED in this repository: no AWS account or credentials exist. Request and
- * response shapes follow the KMS API reference (GenerateDataKey, Decrypt, ReEncrypt) and are unverified against a live
- * endpoint; the signer is checked against the AWS SigV4 test-suite vector `get-vanilla` only.
+ * reason the lead has not approved. Wired for production by packages/api/src/aws/production.ts (OIDC-federated
+ * `vault-prod` and `vault-nonprod` roles) when the MH_KMS_VAULT_* variables are set. Request and response shapes follow the
+ * KMS API reference (GenerateDataKey, Decrypt, ReEncrypt) and are tested against packages/api/src/aws/testkit.ts, not yet
+ * against a live endpoint; the signer is checked against the AWS SigV4 test-suite vector `get-vanilla`.
  */
 
 export interface AwsCredentials { accessKeyId: string; secretAccessKey: string; sessionToken?: string }

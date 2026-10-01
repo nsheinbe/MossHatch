@@ -4,6 +4,7 @@ import path from "node:path";
 import { tx } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { appendAudit } from "../audit.ts";
+import { isWriteOnceConflict, type S3LikeClient } from "./anchor.ts";
 
 /** Hash stored in the ledger: not the user id, so the ledger file alone names nobody. UUIDv7 ids carry 74 random bits. */
 export const erasureHash = (userId: string): string => crypto.createHash("sha256").update("mh-erasure-v1:" + userId).digest("hex");
@@ -29,6 +30,29 @@ export class FileErasureLedger implements ErasureLedger {
   async list() {
     if (!fs.existsSync(this.file)) return [];
     return fs.readFileSync(this.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as ErasureEntry);
+  }
+}
+/**
+ * The production ledger: one write-once object per erasure under `erasures/` in the Object Lock bucket that holds the anchors.
+ * An entry is a hash and a time (names nobody); COMPLIANCE retention keeps it for at least as long as any backup it must outlive.
+ * A repeated append of the same entry is idempotent.
+ */
+export class S3ObjectLockErasureLedger implements ErasureLedger {
+  constructor(private s3: S3LikeClient, private bucket: string, private retainDays = 3650, private now: () => Date = () => new Date()) {}
+  async append(e: ErasureEntry) {
+    if (!/^[0-9a-f]{64}$/.test(e.userHash)) throw new Error("erasure_entry_invalid");
+    const Key = `erasures/${e.erasedAt.replace(/[:.]/g, "-")}_${e.userHash}.json`;
+    try {
+      await this.s3.putObject({ Bucket: this.bucket, Key, Body: JSON.stringify({ userHash: e.userHash, erasedAt: e.erasedAt }), ContentType: "application/json", IfNoneMatch: "*", ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: new Date(this.now().getTime() + this.retainDays * 86_400_000) });
+    } catch (x) { if (!isWriteOnceConflict(x)) throw x; }
+  }
+  async list() {
+    const out: ErasureEntry[] = [];
+    for (const Key of (await this.s3.listKeys({ Bucket: this.bucket, Prefix: "erasures/" })).sort()) {
+      const v = JSON.parse(await this.s3.getObject({ Bucket: this.bucket, Key })) as ErasureEntry;
+      out.push({ userHash: v.userHash, erasedAt: v.erasedAt });
+    }
+    return out;
   }
 }
 export class MemoryErasureLedger implements ErasureLedger {

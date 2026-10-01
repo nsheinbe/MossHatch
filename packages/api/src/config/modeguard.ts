@@ -92,11 +92,17 @@ function hostOf(url: string | undefined): string | undefined {
  * MH_REGISTRAR_MODE (mock|sandbox|live; default mock), DATABASE_URL (host hint only), MH_KMS_ALIAS (hint only),
  * MH_SCOPE (`registrar` only in the registrar project), REGISTRAR_RPC_URL (host compared with the environment); OPENSRS_* / REGISTRAR_LIVE_* credentials are refused outside the registrar scope.
  */
-export function loadConfig(env: Record<string, string | undefined>): Config {
-  const vercelEnv = env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview" || env.VERCEL_ENV === "development" ? env.VERCEL_ENV : undefined;
+/** The deployment mode alone (MH_MODE, else derived from VERCEL_ENV, else local), before the rest of the config is checked. */
+export function modeFromEnv(env: Record<string, string | undefined>): Mode {
+  const vercelEnv = env.VERCEL_ENV;
   const modeRaw = env.MH_MODE ?? (vercelEnv === "production" ? "production" : vercelEnv === "preview" ? "preview" : "local");
   if (!["local", "preview", "staging", "production"].includes(modeRaw)) throw new ModeError(["config_missing"]);
-  const mode = modeRaw as Mode;
+  return modeRaw as Mode;
+}
+
+export function loadConfig(env: Record<string, string | undefined>): Config {
+  const vercelEnv = env.VERCEL_ENV === "production" || env.VERCEL_ENV === "preview" || env.VERCEL_ENV === "development" ? env.VERCEL_ENV : undefined;
+  const mode = modeFromEnv(env);
   const regRaw = env.MH_REGISTRAR_MODE ?? "mock";
   if (!["mock", "sandbox", "live"].includes(regRaw)) throw new ModeError(["config_missing"]);
   const registrarMode = regRaw as Config["registrarMode"];

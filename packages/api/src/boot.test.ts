@@ -3,7 +3,8 @@ import { createTestDb, type TestDb } from "@mosshatch/db/testing";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bootFromEnv, NotConfigured } from "./boot.ts";
+import { bootFromEnv, NotConfigured, PRODUCTION_LIVE_WIRED } from "./boot.ts";
+import { fakeProductionAws } from "./aws/testkit.ts";
 import { listJobDefs, getJobDef } from "./jobs/registry.ts";
 import { listDeadLetterHookKinds, listRecurringJobs } from "./jobs/engine.ts";
 import { Router } from "./http/router.ts";
@@ -30,10 +31,44 @@ describe("bootFromEnv", () => {
     expect(e1).toBeInstanceOf(NotConfigured);
     expect((e1 as NotConfigured).reason).toBe("database_not_configured");
   });
-  it("refuses production until the production adapters exist", async () => {
-    const e = await (async () => { try { await bootFromEnv({ ...base(), MH_MODE: "production", VERCEL_ENV: "production", DATABASE_URL: "postgres://u:p@db.prod.example.com/x", STRIPE_SECRET_KEY: "sk_live_" + "x".repeat(24), MH_REGISTRAR_MODE: "live" }); } catch (x) { return x; } })();
+  it("production names every missing piece by reason code at once", async () => {
+    const e = await bootFromEnv({ ...base(), MH_MODE: "production", VERCEL_ENV: "production", DATABASE_URL: "postgres://u:p@db.prod.example.com/x", STRIPE_SECRET_KEY: "sk_live_" + "x".repeat(24), MH_REGISTRAR_MODE: "live" }).catch((x) => x);
     expect(e).toBeInstanceOf(NotConfigured);
-    expect((e as NotConfigured).reason).toBe("production_adapters_not_built");
+    expect((e as NotConfigured).reasons).toEqual(["aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured", "stripe_live_not_configured", "registrar_live_not_configured"]);
+    expect((e as NotConfigured).reason).toBe("aws_oidc_not_configured,kms_not_configured,anchor_not_configured,stripe_live_not_configured,registrar_live_not_configured");
+    const bare = await bootFromEnv({ MH_MODE: "production" }).catch((x) => x);
+    expect((bare as NotConfigured).reasons).toEqual(["database_not_configured", "config_missing", "aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured", "stripe_live_not_configured", "registrar_live_not_configured"]);
+  });
+  it("production with AWS configured probes it live (fake AWS) and still refuses the live money paths until they are wired", async () => {
+    const f = fakeProductionAws();
+    const prodEnv = { ...base(), MH_MODE: "production", VERCEL_ENV: "production", MH_ORIGIN: "https://mosshatch.com", ...f.env,
+      STRIPE_SECRET_KEY: "sk_live_" + "x".repeat(24), STRIPE_WEBHOOK_SECRET: "whsec_x", MH_REGISTRAR_MODE: "live", REGISTRAR_RPC_URL: "https://registrar.example.com", REGISTRAR_RPC_SECRET: "r".repeat(40) };
+    const e = await bootFromEnv(prodEnv, { fetch: f.aws.fetch, tokenSource: () => f.oidcToken }).catch((x) => x);
+    expect((e as NotConfigured).reasons).toEqual(["stripe_live_not_configured", "registrar_live_not_configured"]);
+    expect(PRODUCTION_LIVE_WIRED).toEqual({ stripe: false, registrar: false });
+    // The probe really ran: STS, a MAC generated and verified, a PII round trip, the bucket's lock configuration.
+    expect(f.aws.requests.map((r) => r.headers["x-amz-target"] ?? new URL(r.url).host.split(".")[0])).toEqual(["oidc", "sts", "TrentService.GenerateMac", "TrentService.VerifyMac", "TrentService.GenerateDataKey", "TrentService.Decrypt", "mosshatch-audit-anchor"]);
+    // A wrong trust policy, a missing key permission or a bucket without COMPLIANCE lock is reported precisely.
+    f.aws.stsDeny = true;
+    const denied = await bootFromEnv(prodEnv, { fetch: f.aws.fetch, tokenSource: () => f.oidcToken }).catch((x) => x);
+    expect((denied as NotConfigured).reasons).toEqual(["aws_oidc_failed:sts:AccessDenied", "stripe_live_not_configured", "registrar_live_not_configured"]);
+    const noToken = await bootFromEnv(prodEnv, { fetch: f.aws.fetch, tokenSource: () => null }).catch((x) => x);
+    expect((noToken as NotConfigured).reasons[0]).toBe("aws_oidc_failed:oidc_token_missing");
+    f.aws.stsDeny = false;
+    const half = await bootFromEnv({ ...prodEnv, MH_KMS_VAULT_PROD_KEY_ARN: f.keys.vaultProd }, { fetch: f.aws.fetch, tokenSource: () => f.oidcToken }).catch((x) => x);
+    expect((half as NotConfigured).reasons).toEqual(["vault_not_configured", "stripe_live_not_configured", "registrar_live_not_configured"]);
+    expect(JSON.stringify([e, denied, noToken, half].map((x) => [(x as Error).message, (x as Error).stack]))).not.toContain(f.oidcToken);
+  });
+  it("once the live paths are wired, a production boot passes the AWS preflight and reaches the mode guard", async () => {
+    const f = fakeProductionAws();
+    const live = PRODUCTION_LIVE_WIRED as { stripe: boolean; registrar: boolean };
+    live.stripe = true; live.registrar = true;
+    try {
+      const prodEnv = { ...base(), MH_MODE: "production", VERCEL_ENV: "production", MH_ORIGIN: "https://mosshatch.com", ...f.env, ...f.vaultEnv, DATABASE_URL_VAULT: db.urlFor("runtime"),
+        STRIPE_SECRET_KEY: "sk_live_" + "x".repeat(24), STRIPE_WEBHOOK_SECRET: "whsec_x", MH_REGISTRAR_MODE: "live", REGISTRAR_RPC_URL: "https://127.0.0.1:9", REGISTRAR_RPC_SECRET: "r".repeat(40) };
+      // No NotConfigured: every AWS piece answered. The mode guard then refuses the local test database for a production process.
+      await expect(bootFromEnv(prodEnv, { fetch: f.aws.fetch, tokenSource: () => f.oidcToken })).rejects.toThrow(/mode guard: db_host_environment_mismatch/);
+    } finally { live.stripe = false; live.registrar = false; }
   });
   it("the mode guard still applies: a live Stripe key with the mock registrar does not boot", async () => {
     await expect(bootFromEnv({ ...base(), STRIPE_SECRET_KEY: "sk_live_" + "x".repeat(24) })).rejects.toThrow(/mode guard/);
