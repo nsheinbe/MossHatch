@@ -16,6 +16,7 @@ The order agreed on 2026-09-30 (D-058). Each gate lists who owns it and the evid
 - [ ] 2FA on the real Openprovider account; sandbox password changed after testing (you)
 
 ## Stage 3: dogfood and live rehearsal (you, with Claude)
+The exact steps, env vars and checks for the first live purchase, and how to roll back: `docs/GO-LIVE.md`.
 - [ ] Openprovider membership bought and balance funded (you)
 - [ ] Stripe live keys (restricted key) and live webhook, owner-only use (you + Claude)
 - [ ] AWS account and KMS keys for production encryption (you + Claude)

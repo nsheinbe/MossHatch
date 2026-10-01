@@ -54,7 +54,7 @@ Items 8 to 10 above are now partly modelled, still from documentation only: `get
 
 ## Openprovider (added 2026-09-30)
 
-Adapter: `packages/registrar/src/openprovider/` (`OpenproviderAdapter`, REST API v1, bearer token from `POST /auth/login`). Why Openprovider: `docs/research/cheaper-upstreams-2026-09-30.md`. Unlike the OpenSRS adapter, this one has been run against the provider: every "verified" row below was observed on the **live Openprovider sandbox** (`https://api.sandbox.openprovider.nl/v1`, play money, 2026-09-30). Production (`https://api.openprovider.eu/v1`) has not been called.
+Adapter: `packages/registrar/src/openprovider/` (`OpenproviderAdapter`, REST API v1, bearer token from `POST /auth/login`). Why Openprovider: `docs/research/cheaper-upstreams-2026-09-30.md`. Unlike the OpenSRS adapter, this one has been run against the provider: every "verified" row below was observed on the **live Openprovider sandbox** (`https://api.sandbox.openprovider.nl/v1`, play money, 2026-09-30). Production (`https://api.openprovider.eu/v1`) has not been called. The host and the `/v1` paths are those of Openprovider's OpenAPI document (`developer.openprovider.com/data/swagger.json`, re-fetched 2026-10-01: `host: api.openprovider.eu`, paths `/v1/...`); the older `/v1beta` base is not used.
 
 How it is tested:
 - `openprovider.test.ts` (offline): allow-list, guards (kill switch, fuses, live/sandbox versus deployment), token reuse and re-login, error mapping, ST-22 code hygiene, money and dates, DS arithmetic against RFC 4509 and RFC 6605, the DNS write plan, provider routing.
@@ -91,3 +91,7 @@ How it is tested:
 | Webhooks, events, idempotency | None in the spec | n/a |
 
 Configuration: `MH_REGISTRAR_PROVIDER=openprovider|opensrs|mock` (whole) and `MH_REGISTRAR_PROVIDER_BY_TLD=com=openprovider,...` (per extension), parsed by `parseRegistrarRouting`; `OPENPROVIDER_USERNAME`, `OPENPROVIDER_PASSWORD`, `OPENPROVIDER_ENV=sandbox|production`. `loadConfig` refuses `OPENPROVIDER_*` outside `MH_SCOPE=registrar` and in preview, sandbox credentials in production, production credentials outside production, and credentials that disagree with `MH_REGISTRAR_MODE` (`packages/api/src/config/openprovider-guard.ts`).
+
+## Live wiring (added 2026-10-01)
+
+Live sales go through Openprovider only (`MH_REGISTRAR_PROVIDER=openprovider`; production refuses OpenSRS with `registrar_provider_not_openprovider`). The adapter runs in the `mosshatch-registrar` Vercel project (`apps/registrar`, `packages/api/src/registrar-rpc/serve.ts`), the only place the credentials exist, behind the signed RPC; `docs/GO-LIVE.md` has the setup. Offline tests drive web's RPC client through that handler to a fake Openprovider and check that the live adapter calls the production base URL (`registrar-rpc/serve.test.ts`). Prices: migration 1120 (non-member, USD, public feed 2026-10-01); the D-031 guard compares each live quote, including the renewal price, with that table and refuses any difference. Still UNVERIFIED in production: every row above marked verified was seen in the sandbox only.

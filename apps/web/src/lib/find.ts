@@ -79,10 +79,14 @@ export async function searchLive(raw: string): Promise<{ results: Result[]; alte
   return { results, alternatives: [] };
 }
 
-export interface LiveQuote { subtotal: string; wholesale: string; fee: string; taxCeiling: string; years: number }
+/** `wholesale` is the registrar price the customer pays for: this year's upstream price raised to the renewal price when that is higher (`heldAtRenewal`). */
+export interface LiveQuote { subtotal: string; wholesale: string; fee: string; taxCeiling: string; years: number; heldAtRenewal: boolean }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ quote: { subtotal_minor: string; wholesale_minor: string; fee_minor: string; tax_ceiling_minor: string; years: number } | null }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
+  const out = await api<{ quote: { subtotal_minor: string; wholesale_minor: string; registrar_price_minor?: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number } | null }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
   if (!out.quote) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
-  return { subtotal: f(out.quote.subtotal_minor), wholesale: f(out.quote.wholesale_minor), fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor), years: out.quote.years };
+  return {
+    subtotal: f(out.quote.subtotal_minor), wholesale: f(out.quote.registrar_price_minor ?? out.quote.wholesale_minor), fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor), years: out.quote.years,
+    heldAtRenewal: Number(out.quote.renewal_level_minor ?? "0") > 0,
+  };
 }

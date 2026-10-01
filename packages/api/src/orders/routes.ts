@@ -40,7 +40,7 @@ export function registerOrderRoutes(router: Router): Router {
   router.add(
     {
       // Session principal only: an agent binding can never place or accept an order (C-12, C-14).
-      method: "POST", path: "/api/v1/orders", principals: ["session"], tag: "orders",
+      method: "POST", path: "/api/v1/orders", principals: ["session"], tag: "orders", liveGate: true,
       async handler(r) {
         const key = r.request.headers.get("idempotency-key");
         if (!key) throw new HttpError(400, "idempotency_key_required");
@@ -87,7 +87,7 @@ export function registerOrderRoutes(router: Router): Router {
     {
       // capture_failed only: the order's one payable pay-link Checkout while the emailed pay window is open (valid up to 7 days).
       // An open one is handed out again; the machine records each one as an operation and never leaves two payable.
-      method: "POST", path: "/api/v1/orders/:id/pay-link", principals: ["session"], tag: "orders",
+      method: "POST", path: "/api/v1/orders/:id/pay-link", principals: ["session"], tag: "orders", liveGate: true,
       async handler(r) {
         const userId = uid(r);
         const o = await owned(r.ctx, userId, r.params.id ?? "");

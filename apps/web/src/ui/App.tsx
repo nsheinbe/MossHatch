@@ -15,7 +15,7 @@ import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
-import { buildSiteMode } from "../lib/site";
+import { applySiteChrome, buildSiteMode, liveFor } from "../lib/site";
 
 const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
@@ -47,7 +47,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
-  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, set } = useUi();
+  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -59,13 +59,23 @@ export function App() {
   // Signing out (or losing the session) takes the account's domains out of the scene and closes their panel.
   useEffect(() => { if (!account) { dropRealGrove(); set({ domainPanel: null, view: useUi.getState().view === "ledger" ? "find" : useUi.getState().view }); } }, [account, set]);
 
+  // Invite build: the live shop follows the signed-in account (signing in or out switches it), and the banner with it.
+  useEffect(() => {
+    if (buildSiteMode !== "invite" || apiReachable === null) return;
+    const live = apiReachable === true && liveFor(account);
+    set({ apiReady: live });
+    applySiteChrome(live);
+  }, [account, apiReachable, set]);
+
   useEffect(() => {
     // Is there a backend behind this deployment? A preview without a database answers 503 and stays a practice place.
     void (async () => {
       const ready = await apiAvailable();
-      set({ apiReady: ready });
-      if (ready && invited && buildSiteMode === "live") set({ accountOpen: true });
-      if (ready) { try { set({ account: await whoAmI() }); } catch { /* signed out */ } }
+      let me = null;
+      if (ready) { try { me = await whoAmI(); } catch { /* signed out */ } }
+      // Invite build: reachable is not live; only an account with live access gets the shop (the effect above).
+      set({ apiReachable: ready, account: me, ...(buildSiteMode === "invite" ? {} : { apiReady: ready }) });
+      if (ready && invited && buildSiteMode !== "demo") set({ accountOpen: true });
       const q = new URLSearchParams(location.search);
       const id = q.get("order"), sid = q.get("session_id");
       if (location.pathname === "/checkout/return" && id && /^[0-9a-f-]{36}$/i.test(id) && sid && /^[A-Za-z0-9_]{6,200}$/.test(sid)) set({ orderId: id, orderSession: sid });

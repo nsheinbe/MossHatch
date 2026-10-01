@@ -54,7 +54,7 @@ export const agentRoutes: Route[] = [
   { ...session, method: "POST", path: "/api/v1/approvals/:id/approve-dns", stepUp: "dns.sensitive.approve", handler: approveDnsHandler },
   { ...session, method: "POST", path: "/api/v1/approvals/:id/decline", handler: async (req) => json(await decline(req.ctx, sessionUserOf(req), p(req, "id"))) },
   { ...session, method: "POST", path: "/api/v1/approvals/:id/resolve", handler: async (req) => json(await resolveScope(req.ctx, sessionUserOf(req), p(req, "id"))) },
-  { ...session, method: "POST", path: "/api/v1/approvals/:id/checkout", handler: checkoutHandler },
+  { ...session, method: "POST", path: "/api/v1/approvals/:id/checkout", liveGate: true, handler: checkoutHandler },
   // Visitors (session). Sending everyone home is never rate limited.
   { ...session, method: "GET", path: "/api/v1/visitors", handler: listVisitors },
   { ...session, method: "POST", path: "/api/v1/visitors/send-home", handler: sendHomeHandler },

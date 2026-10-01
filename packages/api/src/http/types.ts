@@ -70,6 +70,11 @@ export interface Route {
   capability?: string;
   /** Skip the cookie CSRF guard (ceremony endpoints carry their own tokens; never used for mutations by default). */
   csrf?: "guard" | "none";
+  /**
+   * A purchase or registrar-backed route of the shop. While the invite-only live gate is on (`ctx.services.liveGate`, waitlist/gate.ts)
+   * only an account activated with an invite reaches it; everyone else gets 403 invite_required and the site stays the demo for them.
+   */
+  liveGate?: boolean;
   /** Free-form tag for the route walk (module name). */
   tag?: string;
   /** Request body format. `form` accepts `application/x-www-form-urlencoded` (OAuth token and revocation endpoints, RFC 6749/7009). */

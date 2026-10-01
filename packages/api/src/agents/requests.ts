@@ -7,7 +7,7 @@ import { raiseAlert } from "../ops/alerts.ts";
 import { hashOf } from "../util/bytes.ts";
 import { buildQuote, loadPolicy, PricingError, type PricedQuote } from "../pricing/index.ts";
 import { parseFqdn } from "../search/labels.ts";
-import { checkNewAccountLimits } from "../compliance/velocity.ts";
+import { checkNewAccountLimits, spendFuseOf } from "../compliance/velocity.ts";
 import { allows, lintScopes, scopeString, storedScopes, type Scope } from "../bindings/scopes.ts";
 import { canonical, parseForUser } from "../bindings/specs.ts";
 import type { OrdersServices } from "../orders/types.ts";
@@ -158,7 +158,7 @@ export async function propose(ctx: AppContext, caller: Caller, raw: unknown): Pr
     const priced = await withUser(ctx.runtime, caller.userId, async (c) => {
       const pr = await priceRegistration(ctx, c, p.data.domain, p.data.years);
       // C-24 and ST-133: the new-account limits that bind a human's registrations bind an agent's proposals too, and again at order time.
-      const v = await checkNewAccountLimits(c, caller.userId, { wholesaleMinor: pr.quote.wholesaleMinor }, ctx.clock.now());
+      const v = await checkNewAccountLimits(c, caller.userId, { wholesaleMinor: pr.quote.wholesaleMinor }, ctx.clock.now(), spendFuseOf(ctx));
       if (!v.allowed) return { refuse: v.reasons[0]! };
       const owned = (await c.query("select 1 from domains where fqdn_ascii = $1 and released_at is null", [pr.fqdn])).rowCount;
       if (owned) return { refuse: "already_owned" };
@@ -167,7 +167,7 @@ export async function propose(ctx: AppContext, caller: Caller, raw: unknown): Pr
     if (!("pr" in priced) || !priced.pr) {
       const reason = (priced as { refuse: string }).refuse;
       if (reason === "already_owned") throw new HttpError(409, "already_owned");
-      return limited(ctx, caller, reason, reason === "global_daily_cap" ? 503 : 429);
+      return limited(ctx, caller, reason, reason === "global_daily_cap" || reason === "global_total_cap" ? 503 : 429);
     }
     const { pr } = priced;
     await assertAvailable(ctx, pr.fqdn);

@@ -86,6 +86,7 @@ export function HatchSheet() {
             <dt>Registry cost</dt><dd>{quote?.wholesale ?? r.wholesale}</dd>
             <dt>Flat fee</dt><dd>{quote?.fee ?? r.fee}</dd>
           </dl>
+          {quote?.heldAtRenewal && <p className="fineprint">Our registrar charges less for the first year than for a renewal. We charge its renewal price from the start, so the price you pay now is the price you pay every year.</p>}
         </details>
         </> : (
           <dl className="rows">

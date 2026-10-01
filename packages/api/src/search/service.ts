@@ -4,7 +4,8 @@ import type { Availability, AvailabilityKind, RegistrarPort } from "@mosshatch/r
 import { RegistrarError } from "@mosshatch/registrar/port";
 import type { AppContext } from "../ports.ts";
 import { reserveLookups } from "./budget.ts";
-import { computeAmounts, loadPriceRows, REGISTRAR, taxCeilingBps } from "../pricing/quote.ts";
+import { computeAmounts, loadPriceRows, taxCeilingBps } from "../pricing/quote.ts";
+import { priceTableFor } from "../pricing/registrar.ts";
 import type { LaunchTld } from "./labels.ts";
 
 export const CACHE_TTL_MS = 60_000;
@@ -93,14 +94,15 @@ export async function checkoutAvailability(ctx: Pick<AppContext, "clock">, c: Po
 
 /** Price chips: the first-order subtotal per extension at the current effective wholesale (same arithmetic as buildQuote). */
 export async function chipPrices(c: PoolClient, tlds: readonly string[], now: Date): Promise<Map<string, { years: number; subtotalMinor: bigint }>> {
-  const rows = await loadPriceRows(c, [...tlds], ["register"], now);
+  const rows = await loadPriceRows(c, [...tlds], ["register", "renew"], now);
   const bps = await taxCeilingBps(c);
   const out = new Map<string, { years: number; subtotalMinor: bigint }>();
-  const pol = new Map((await c.query("select tld, min_term_years from tld_policy where registrar = $1 and tld = any($2)", [REGISTRAR, [...tlds]])).rows.map((r) => [r.tld as string, r.min_term_years as number]));
+  const pol = new Map((await c.query("select p.tld, p.min_term_years from tld_policy p join unnest($1::text[], $2::text[]) as t(tld, registrar) on t.tld = p.tld and t.registrar = p.registrar", [[...tlds], tlds.map(priceTableFor)])).rows.map((r) => [r.tld as string, r.min_term_years as number]));
   for (const tld of tlds) {
     const row = rows.get(`${tld}:register`); const minTerm = pol.get(tld);
     if (!row || minTerm === undefined) continue;
-    const a = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: row.amount, years: minTerm, taxCeilingBps: bps });
+    const renew = rows.get(`${tld}:renew`)?.amount;
+    const a = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: row.amount, ...(renew !== undefined ? { renewPerYearMinor: renew } : {}), years: minTerm, taxCeilingBps: bps });
     out.set(tld, { years: minTerm, subtotalMinor: a.subtotalMinor });
   }
   return out;

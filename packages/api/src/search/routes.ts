@@ -56,7 +56,7 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
   const cache = opts.cache ?? new SearchCache();
   router.add(
     {
-      method: "GET", path: "/api/v1/search", principals: ["anonymous", "session", "binding"], tag: "search",
+      method: "GET", path: "/api/v1/search", principals: ["anonymous", "session", "binding"], tag: "search", liveGate: true,
       handler: async (req) => {
         onlyParams(req.url, ["name", "tlds"]);
         const name = normalizeLabel(req.url.searchParams.get("name") ?? "");
@@ -80,7 +80,7 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
       },
     },
     {
-      method: "GET", path: "/api/v1/quote", principals: ["anonymous", "session", "binding"], tag: "search",
+      method: "GET", path: "/api/v1/quote", principals: ["anonymous", "session", "binding"], tag: "search", liveGate: true,
       handler: async (req) => {
         // The client sends only the name and the term. A price, total or any other parameter is refused, not ignored.
         onlyParams(req.url, ["domain", "years"]);

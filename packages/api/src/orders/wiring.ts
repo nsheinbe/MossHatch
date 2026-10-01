@@ -1,5 +1,6 @@
 import { assertConfigMode, ModeError } from "../config/modeguard.ts";
 import { screenSanctions, screeningBlocks, checkNewAccountLimits, LocalFixtureSanctions, type SanctionsPort } from "../compliance/index.ts";
+import { spendFuseOf } from "../compliance/velocity.ts";
 import { buildQuote } from "../pricing/index.ts";
 import { opportunisticTick } from "../jobs/engine.ts";
 import type { AppContext } from "../ports.ts";
@@ -16,8 +17,8 @@ export const defaultPricing = (registrar: RegistrarPort): OrderPricing => ({
 /** Velocity and new-account limits, then sanctions screening of the registrant. Any refusal is a plain 403/429 code. */
 export const defaultCompliance = (sanctions: SanctionsPort): OrderCompliance => ({
   async check(ctx, c, i) {
-    const v = await checkNewAccountLimits(c, i.userId, { wholesaleMinor: i.wholesaleMinor }, ctx.clock.now());
-    if (!v.allowed) return { ok: false, status: v.reasons.includes("global_daily_cap") ? 503 : 429, code: v.reasons[0]! };
+    const v = await checkNewAccountLimits(c, i.userId, { wholesaleMinor: i.wholesaleMinor }, ctx.clock.now(), spendFuseOf(ctx));
+    if (!v.allowed) return { ok: false, status: v.reasons.includes("global_daily_cap") || v.reasons.includes("global_total_cap") ? 503 : 429, code: v.reasons[0]! };
     const reg = await loadRegistrant(ctx, i.userId);
     const s = await screenSanctions(sanctions, c, { kind: "registrant", ref: i.userId, name: reg?.name, country: reg?.country }, ctx.clock.now());
     if (screeningBlocks(s.result)) return { ok: false, status: 403, code: "screening_hold" };

@@ -1,11 +1,13 @@
 // Site mode for the static parts of the web build (the same rule as apps/web/src/lib/site.ts): `demo` is the public preview, `live`
-// only when VITE_API_ENABLED=1 and VITE_SITE_MODE is not "demo". Used by the Vite config (index.html) and scripts/site-pages.mjs
+// only when VITE_API_ENABLED=1 and VITE_SITE_MODE is neither "demo" nor "invite". Used by the Vite config (index.html) and scripts/site-pages.mjs
 // (every other page in dist) for the permanent preview banner, titles, canonical URLs and share tags.
 export const WEB_ORIGIN = "https://mosshatch.com";
 export const SHARE_IMAGE = { path: "/og.png", width: 1200, height: 630, alt: "The Mosshatch grove at dusk: creatures by a pond under lanterns" };
 
 export function siteMode(env = process.env) {
-  return env.VITE_SITE_MODE !== "demo" && env.VITE_API_ENABLED === "1" ? "live" : "demo";
+  // `invite` (the invite-only dogfood) renders the static pages as the demo: visitors keep the banner; the app lifts it at run time
+  // for an account with live access (apps/web/src/lib/site.ts).
+  return env.VITE_SITE_MODE !== "demo" && env.VITE_SITE_MODE !== "invite" && env.VITE_API_ENABLED === "1" ? "live" : "demo";
 }
 
 export const HOME = {

@@ -23,6 +23,7 @@ export class HttpError extends Error {
 export class Router {
   readonly routes: Route[] = [];
   private stepUpGate?: (req: HandlerReq, type: ActionType) => Promise<{ id: string; type: ActionType; params: unknown }>;
+  private liveAccessGate?: (req: HandlerReq) => Promise<void>;
   add(...rs: Route[]): this {
     for (const r of rs) {
       if (!r.principals || r.principals.length === 0) throw new Error(`route ${r.method} ${r.path} has no principal declaration`);
@@ -33,6 +34,7 @@ export class Router {
     return this;
   }
   setStepUpGate(fn: NonNullable<Router["stepUpGate"]>) { this.stepUpGate = fn; }
+  setLiveAccessGate(fn: NonNullable<Router["liveAccessGate"]>) { this.liveAccessGate = fn; }
 
   private match(method: string, pathname: string): { route?: Route; params: Record<string, string>; pathMatched: boolean; allow: string[] } {
     const segs = pathname.split("/").filter(Boolean);
@@ -111,6 +113,11 @@ export class Router {
     }
 
     const req: HandlerReq = { ctx, request, url, params, principal, body, ipPrefix: ipPrefix(request), uaFamily: uaFamily(request) };
+    // The invite-only shop: fails closed (503) when the gate is on and no check is installed on this router.
+    if (route.liveGate && (ctx.services as { liveGate?: boolean }).liveGate === true) {
+      if (!this.liveAccessGate) throw new HttpError(503, "live_gate_unavailable");
+      await this.liveAccessGate(req);
+    }
     if (route.stepUp) {
       if (!this.stepUpGate) throw new HttpError(503, "step_up_unavailable");
       req.action = await this.stepUpGate(req, route.stepUp);

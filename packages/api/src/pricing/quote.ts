@@ -3,7 +3,9 @@ import type { PoolClient } from "@mosshatch/db";
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import { parseFqdn } from "../search/labels.ts";
 import { feePerYearMinor } from "./fee.ts";
+import { priceTableFor } from "./registrar.ts";
 
+/** The default price table; quotes read the table for the extension's registrar (`priceTableFor`, pricing/registrar.ts). */
 export const REGISTRAR = "opensrs";
 export const QUOTE_TTL_MS = 30 * 60_000;
 export const DEFAULT_TAX_CEILING_BPS = 1000;
@@ -27,6 +29,13 @@ export interface PricedQuote {
   wholesalePriceId: string;
   wholesalePerYearMinor: bigint;
   wholesaleMinor: bigint;
+  /**
+   * Renewal floor (Mosshatch charges the same price every year): when the upstream's renewal price is above this operation's price
+   * (Openprovider non-member .com: create 11.98, renew 16.98), the difference is charged from the first year so a renewal is never sold
+   * below cost and the price never jumps. Zero when the renewal costs no more. Not part of `wholesaleMinor`, which stays the upstream
+   * charge for this operation (the D-031 price guard and the funding gates compare it with the registrar).
+   */
+  renewalLevelMinor: bigint;
   feePerYearMinor: bigint;
   feeMinor: bigint;
   subtotalMinor: bigint;
@@ -45,7 +54,7 @@ const dayOf = (d: Date) => d.toISOString().slice(0, 10);
 
 interface Policy { tld: string; minTerm: number; maxTerm: number }
 export async function loadPolicy(c: PoolClient, tld: string): Promise<Policy | null> {
-  const r = await c.query("select min_term_years, max_term_years from tld_policy where registrar = $1 and tld = $2", [REGISTRAR, tld]);
+  const r = await c.query("select min_term_years, max_term_years from tld_policy where registrar = $1 and tld = $2", [priceTableFor(tld), tld]);
   const row = r.rows[0];
   return row ? { tld, minTerm: row.min_term_years as number, maxTerm: row.max_term_years as number } : null;
 }
@@ -56,30 +65,40 @@ export async function taxCeilingBps(c: PoolClient): Promise<number> {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 10000 ? v : DEFAULT_TAX_CEILING_BPS;
 }
 
-/** Pure amount arithmetic shared by quotes and by the search price chips, so both always agree. */
-export function computeAmounts(p: { wholesalePerYearMinor: bigint; standardWholesalePerYearMinor: bigint; years: number; taxCeilingBps: number }) {
+/**
+ * Pure amount arithmetic shared by quotes and by the search price chips, so both always agree.
+ * `renewPerYearMinor` (the extension's renewal price) sets the renewal floor: the customer's per-year price is never below
+ * max(this operation, renewal) + fee, so the first year and every renewal cost the same and no renewal is sold below cost.
+ * The D-003 fee level is read from the higher of the standard and the renewal price.
+ */
+export function computeAmounts(p: { wholesalePerYearMinor: bigint; standardWholesalePerYearMinor: bigint; renewPerYearMinor?: bigint; years: number; taxCeilingBps: number }) {
   const y = BigInt(p.years);
   const wholesaleMinor = p.wholesalePerYearMinor * y;
-  const fee = feePerYearMinor(p.standardWholesalePerYearMinor);
+  const renew = p.renewPerYearMinor ?? 0n;
+  const levelPerYear = renew > p.wholesalePerYearMinor ? renew - p.wholesalePerYearMinor : 0n;
+  const renewalLevelMinor = levelPerYear * y;
+  const fee = feePerYearMinor(renew > p.standardWholesalePerYearMinor ? renew : p.standardWholesalePerYearMinor);
   const feeMinor = fee * y;
-  const subtotalMinor = wholesaleMinor + feeMinor;
+  const subtotalMinor = wholesaleMinor + renewalLevelMinor + feeMinor;
   const taxCeilingMinor = (subtotalMinor * BigInt(p.taxCeilingBps) + 9999n) / 10000n;
-  return { wholesaleMinor, feePerYearMinor: fee, feeMinor, subtotalMinor, taxCeilingMinor, totalMinor: subtotalMinor + taxCeilingMinor };
+  return { wholesaleMinor, renewalLevelMinor, feePerYearMinor: fee, feeMinor, subtotalMinor, taxCeilingMinor, totalMinor: subtotalMinor + taxCeilingMinor };
 }
 
-/** Effective price rows on `now`'s UTC date for a set of (tld, kind). One query. */
+/** Effective price rows on `now`'s UTC date for a set of (tld, kind), each extension from its registrar's table. One query. */
 export async function loadPriceRows(c: PoolClient, tlds: string[], kinds: string[], now: Date): Promise<Map<string, { id: string; amount: bigint }>> {
   const r = await c.query(
-    `select distinct on (tld, kind) id, tld, kind, amount_minor from wholesale_prices
-     where registrar = $1 and tld = any($2) and kind = any($3) and effective_from <= $4::date
-     order by tld, kind, effective_from desc`,
-    [REGISTRAR, tlds, kinds, dayOf(now)],
+    `select distinct on (w.tld, w.kind) w.id, w.tld, w.kind, w.amount_minor from wholesale_prices w
+     join unnest($1::text[], $2::text[]) as t(tld, registrar) on t.tld = w.tld and t.registrar = w.registrar
+     where w.kind = any($3) and w.effective_from <= $4::date
+     order by w.tld, w.kind, w.effective_from desc`,
+    [tlds, tlds.map(priceTableFor), kinds, dayOf(now)],
   );
   return new Map(r.rows.map((x) => [`${x.tld}:${x.kind}`, { id: x.id as string, amount: BigInt(x.amount_minor) }]));
 }
 
 export function hashQuote(q: Omit<PricedQuote, "quoteHash">): string {
-  const parts = [q.fqdn, q.kind, q.years, q.wholesalePriceId, q.wholesaleMinor, q.feeMinor, q.subtotalMinor, q.taxCeilingBps, q.taxCeilingMinor, q.totalMinor, q.currency, q.quotedAt.toISOString(), q.expiresAt.toISOString()];
+  // The renewal floor joins the hash only when it is charged, so quotes priced before it existed still verify.
+  const parts = [q.fqdn, q.kind, q.years, q.wholesalePriceId, q.wholesaleMinor, ...(q.renewalLevelMinor > 0n ? [`level:${q.renewalLevelMinor}`] : []), q.feeMinor, q.subtotalMinor, q.taxCeilingBps, q.taxCeilingMinor, q.totalMinor, q.currency, q.quotedAt.toISOString(), q.expiresAt.toISOString()];
   return crypto.createHash("sha256").update(parts.map(String).join("\n")).digest("hex");
 }
 
@@ -101,13 +120,15 @@ export async function buildQuote(c: PoolClient, input: QuoteInput, now: Date, op
   // A restore is one transaction whatever the extension's minimum term (.ai's two-year minimum applies to registration and renewal only).
   if (!Number.isInteger(years) || (kind !== "restore" && years < policy.minTerm) || years > policy.maxTerm) throw new PricingError("invalid_term");
 
-  const rows = await loadPriceRows(c, [parsed.tld], [kind, "register"], now);
+  const rows = await loadPriceRows(c, [parsed.tld], [kind, "register", "renew"], now);
   const row = rows.get(`${parsed.tld}:${kind}`);
   const standard = rows.get(`${parsed.tld}:register`);
   if (!row || !standard) throw new PricingError("no_price");
   const bps = await taxCeilingBps(c);
   const fqdn = `${parsed.label}.${parsed.tld}`;
-  const amounts = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: standard.amount, years, taxCeilingBps: bps });
+  // A restore is a one-off fee, not a year of the name: no renewal floor.
+  const renew = kind === "restore" ? undefined : rows.get(`${parsed.tld}:renew`)?.amount;
+  const amounts = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: standard.amount, ...(renew !== undefined ? { renewPerYearMinor: renew } : {}), years, taxCeilingBps: bps });
 
   if (opts.registrar && (kind === "register" || kind === "renew")) {
     let rq;
@@ -117,6 +138,8 @@ export async function buildQuote(c: PoolClient, input: QuoteInput, now: Date, op
     }
     if (rq.isRegistryPremium) throw new PricingError("premium_refused");
     if (rq.wholesale.minor !== amounts.wholesaleMinor) throw new PricingError("price_mismatch");
+    // The renewal floor is only honest if our renewal row is not below the registrar's renewal price: a higher upstream renewal refuses too.
+    if (renew !== undefined && rq.renewalWholesale && rq.renewalWholesale.minor > renew * BigInt(years)) throw new PricingError("price_mismatch");
   }
 
   const base = {
@@ -131,6 +154,8 @@ export function quoteToJson(q: PricedQuote) {
   return {
     fqdn: q.fqdn, tld: q.tld, kind: q.kind, years: q.years, wholesale_price_id: q.wholesalePriceId,
     wholesale_per_year_minor: q.wholesalePerYearMinor.toString(), wholesale_minor: q.wholesaleMinor.toString(),
+    // What the customer is shown as the registrar price: this operation's upstream price plus the renewal floor (equal to the renewal price when that is higher).
+    renewal_level_minor: q.renewalLevelMinor.toString(), registrar_price_minor: (q.wholesaleMinor + q.renewalLevelMinor).toString(),
     fee_per_year_minor: q.feePerYearMinor.toString(), fee_minor: q.feeMinor.toString(), subtotal_minor: q.subtotalMinor.toString(),
     tax_ceiling_bps: q.taxCeilingBps, tax_ceiling_minor: q.taxCeilingMinor.toString(), total_minor: q.totalMinor.toString(), currency: q.currency,
     quoted_at: q.quotedAt.toISOString(), expires_at: q.expiresAt.toISOString(), quote_hash: q.quoteHash,
@@ -142,7 +167,7 @@ export type QuoteJson = ReturnType<typeof quoteToJson>;
 export function verifyQuoteJson(j: QuoteJson, now: Date): { ok: boolean; reason?: "expired" | "hash" } {
   const q = {
     fqdn: j.fqdn, tld: j.tld, kind: j.kind as QuoteKind, years: j.years, wholesalePriceId: j.wholesale_price_id, wholesalePerYearMinor: BigInt(j.wholesale_per_year_minor),
-    wholesaleMinor: BigInt(j.wholesale_minor), feePerYearMinor: BigInt(j.fee_per_year_minor), feeMinor: BigInt(j.fee_minor), subtotalMinor: BigInt(j.subtotal_minor),
+    wholesaleMinor: BigInt(j.wholesale_minor), renewalLevelMinor: BigInt(j.renewal_level_minor ?? "0"), feePerYearMinor: BigInt(j.fee_per_year_minor), feeMinor: BigInt(j.fee_minor), subtotalMinor: BigInt(j.subtotal_minor),
     taxCeilingMinor: BigInt(j.tax_ceiling_minor), taxCeilingBps: j.tax_ceiling_bps, totalMinor: BigInt(j.total_minor), currency: j.currency, quotedAt: new Date(j.quoted_at), expiresAt: new Date(j.expires_at),
   };
   if (hashQuote(q) !== j.quote_hash) return { ok: false, reason: "hash" };
