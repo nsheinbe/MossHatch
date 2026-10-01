@@ -17,13 +17,14 @@ export interface AnchorRecord {
 }
 
 /**
- * Where anchors live outside the database. Production is a write-once bucket in the log-archive account
- * (S3ObjectLockAnchorSink, unproven here); tests and local use FileAnchorSink.
+ * Where anchors live outside the database. Production is a write-once S3 bucket (S3ObjectLockAnchorSink over AwsS3);
+ * tests and local use FileAnchorSink or MemoryAnchorSink.
  * `put` must refuse to overwrite; `list` returns every anchor, oldest first.
  */
 export interface AnchorSink {
   put(a: AnchorRecord): Promise<{ ref: string }>;
-  list(): Promise<AnchorRecord[]>;
+  /** `last`: a hint that only the newest N are needed (the bucket then fetches N objects, not every anchor ever written). */
+  list(opts?: { last?: number }): Promise<AnchorRecord[]>;
 }
 
 /** Write-once files: `wx` refuses to replace, and the file is made read-only. A local stand-in for the bucket, not a security boundary. */
@@ -52,27 +53,35 @@ export class MemoryAnchorSink implements AnchorSink {
 }
 
 /**
- * S3 Object Lock implementation, NOT EXERCISED in this repository (no AWS account here). Deployment notes:
- *  - bucket in the log-archive account with Object Lock enabled, default retention COMPLIANCE for at least 35 days
- *    (anchors are tiny: keep them for years with a longer default), versioning on, no delete permission for the app role;
- *  - the app role may only s3:PutObject to `anchors/` and s3:ListBucket/GetObject for reads;
- *  - `put` sends `If-None-Match: *` so an existing key is never replaced, and Object Lock headers set the retention date.
- * The client is injected (any object with putObject/listObjects/getObject) so this file adds no dependency.
+ * The production anchor store: an S3 bucket with Object Lock (`AwsS3` in packages/api/src/aws/s3.ts; setup in docs/AWS-SETUP.md).
+ *  - Object Lock enabled at bucket creation, default retention COMPLIANCE, versioning on, no delete permission for the app role;
+ *  - the app role may only s3:PutObject under `anchors/` (and `erasures/`), s3:ListBucket and s3:GetObject for reads;
+ *  - `put` sends `If-None-Match: *` so an existing key is never replaced (412 becomes `anchor_exists`), and sets a COMPLIANCE
+ *    retention date on the object itself, so not even the account root can delete or shorten it before that date.
+ * Verified here against a fake S3 only; the first live write is checked by the owner (docs/AWS-SETUP.md, "Verify").
  */
 export interface S3LikeClient {
   putObject(p: { Bucket: string; Key: string; Body: string; ContentType: string; IfNoneMatch: "*"; ObjectLockMode: "COMPLIANCE"; ObjectLockRetainUntilDate: Date }): Promise<void>;
   listKeys(p: { Bucket: string; Prefix: string }): Promise<string[]>;
   getObject(p: { Bucket: string; Key: string }): Promise<string>;
 }
+/** S3 answers 412 PreconditionFailed (or 409 ConditionalRequestConflict while a racing write is in flight) to `If-None-Match: *`. */
+export const isWriteOnceConflict = (e: unknown) => ["PreconditionFailed", "ConditionalRequestConflict"].includes((e as { code?: string })?.code ?? "");
 export class S3ObjectLockAnchorSink implements AnchorSink {
   constructor(private s3: S3LikeClient, private bucket: string, private retainDays = 3650, private now: () => Date = () => new Date()) {}
   async put(a: AnchorRecord) {
     const Key = `anchors/${a.anchoredAt.replace(/[:.]/g, "-")}_${a.id}.json`;
-    await this.s3.putObject({ Bucket: this.bucket, Key, Body: JSON.stringify(a), ContentType: "application/json", IfNoneMatch: "*", ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: new Date(this.now().getTime() + this.retainDays * 86_400_000) });
+    try {
+      await this.s3.putObject({ Bucket: this.bucket, Key, Body: JSON.stringify(a), ContentType: "application/json", IfNoneMatch: "*", ObjectLockMode: "COMPLIANCE", ObjectLockRetainUntilDate: new Date(this.now().getTime() + this.retainDays * 86_400_000) });
+    } catch (e) {
+      if (isWriteOnceConflict(e)) throw new Error("anchor_exists");
+      throw e;
+    }
     return { ref: `s3://${this.bucket}/${Key}` };
   }
-  async list() {
-    const keys = (await this.s3.listKeys({ Bucket: this.bucket, Prefix: "anchors/" })).sort();
+  async list(opts: { last?: number } = {}) {
+    const all = (await this.s3.listKeys({ Bucket: this.bucket, Prefix: "anchors/" })).sort();
+    const keys = opts.last ? all.slice(-opts.last) : all;
     const out: AnchorRecord[] = [];
     for (const Key of keys) out.push(JSON.parse(await this.s3.getObject({ Bucket: this.bucket, Key })) as AnchorRecord);
     return out.sort((x, y) => x.anchoredAt.localeCompare(y.anchoredAt));
@@ -135,7 +144,7 @@ async function acknowledgedRestores(ctx: Pick<AppContext, "cron">): Promise<Date
  * was restored to T, anchors taken after T are reported as the expected gap instead of tampering.
  */
 export async function verifyAnchors(ctx: AnchorCtx, sink: AnchorSink, opts: { last?: number } = {}): Promise<AnchorVerification> {
-  const all = await sink.list();
+  const all = await sink.list({ last: opts.last ?? 60 });
   const anchors = all.slice(-(opts.last ?? 60));
   const restores = await acknowledgedRestores(ctx);
   const restoredAt = restores.length ? new Date(Math.min(...restores.map((d) => d.getTime()))) : null;

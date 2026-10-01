@@ -86,9 +86,32 @@ export class FakeCloudTrail implements CloudTrailPort {
 }
 
 /**
+ * Production stand-in while there is nothing for CloudTrail to be joined against (the vault is not configured, so no secret is
+ * revealed and no vault Decrypt can be audited). It is NOT a pass: `kmsReconcile` raises `kms.reconcile_not_configured` (warn)
+ * on every run until a real adapter replaces it, so a quiet dashboard never means "reconciled".
+ */
+export class UnwiredCloudTrail implements CloudTrailPort {
+  constructor(readonly reason: string) {}
+  async listDecryptEvents(): Promise<KmsDecryptEvent[]> { throw new Error("kms_reconcile_not_configured"); }
+}
+
+/**
+ * Only Decrypts of the vault KEKs are reconciled against reveal and read rows. The PII key is decrypted on ordinary order
+ * paths that write no reveal row, so its events must not be judged here (they would all page as unaudited).
+ */
+export class VaultKeyDecrypts implements CloudTrailPort {
+  private ids: Set<string>;
+  constructor(private inner: CloudTrailPort, vaultKeyArns: string[]) { this.ids = new Set(vaultKeyArns.map(keyIdOf)); }
+  async listDecryptEvents(from: Date, to: Date) {
+    return (await this.inner.listDecryptEvents(from, to)).filter((e) => this.ids.has(keyIdOf(e.keyId)));
+  }
+}
+const keyIdOf = (arnOrId: string) => arnOrId.slice(arnOrId.lastIndexOf("/") + 1);
+
+/**
  * The real adapter: CloudTrail `LookupEvents` (JSON 1.1, `X-Amz-Target: com.amazonaws.cloudtrail.v20131101.CloudTrail_20131101.LookupEvents`)
- * filtered on `EventName=Decrypt`, paginated by `NextToken`, signed with the vault's SigV4 signer. NEVER CALLED here: no AWS
- * account exists. Unverified details: the event history includes KMS management events for 90 days; LookupEvents is limited to
+ * filtered on `EventName=Decrypt`, paginated by `NextToken`, signed with the vault's SigV4 signer. Wired in production (behind
+ * VaultKeyDecrypts) only when the vault is configured; tested against fakes, not yet against a live trail. Unverified details: the event history includes KMS management events for 90 days; LookupEvents is limited to
  * 2 requests a second per account and Region; `StartTime`/`EndTime` are epoch seconds in JSON 1.1; `CloudTrailEvent` is a JSON
  * string with `eventID`, `eventTime`, `userIdentity.arn`, `requestParameters.encryptionContext`, `resources[].ARN` and `errorCode`.
  * At higher volume the Athena query over the log-archive copy replaces it behind the same port.
@@ -170,6 +193,10 @@ export interface KmsReconcileResult {
 interface AuditCand { chain_id: string; seq: string; at: Date; token: string; used?: boolean }
 
 export async function kmsReconcile(ctx: Pick<AppContext, "cron" | "clock" | "services">, ct: CloudTrailPort): Promise<KmsReconcileResult> {
+  if (ct instanceof UnwiredCloudTrail) {
+    await raiseAlert(ctx, ctx.cron, { severity: "warn", kind: "kms.reconcile_not_configured", subject: "cloudtrail", detail: { reason: ct.reason } });
+    return { events: 0, unaudited: [], auditWithoutEvent: 0 };
+  }
   const now = ctx.clock.now();
   const lastRead = await flagTime(ctx.cron, EVENT_CURSOR);
   const wanted = new Date(Math.min(now.getTime(), (lastRead ?? now).getTime()) - CLOUDTRAIL_LOOKBACK_MS);

@@ -1,6 +1,6 @@
 import { connect } from "@mosshatch/db";
 import { MockRegistrarPort } from "@mosshatch/registrar/mock-port";
-import { loadConfig } from "./config/modeguard.ts";
+import { loadConfig, modeFromEnv } from "./config/modeguard.ts";
 import { LocalKms, LocalPii } from "./kms.ts";
 import { systemClock, type AppContext } from "./ports.ts";
 import { createEmailTransport } from "./mail/transport.ts";
@@ -23,44 +23,86 @@ import { installVaultFromEnv } from "./vault/wiring.ts";
 import { installRecipesFromEnv } from "./recipes/wiring.ts";
 import { installClosureFromEnv } from "./closure/services.ts";
 import { inviteOnlyFromEnv } from "./waitlist/gate.ts";
+import { buildProductionAws, probeProductionAws, productionAwsFromEnv, type AwsDeps, type ProductionAwsAdapters } from "./aws/production.ts";
+// api/index.ts runs each request inside this, so the AWS credential providers can read the request's OIDC token.
+export { runWithOidcToken } from "./aws/oidc.ts";
 // The waitlist is served by api/index.ts before (and without) the full boot, so it works while production refuses to start.
 export { handleWaitlist } from "./waitlist/http.ts";
 // The preview's registered-or-not check (public RDAP) needs no database either, and is served the same way.
 export { handleLookup } from "./lookup/http.ts";
 
+/** Why the app will not start: one or more reason codes (never a value), joined with commas in `reason`. */
 export class NotConfigured extends Error {
   override name = "NotConfigured";
-  constructor(public reason: string) { super(reason); }
+  readonly reasons: string[];
+  readonly reason: string;
+  constructor(reason: string | string[]) {
+    const reasons = Array.isArray(reason) ? reason : [reason];
+    super(reasons.join(","));
+    this.reasons = reasons;
+    this.reason = reasons.join(",");
+  }
 }
 
 export interface Boot { router: Router; ctx: AppContext }
 
 /**
- * Assemble the running app from environment variables. Throws NotConfigured with a reason code (never a value) when a piece
- * is missing, so the function answers 503 instead of guessing. Production is refused until its adapters exist:
- * the AWS KMS HMAC/PII adapter, the write-once anchor bucket and the live OpenSRS adapter are not built in this phase.
+ * The live money paths are wired and verified in a later task (invite-only dogfood, D-058). Until that task flips these, a
+ * production boot refuses with `stripe_live_not_configured` and `registrar_live_not_configured` even when the variables exist.
  */
-export async function bootFromEnv(env: Record<string, string | undefined>): Promise<Boot> {
+export const PRODUCTION_LIVE_WIRED = { stripe: false, registrar: false } as const;
+
+/**
+ * Every production reason code at once, so one 503 names everything still missing. Order: database, app config, AWS
+ * (OIDC, KMS, anchor, vault), then the live money paths. When the AWS variables are complete the adapters are built and
+ * probed live (STS, KMS MAC and PII round trips, the bucket's Object Lock), so a wrong ARN or policy shows up here too.
+ */
+async function productionPreflight(env: Record<string, string | undefined>, deps: AwsDeps): Promise<ProductionAwsAdapters> {
+  const reasons: string[] = [];
+  if (!env.DATABASE_URL) reasons.push("database_not_configured");
+  if (!env.MH_ORIGIN || !env.CRON_SECRET || env.CRON_SECRET.length < 32) reasons.push("config_missing");
+  const aws = productionAwsFromEnv(env);
+  reasons.push(...aws.reasons);
+  let adapters: ProductionAwsAdapters | null = null;
+  if (aws.config) {
+    adapters = buildProductionAws(aws.config, env, deps);
+    reasons.push(...await probeProductionAws(adapters, aws.config));
+  }
+  const stripeLive = /^(sk|rk)_live_/.test(env.STRIPE_SECRET_KEY ?? "") && !!env.STRIPE_WEBHOOK_SECRET;
+  if (!PRODUCTION_LIVE_WIRED.stripe || !stripeLive) reasons.push("stripe_live_not_configured");
+  const registrarLive = env.MH_REGISTRAR_MODE === "live" && !!env.REGISTRAR_RPC_URL && !!env.REGISTRAR_RPC_SECRET;
+  if (!PRODUCTION_LIVE_WIRED.registrar || !registrarLive) reasons.push("registrar_live_not_configured");
+  if (reasons.length || !adapters) throw new NotConfigured(reasons);
+  return adapters;
+}
+
+/**
+ * Assemble the running app from environment variables. Throws NotConfigured with reason codes (never a value) when a piece
+ * is missing, so the function answers 503 instead of guessing. Production uses AWS KMS through Vercel OIDC, the Object Lock
+ * anchor bucket and CloudTrail (packages/api/src/aws, docs/AWS-SETUP.md); local and preview use the local doubles.
+ * `deps` lets tests replace the network and the OIDC token source; production passes nothing.
+ */
+export async function bootFromEnv(env: Record<string, string | undefined>, deps: AwsDeps = {}): Promise<Boot> {
+  const production = modeFromEnv(env) === "production" ? await productionPreflight(env, deps) : null;
   const config = loadConfig(env);
-  if (config.mode === "production") throw new NotConfigured("production_adapters_not_built");
   if (!env.DATABASE_URL) throw new NotConfigured("database_not_configured");
   const root = env.MH_LOCAL_KMS_ROOT;
-  if (config.mode !== "local" && (!root || root.length < 32)) throw new NotConfigured("kms_root_not_configured");
+  if (!production && config.mode !== "local" && (!root || root.length < 32)) throw new NotConfigured("kms_root_not_configured");
   const ctx: AppContext = {
     runtime: connect(env.DATABASE_URL, { max: 5 }),
     cron: connect(env.DATABASE_URL_CRON ?? env.DATABASE_URL, { max: 5 }),
     clock: systemClock,
-    kms: root ? new LocalKms(Buffer.from(root)) : new LocalKms(),
-    pii: root ? new LocalPii(Buffer.from(root)) : new LocalPii(),
+    kms: production ? production.kms : root ? new LocalKms(Buffer.from(root)) : new LocalKms(),
+    pii: production ? production.pii : root ? new LocalPii(Buffer.from(root)) : new LocalPii(),
     email: createEmailTransport(config, { log: (l) => console.info(l) }),
     config,
     services: {},
   };
-  // Non-durable stand-ins for the daily ops jobs (preview and local only; production wiring uses the write-once bucket, CloudTrail and an external ledger).
-  Object.assign(ctx.services, {
-    anchorSink: new MemoryAnchorSink(), cloudTrail: new FakeCloudTrail(), erasureLedger: new MemoryErasureLedger(),
-    dnsResolver: new NodeDnsResolver(), alertNotifier: { notify: async (a: { kind: string }) => { console.warn("alert", a.kind); } },
-  });
+  // Production: the write-once bucket (anchors and the erasure ledger) and CloudTrail. Elsewhere: non-durable stand-ins.
+  Object.assign(ctx.services, production
+    ? { anchorSink: production.anchorSink, cloudTrail: production.cloudTrail, erasureLedger: production.erasureLedger }
+    : { anchorSink: new MemoryAnchorSink(), cloudTrail: new FakeCloudTrail(), erasureLedger: new MemoryErasureLedger() });
+  Object.assign(ctx.services, { dnsResolver: new NodeDnsResolver(), alertNotifier: { notify: async (a: { kind: string }) => { console.warn("alert", a.kind); } } });
   // Phases 1 and 2 use the mock registrar (sample prices) everywhere; the live OpenSRS adapter arrives in Phase 3.
   // The mock is priced from the same effective-dated table the quotes use, so the price guard sees one price on both sides.
   const rows = (await ctx.cron.query("select distinct on (tld) tld, amount_minor from wholesale_prices where registrar = 'opensrs' and kind = 'register' and effective_from <= $1::date order by tld, effective_from desc", [ctx.clock.now()])).rows;
@@ -81,7 +123,7 @@ export async function bootFromEnv(env: Record<string, string | undefined>): Prom
   }
   // Phase 3: the domains services (the posture job's end-user probe). The domain and domain-management jobs are registered by buildRouter.
   installDomainsFromEnv(ctx, env);
-  installVaultFromEnv(ctx, env, config.mode);
+  installVaultFromEnv(ctx, env, config.mode, production?.vaultKms ? { kms: production.vaultKms } : null);
   installRecipesFromEnv(ctx, config.mode);
   installClosureFromEnv(ctx, env);
   // Invite-only sign-up (the waitlist rollout): MH_INVITE_ONLY, on by default in staging and production.
