@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
     "@mosshatch/core": "*",
     "@mosshatch/db": "*",
     "@mosshatch/registrar": "*",

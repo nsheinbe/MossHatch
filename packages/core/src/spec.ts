@@ -1,4 +1,5 @@
 import { TIERS, type Tier } from "./quality.ts";
+import type { VoiceProfile } from "./launcher.ts";
 
 /**
  * CreatureSpec: everything the renderer, the card snapshot and the card portrait need to draw and animate one creature. It is plain
@@ -19,6 +20,7 @@ export const WINGS = ["kite", "round", "swallow"] as const;
 export type WingShape = (typeof WINGS)[number];
 export const ACCESSORIES = ["leaf", "scarf", "lantern", "flower", "acorn"] as const;
 export type Accessory = (typeof ACCESSORIES)[number];
+export const VOICE_TIMBRES = ["bright", "warm", "hushed", "chime", "low"] as const;
 export const EFFECTS = ["none", "moonrim", "iridescent", "glow"] as const;
 export type Effect = (typeof EFFECTS)[number];
 export const CHARMS = ["none", "bell", "star", "gear", "drop", "ring"] as const;
@@ -82,6 +84,11 @@ export interface CreatureSpec {
   /** A small charm on the collar, from the extension. */
   charm: { shape: Charm; hue: number };
   choreography: Choreography;
+  /**
+   * How this creature sounds once voice output exists (data only; no speech provider is wired). Absent on every derived spec: the
+   * species profile applies (`voiceFor` in launcher.ts). A stored spec may carry its own.
+   */
+  voice?: VoiceProfile;
 }
 
 export type Locomotion = "walk" | "fly" | "swim";
@@ -209,6 +216,8 @@ export function sanitizeSpec(input: unknown): CreatureSpec {
       react: oneOf(ch.react, REACTS, info.react),
       pitch: num(ch.pitch, 0.8, 1.35, 1),
     },
+    // Only a spec that carries a voice keeps one (derived specs never do, so their serialised form is unchanged).
+    ...(isObj(o.voice) ? { voice: { timbre: oneOf(o.voice.timbre, VOICE_TIMBRES, "warm"), rate: num(o.voice.rate, 0.7, 1.4, 1), pitch: num(o.voice.pitch, 0.7, 1.4, 1) } } : {}),
   };
 }
 

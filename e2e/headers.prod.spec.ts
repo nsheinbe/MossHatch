@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { test, expect, type APIRequestContext } from "@playwright/test";
-import { ASSERTED_ROWS, EXACT_ROWS, WEB_CSP_DEPARTURES, expectedCsp, planCsp, planHeader, planHeaderTable, planMergedCsp } from "./plan-headers";
+import { ASSERTED_ROWS, EXACT_ROWS, WEB_CSP_ADDITIONS, WEB_CSP_DEPARTURES, expectedCsp, planCsp, planHeader, planHeaderTable, planMergedCsp } from "./plan-headers";
 
 /**
  * ST-14 for the pages that approve things (PLAN 4.3a header table, threat row 18): the OAuth consent screen, the device approval
@@ -61,7 +61,9 @@ test("ST-14 the header tests cover every row of the PLAN 4.3a response-header ta
 });
 
 test("ST-14 web: every route class sends the PLAN 4.3a header set, value for value", async ({ request }) => {
-  const csp = expectedCsp(WEB_CSP_DEPARTURES);
+  const csp = expectedCsp(WEB_CSP_DEPARTURES, WEB_CSP_ADDITIONS);
+  // One recorded addition (D-061): the launcher preview's frame-src, never a wildcard.
+  expect(csp).toMatch(/frame-src ('none'|https:\/\/[a-z0-9.-]+)(;|$)/);
   // The plan's own directives are all there; only the two recorded departures (D-051) differ.
   expect(csp).toContain("upgrade-insecure-requests");
   expect(csp).toContain("worker-src 'self'");

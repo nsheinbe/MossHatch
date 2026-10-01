@@ -26,6 +26,8 @@ const Visitors = lazy(() => import("./Visitors"));
 const OAuthConsent = lazy(() => import("./OAuthConsent"));
 // Rescue (transfer in), opened from Find or from the Checkout return of a transfer. Lazy: nothing of it is in the first load.
 const Rescue = lazy(() => import("./Rescue"));
+// The brand launcher (talk to a creature, brief, build): its own chunk and stylesheet, loaded when a conversation opens.
+const Launcher = lazy(() => import("./launcher/Launcher"));
 
 /** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
 function noindexAppRoutes() {
@@ -49,12 +51,14 @@ export function App() {
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
   const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
+  const talk = useUi((s) => s.talk);
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // After a hatch the camera frames the newborn; restore the Find view once the card is dismissed.
-    if (ready && hatchPhase === "none") handle.world?.setView(view === "grove" || view === "ledger" ? "grove" : "find");
-  }, [hatchPhase, ready, view]);
+    // While a creature talks (the launcher), it keeps the camera.
+    if (ready && hatchPhase === "none" && !talk) handle.world?.setView(view === "grove" || view === "ledger" ? "grove" : "find");
+  }, [hatchPhase, ready, view, talk]);
 
   // Signing out (or losing the session) takes the account's domains out of the scene and closes their panel.
   useEffect(() => { if (!account) { dropRealGrove(); set({ domainPanel: null, view: useUi.getState().view === "ledger" ? "find" : useUi.getState().view }); } }, [account, set]);
@@ -87,9 +91,11 @@ export function App() {
     <>
       <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />
       <Header />
-      {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
+      {/* While a creature talks, the scene belongs to it: the search, chips and grove bar step aside. */}
+      {talk ? null : view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
       {rescue && <Suspense fallback={null}><Rescue /></Suspense>}
+      {talk && <Suspense fallback={null}><Launcher /></Suspense>}
       {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
       {visitorsOpen && account && <Suspense fallback={null}><Visitors /></Suspense>}
       {oauthRequest && <Suspense fallback={null}><OAuthConsent id={oauthRequest} onClose={() => { history.replaceState(null, "", "/"); setOauthRequest(null); }} /></Suspense>}

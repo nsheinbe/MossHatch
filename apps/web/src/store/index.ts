@@ -36,6 +36,8 @@ export interface Card {
   hatchedOn: string;
   moss: string;
   address: string;
+  /** A practice hatch an account with the live shop ran on purpose (nothing bought): the card says so. */
+  practice?: boolean;
 }
 
 /**
@@ -72,6 +74,8 @@ export interface UiState {
   groveRev: number;
   /** The Rescue (transfer in) panel: the name typed in Find and, once started, the transfer's opaque ids. Never a code. */
   rescue: { fqdn: string; transferId: string | null; orderId?: string } | null;
+  /** The launcher conversation that is open: the domain whose creature talks, and how the page reached it. Never persisted. */
+  talk: { domain: string; source: "owned" | "practice" } | null;
   calm: boolean;
   sound: boolean;
   rehideSeconds: number;
@@ -106,7 +110,7 @@ export const useUi = create<UiState>()(
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
       hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
-      rescue: null,
+      rescue: null, talk: null,
       set: (p) => set(p),
     }),
     {

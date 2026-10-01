@@ -20,6 +20,8 @@ Object.assign(process.env, {
 });
 // The cards build's key for GET /api/v1/cards/public (the export is never anonymous); e2e/publish.spec.ts presents the same value.
 process.env.CARDS_EXPORT_KEY ??= "e2e-cards-export-key-0123456789abcdef0123";
+// The launcher with its fakes (scripted creature, fake Slate): never the model or Slate from tests (docs/LAUNCHER.md).
+process.env.MH_FAKE_LAUNCHER ??= "1";
 const { createServer } = await import("vite");
 const server = await createServer({ root: path.resolve("apps/web"), server: { port, host: "localhost", strictPort: true } });
 await server.listen();

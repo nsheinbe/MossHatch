@@ -119,6 +119,8 @@ export function HatchSheet() {
           {!live && <button type="button" className="btn primary" onClick={() => void runHatch(r.domain)}>Hatch</button>}
           {live && account && hasContact && <button type="button" className="btn primary" disabled={busy || !accepted || !docsReady || !quote} onClick={pay}>{busy ? "Opening Stripe" : `Pay ${quote?.subtotal ?? r.price} and hatch`}</button>}
           {live && !account && <button type="button" className="btn primary" onClick={() => set({ accountOpen: true })}>Sign in to hatch</button>}
+          {/* The launcher's practice hatch for invited accounts: the hatch and a conversation, nothing bought or reserved. */}
+          {live && account?.launcher && <button type="button" className="btn secondary" onClick={() => void runHatch(r.domain, { practice: true })}>Practice hatch (nothing is bought)</button>}
           <button type="button" className="btn secondary" onClick={() => set({ hatchPhase: "none", selected: null })}>Not yet</button>
         </div>
       </div>

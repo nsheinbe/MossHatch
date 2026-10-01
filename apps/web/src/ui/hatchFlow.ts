@@ -4,7 +4,7 @@ import { handle } from "../world/handle";
 import { sound } from "../audio/synth";
 
 /** The hatch sequence and the card, shared by the practice hatch and a paid order. The name must already be an egg in the world. */
-export async function runHatch(domain: string): Promise<void> {
+export async function runHatch(domain: string, opts: { practice?: boolean } = {}): Promise<void> {
   const w = handle.world;
   const set = useUi.getState().set;
   if (!w) return;
@@ -28,6 +28,7 @@ export async function runHatch(domain: string): Promise<void> {
         hatchedOn: new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }),
         moss: `${ageInWords(0)} (moss ${Math.round(mossFromAge(0) * 100)}%)`,
         address: `hatchkind.com/${domain}`,
+        ...(opts.practice ? { practice: true } : {}),
       },
     });
   } catch { set({ hatchPhase: "sheet" }); }

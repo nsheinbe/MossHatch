@@ -35,6 +35,7 @@ const EMPTY = new THREE.BufferGeometry();
 
 const SPEED: Record<string, number> = { fox: 0.9, hare: 1.0, beetle: 0.55, hedgehog: 0.5, owl: 0.5, koi: 0.6, moth: 1.1, salamander: 0.6, spiritfox: 0.8 };
 const MOONRIM = new THREE.Color(0.55, 0.66, 1.0);
+const TALK_RIM = new THREE.Color(1.0, 0.78, 0.42);
 const _v = new THREE.Vector3();
 const _c = new THREE.Color();
 
@@ -89,6 +90,14 @@ export class Creature {
   birthTilt = 0;
   moss: number;
   private zClock = 0;
+  /** The launcher: speech amplitude 0..1 set by the page while the creature talks (drives its glow). */
+  voice = 0;
+  private voiceS = 0;
+  private swellT = -1;
+  private baseGlow = 0;
+  private baseRim = 0;
+  /** While the owner talks to it, the creature stays where it is and faces the camera. */
+  listening = false;
   readonly locomotion: "walk" | "fly" | "swim";
 
   constructor(private shared: Shared, init: CreatureInit) {
@@ -109,6 +118,10 @@ export class Creature {
     if (e === "moonrim") { u.uRimCol!.value.copy(MOONRIM); u.uRimK!.value = 0.32; }
     if (e === "iridescent") { u.uIri!.value = 1; u.uRimCol!.value.copy(_c.setHSL(this.spec.accent.h / 360, 0.7, 0.6)); u.uRimK!.value = 0.15; }
     if (e === "glow") { u.uRimCol!.value.copy(_c.setHSL(this.spec.accent.h / 360, 0.8, 0.7)); u.uRimK!.value = 0.55; u.uGlow!.value = 0.04; }
+    // A creature with no rim of its own gets a lantern-gold rim at strength 0, so speaking can brighten it.
+    if (e === "none") u.uRimCol!.value.copy(TALK_RIM);
+    this.baseGlow = u.uGlow!.value as number;
+    this.baseRim = u.uRimK!.value as number;
     this.mesh = new THREE.Mesh(EMPTY, this.mat);
     this.mesh.frustumCulled = false;
     this.mesh.userData.creature = this;
@@ -162,6 +175,9 @@ export class Creature {
   /** Older name for a tap reaction. */
   hop() { this.react(); }
 
+  /** One slow swell of light (the brief is ready; also calm mode's stand-in for gold sparks). */
+  swell() { this.swellT = 0; }
+
   /** World position the overlay projects a tag onto. */
   tagPosition(out: THREE.Vector3) { return out.set(this.pos.x, this.mesh.position.y + this.height + 0.1, this.pos.z); }
 
@@ -175,7 +191,8 @@ export class Creature {
     const flies = this.locomotion === "fly";
     let moving = 0;
 
-    if (this.wander && slow > 0 && this.birth >= 1) {
+    if (this.listening) { let da = 0.25 - this.heading; da = Math.atan2(Math.sin(da), Math.cos(da)); this.heading += da * Math.min(1, dt * 3); }
+    if (this.wander && !this.listening && slow > 0 && this.birth >= 1) {
       if (isKoi) {
         this.koiAngle += dt * 0.32 * slow;
         const r = 1.3 + 0.7 * Math.sin(this.phase + t * 0.13);
@@ -270,6 +287,13 @@ export class Creature {
     ease("uDesat", s === "traveling" ? 0.6 : 0);
     ease("uTint", s === "traveling" ? 1 : 0);
     u.uMoss!.value = this.moss;
+    // Speaking glow: follows each streamed word, or in calm mode fades in while it talks and out after, with no pulsing.
+    const target = calm ? (this.voice > 0.02 ? 0.4 : 0) : this.voice;
+    this.voiceS += (target - this.voiceS) * Math.min(1, dt * (calm ? 1.2 : 16));
+    let swell = 0;
+    if (this.swellT >= 0) { this.swellT += dt; const d = calm ? 2.4 : 1.6; swell = Math.sin(Math.min(1, this.swellT / d) * Math.PI); if (this.swellT > d) this.swellT = -1; }
+    u.uGlow!.value = this.baseGlow + this.voiceS * 0.3 + swell * 0.2;
+    u.uRimK!.value = this.baseRim + this.voiceS * 0.75 + swell * 0.5;
 
     // Vertical placement
     const hover = this.spec.species === "spiritfox" && !sleeping ? 0.08 + Math.sin(ph * 1.3) * 0.04 * calmK : 0;

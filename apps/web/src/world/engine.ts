@@ -125,7 +125,7 @@ export class World {
     if (c) this.bursts.clear();
   }
 
-  setView(v: ViewName, target?: THREE.Vector3, offset = 0) { this.rig.setView(v, target, offset); }
+  setView(v: ViewName, target?: THREE.Vector3, offset = 0, lift = 0) { this.rig.setView(v, target, offset, lift); }
 
   setPointer(clientX: number, clientY: number) {
     const r = this.canvas.getBoundingClientRect();
@@ -190,8 +190,9 @@ export class World {
 
   clearResults() { this.setResults([]); }
 
-  /** Position of the chip anchor for a result (egg top, or sleeper tag). */
+  /** Position of the chip anchor for a result (egg top, or sleeper tag). `talk:<domain>` anchors the launcher's speech bubble. */
   private anchorFor(domain: string, out: THREE.Vector3): THREE.Vector3 | null {
+    if (domain.startsWith("talk:")) { const c = this.creatureById(domain.slice(5)); return c ? c.tagPosition(out) : null; }
     const e = this.eggs.find((x) => x.domain === domain);
     if (e) return e.chipAnchor(out);
     const s = this.sleepers.find((x) => x.id === domain);
@@ -224,6 +225,43 @@ export class World {
       const c = new Creature(this.shared, { id: it.domain, spec: it.spec ?? deriveCreatureSpec(it.domain), state: it.state, ageDays: it.ageDays, x: it.x, z: it.z, wander: false, heading: it.heading ?? 0 });
       this.grove.push(c); this.scene.add(c.mesh);
     }
+  }
+
+  // ---- the launcher (docs/LAUNCHER.md): the creature that talks ------------------------------------------------------------
+
+  /** A creature in the scene by its id (the domain name). */
+  creatureById(id: string): Creature | null {
+    return this.grove.find((c) => c.id === id) ?? this.free.find((c) => c.id === id) ?? this.sleepers.find((c) => c.id === id) ?? null;
+  }
+  /** Speech amplitude 0..1 for the talking creature's glow (from streamed tokens today; from audio once voice exists). */
+  setVoice(id: string, level: number) { const c = this.creatureById(id); if (c) c.voice = Math.max(0, Math.min(1, level)); }
+  /** Frame the creature beside the conversation panel and keep it still while it talks. */
+  focusCreature(id: string, offset = 0, lift = 0): boolean {
+    const c = this.creatureById(id);
+    if (!c) return false;
+    c.listening = true;
+    this.setView("detail", _v3.set(c.pos.x, c.pos.y, c.pos.z), offset, lift);
+    return true;
+  }
+  releaseCreature(id: string) { const c = this.creatureById(id); if (c) { c.listening = false; c.voice = 0; } }
+  /**
+   * Gold sparks when the brief is ready: a rising spiral of gold motes and shards around the creature, plus its own particle style.
+   * Calm mode: no particles and no motion; the creature's glow swells once and fades instead.
+   */
+  goldSparks(id: string) {
+    const c = this.creatureById(id);
+    if (!c) return;
+    c.swell();
+    if (this.calm) return;
+    const base = _v3.set(c.pos.x, c.pos.y + c.height * 0.55, c.pos.z);
+    // A bright bloom at the heart, then three turns of a rising spiral of soft gold motes that drift up and fade.
+    for (let i = 0; i < 6; i++) this.bursts.emit(base, _vel.set((Math.random() - 0.5) * 0.3, 0.25 + Math.random() * 0.3, (Math.random() - 0.5) * 0.3), GOLD_HI, 26 + Math.random() * 12, 0.7 + Math.random() * 0.3, 0, 0);
+    for (let i = 0; i < 72; i++) {
+      const k = i / 72, a = k * Math.PI * 6 + Math.random() * 0.4, r = 0.3 + k * 0.6;
+      this.bursts.emit(_v3b.set(base.x + Math.cos(a) * r, base.y - 0.2 + k * 0.5, base.z + Math.sin(a) * r),
+        _vel.set(Math.cos(a + 1.6) * 0.45, 0.7 + Math.random() * 1.0, Math.sin(a + 1.6) * 0.45), i % 4 === 0 ? GOLD_HI : GOLD, 9 + Math.random() * 10, 1.4 + Math.random() * 1.0, 0, -0.2);
+    }
+    this.emitStyle(c.spec.choreography.hatch.particles.kind, 44, base, 12, 0.8);
   }
 
   /** The signature moment. Resolves with the creature once it lands on the bank. */
@@ -372,6 +410,9 @@ export class World {
 }
 
 const Z_COL = new THREE.Color("#8fa3c8");
+const GOLD = new THREE.Color("#ffc65c");
+const GOLD_HI = new THREE.Color("#fff1b8");
+const _vel = new THREE.Vector3();
 const FLAKE_COL = new THREE.Color("#3a9a98");
 
 /**

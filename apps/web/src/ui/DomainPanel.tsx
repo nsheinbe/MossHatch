@@ -69,7 +69,10 @@ export default function DomainPanel() {
           {d && tab === "nest" && !d.released && <Suspense fallback={<p role="status">Loading.</p>}><NestTab key={d.id} fqdn={d.fqdn} /></Suspense>}
           {d && tab === "gate" && <Suspense fallback={<p role="status">Loading.</p>}><GateTab key={d.id} d={d} reloadAll={reload} /></Suspense>}
         </div>
-        <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ domainPanel: null })}>Close</button></div>
+        <div className="row-actions">
+          {d && !d.released && <button type="button" className="btn primary" onClick={() => set({ talk: { domain: domainPanel.fqdn, source: "owned" }, domainPanel: null })}>Talk to its creature</button>}
+          <button type="button" className="btn secondary" onClick={() => set({ domainPanel: null })}>Close</button>
+        </div>
       </div>
     </aside>
   );
