@@ -153,7 +153,8 @@ export function createLookup(o: LookupOptions = {}): (request: Request) => Promi
       // Same-site use only: the page calls this; another site's page may not use it as an RDAP relay. (curl sends no such header.)
       const site = request.headers.get("sec-fetch-site");
       if (site && site !== "same-origin" && site !== "none") return json(403, { error: { code: "cross_site" } });
-      for (const k of url.searchParams.keys()) if (k !== "name") return json(400, { error: { code: "bad_request" } });
+      // Vercel's rewrite (vercel.json "/api/:path*" -> "/api/index") adds the captured segment as `path`; it carries nothing of the caller's.
+      for (const k of url.searchParams.keys()) if (k !== "name" && k !== "path") return json(400, { error: { code: "bad_request" } });
       const raw = url.searchParams.getAll("name");
       const name = raw.length === 1 ? normalizeLabel(raw[0]!) : ({ ok: false } as const);
       if (!name.ok) return json(400, { error: { code: "bad_name" } });
