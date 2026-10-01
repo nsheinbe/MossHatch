@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { liftChips, type ChipBox } from "./chipLayout";
 import { deriveCreatureSpec, type CreatureSpec, type CreatureState, type Particle } from "@mosshatch/core";
 import { makeShared, type Shared } from "./materials";
 import { buildScenery, POOL_R, type Scenery } from "./scenery";
@@ -334,15 +335,21 @@ export class World {
   private projectOverlay() {
     if (this.overlayMode !== "project") return;
     const cam = this.rig.camera;
+    // Read every chip's place and size first, then write: chips that would overlap are lifted apart (chipLayout).
+    const items: { el: HTMLElement; x: number; y: number; z: number }[] = [], boxes: ChipBox[] = [];
     for (const [id, el] of this.overlay) {
       const a = this.anchorFor(id, _v3);
       if (!a) continue;
       a.project(cam);
       const x = (a.x * 0.5 + 0.5) * this.w, y = (-a.y * 0.5 + 0.5) * this.h;
-      const row = el.dataset.row ? +el.dataset.row : 0;
-      el.style.transform = `translate3d(${x.toFixed(1)}px, ${(y - row * 62).toFixed(1)}px, 0) translate(-50%, -100%)`;
-      el.style.opacity = a.z < 1 ? "" : "0";
+      items.push({ el, x, y, z: a.z });
+      boxes.push({ x, y, w: el.offsetWidth, h: el.offsetHeight, row: el.dataset.row ? +el.dataset.row : 0 });
     }
+    const lifts = liftChips(boxes);
+    items.forEach(({ el, x, y, z }, i) => {
+      el.style.transform = `translate3d(${x.toFixed(1)}px, ${(y - lifts[i]!).toFixed(1)}px, 0) translate(-50%, -100%)`;
+      el.style.opacity = z < 1 ? "" : "0";
+    });
   }
 
   stats(): Stats {
