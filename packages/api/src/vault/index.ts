@@ -1,0 +1,16 @@
+export * from "./kms/types.ts";
+export { LocalVaultKms, defaultKeyPolicy, type PolicyStatement, type KmsAction } from "./kms/local.ts";
+export { AwsVaultKms, signV4, type AwsCredentials, type CredentialProvider, type FetchLike } from "./kms/aws.ts";
+export { vaultTrustPolicy, trustAllows, type OidcTrustConfig } from "./kms/trust.ts";
+export * from "./envelope.ts";
+export * from "./names.ts";
+export { installVault, vaultOf, NO_STORE, type VaultServices } from "./context.ts";
+export { writeSecret, deleteSecret, listSecrets, pointerMac } from "./secrets.ts";
+export { sealVersion, commitVersion, type NextVersion, type WriteActor } from "./secrets.ts";
+export { readSecretsForBinding, parseScopes, allowsSecretsRead, holdsForbiddenPair, READ_LIMITS, MAX_READ, type BindingRef, type ReadRequest, type ReadSecret, type ScopeEntry } from "./read.ts";
+export { secretRevealSpec, registerRevealSpec, REVEAL_LIMITS, REVEAL_WINDOW_MS } from "./reveal.ts";
+export { storeConnectionCredential, disconnect, withConnectionCredential, SERVICES as CONNECTION_SERVICES } from "./connections.ts";
+export { registerVaultJobs, rewrapAll, rewrapBatch, sendReadDigest } from "./jobs.ts";
+export { affectedFromTrail, scopeTrail, customersUnderKek, sendCompromiseNotices, autoDenyOnUnauditedDecrypt, runCompromiseDrill } from "./drill.ts";
+export { vaultAlarms, trailAlarms } from "./alarms.ts";
+export { registerVaultRoutes, vaultRoutes } from "./routes.ts";

@@ -1,0 +1,36 @@
+<!-- title: Security and vulnerability disclosure -->
+<!-- description: How to report a security problem in Mosshatch or hatchkind.com, and our safe harbor for good-faith research. -->
+<!-- draft: review -->
+<h1>Security and vulnerability disclosure</h1>
+<p>If you find a security problem in Mosshatch or hatchkind.com, please tell us. We would rather hear about it from you than from anyone else.</p>
+<h2>How to report</h2>
+<ul>
+  <li>Email <a href="mailto:security@mosshatch.com">security@mosshatch.com</a>. Our <a href="/.well-known/security.txt">security.txt</a> lists the same contact.</li>
+  <li>Say what you found, where, and the steps to reproduce it. A short proof of concept helps.</li>
+  <li>We acknowledge within two business days and tell you what we will do within ten.</li>
+</ul>
+<h2>In scope</h2>
+<ul>
+  <li>mosshatch.com and its API under /api/.</li>
+  <li>hatchkind.com.</li>
+  <li>The mosshatch command-line tool and the MCP server.</li>
+</ul>
+<h2>Out of scope</h2>
+<ul>
+  <li>Denial of service, load testing and spam.</li>
+  <li>Social engineering of our staff, our providers or our customers, and physical attacks.</li>
+  <li>The services of our providers (the registrar partner, Stripe, Vercel, Neon, Resend, AWS). Report those to them.</li>
+  <li>Reports from automated scanners without a demonstrated impact.</li>
+</ul>
+<h2>Please</h2>
+<ul>
+  <li>Test only against accounts and domains you own, or that the owner has allowed you to use.</li>
+  <li>Stop as soon as you reach data that is not yours. Do not keep, share or change it, and tell us what you saw.</li>
+  <li>Never try to reveal a secret stored in someone else's Nest.</li>
+  <li>Give us 90 days to fix a problem before you publish, or tell us why you need less.</li>
+</ul>
+<h2>Safe harbor</h2>
+<p>If you act in good faith and follow this policy, we will consider your research authorised, we will not pursue or support legal action against you for it, and we will say so if a third party brings a claim against you over it. If you are unsure whether something is allowed, ask us first at the address above.</p>
+<p>This safe harbor covers only our own systems and our own claims. It cannot bind our providers or anyone else.</p>
+<h2>Thanks</h2>
+<p>We will credit you when we publish a fix, if you want us to. We do not run a paid bug bounty yet.</p>

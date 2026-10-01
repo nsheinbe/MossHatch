@@ -1,0 +1,25 @@
+{
+  "name": "@mosshatch/api",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@mosshatch/core": "*",
+    "@mosshatch/db": "*",
+    "@mosshatch/registrar": "*",
+    "@simplewebauthn/server": "14.0.3",
+    "stripe": "22.6.2",
+    "zod": "4.6.5"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/app.ts",
+    "./testing/authenticator": "./src/testing/authenticator.ts",
+    "./boot": "./src/boot.ts"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@mosshatch/cli",
+  "version": "0.1.0",
+  "description": "The Mosshatch command-line tool: sign in with a passkey-approved device code, and pull, push or run with your Nest secrets.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": { "mosshatch": "dist/mosshatch.mjs" },
+  "files": ["dist/mosshatch.mjs", "dist/mosshatch.mjs.sha256"],
+  "engines": { "node": ">=22" },
+  "dependencies": {},
+  "publishConfig": { "access": "public", "provenance": true },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit",
+    "build": "node build.mjs",
+    "prepublishOnly": "node build.mjs --ci-only"
+  }
+}

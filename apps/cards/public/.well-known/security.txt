@@ -1,0 +1,6 @@
+# Security contact for hatchkind.com (RFC 9116). hatchkind.com is run by Mosshatch; the policy page is a draft awaiting counsel review.
+Contact: mailto:security@mosshatch.com
+Expires: 2027-09-29T23:59:00.000Z
+Preferred-Languages: en
+Canonical: https://hatchkind.com/.well-known/security.txt
+Policy: https://mosshatch.com/security

@@ -1,0 +1,19 @@
+body { margin: 0; background: #131a33; color: #f1ead8; font: 400 1.05rem/1.55 system-ui, sans-serif; }
+header.site, main, footer.site { max-width: 42rem; margin: 0 auto; padding: 16px 20px; }
+.wordmark { font: 400 1.35rem/1.2 Georgia, serif; margin: 0; }
+h1, h2, h3 { font-family: Georgia, serif; font-weight: 400; line-height: 1.2; }
+a { color: #ffb257; }
+a:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 8px; top: 8px; background: #ffb257; color: #131a33; padding: 8px 12px; }
+.overall { border: 2px solid #3f7d52; border-radius: 10px; padding: 4px 16px; background: #1c2547; }
+.overall.degraded { border-color: #ffb257; }
+.overall.down { border-color: #ff8a80; }
+.parts { list-style: none; padding: 0; }
+.parts li { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid #2c365e; }
+.parts .name { flex: 1; }
+.ok .mark { color: #7fd18f; }
+.degraded .mark { color: #ffb257; }
+.down .mark { color: #ff8a80; }
+.incident { border-left: 3px solid #2c365e; padding-left: 12px; }
+footer.site { border-top: 1px solid #2c365e; font-size: 0.95rem; }

@@ -1,0 +1,33 @@
+{
+  "name": "mosshatch",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @mosshatch/web",
+    "build": "node scripts/render-public-pages.mjs --check && npm run build -w @mosshatch/web && node scripts/site-pages.mjs apps/web/dist && node scripts/web-sitemap.mjs apps/web/dist && node scripts/build-api.mjs && node scripts/postbuild.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "check:st": "node scripts/check-st-ids.mjs",
+    "test:e2e": "playwright test",
+    "build:cards": "npm run build -w @mosshatch/cards && node scripts/scan-client-bundle.mjs apps/cards/dist --forbid=debug=states,__mh && node scripts/check-cards.mjs apps/cards/dist",
+    "pages": "node scripts/render-public-pages.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.56.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2"
+  },
+  "dependencies": {
+    "@mosshatch/api": "*"
+  }
+}

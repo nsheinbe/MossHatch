@@ -1,0 +1,14 @@
+import { chromium } from "@playwright/test";
+const b = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+const p = await b.newPage({ viewport: { width: 1280, height: 720 } });
+const errs = [];
+p.on("console", (m) => { if (["error", "warning"].includes(m.type())) errs.push(m.text().slice(0, 200)); });
+p.on("pageerror", (e) => errs.push("pageerror " + e.message));
+await p.goto("http://127.0.0.1:4173/");
+await p.waitForTimeout(6000);
+await p.fill("#name-input", "grovekeeper").catch((e) => errs.push("no input: " + e.message));
+await p.waitForTimeout(3000);
+console.log("booted:", await p.getAttribute("html", "data-booted"), "chips:", await p.locator(".chip").count());
+console.log(errs.length ? errs.join("\n") : "no console errors or CSP violations");
+await p.screenshot({ path: process.argv[2] ?? "/tmp/csp.png" });
+await b.close();

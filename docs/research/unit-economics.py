@@ -50,6 +50,7 @@ A = dict(
                   "io": D("0"), "ai": D("0")},
     renewal_refund_recovers_W=D("0"),  # V: OpenSRS "A renewal transaction is final"
     tax_registered_share=D("0"),       # launch US-only, no registrations yet (A)
+    funding_grossup=D("0"),            # OpenSRS deposits by ACH/wire assumed; card/PayPal = 1/0.97 - 1 (V: payment-terms)
 )
 
 def stripe_fee(total, intl):
@@ -70,11 +71,12 @@ def expected_contribution(tld, F, W_per_year, years, renewal=False):
     f = D("0") if renewal else A["fail_rate"]
     rec = A["renewal_refund_recovers_W"] if renewal else A["agp_recovery"][tld]
     ok = D("1") - r - d - f
-    c_ok      = Fee - S - tax_cost
-    c_refund  = -S - (1 - rec) * W - A["support_cost_refund"]
+    fund = W * A["funding_grossup"]    # deposit fee on wholesale actually spent
+    c_ok      = Fee - S - tax_cost - fund
+    c_refund  = -S - (1 - rec) * W - A["support_cost_refund"] - fund
     c_fail    = -A["support_cost_fail"]
-    c_lost    = -W - S - DISPUTE_RECEIVED - DISPUTE_COUNTER - A["support_cost_dispute"]
-    c_won     = Fee - S - DISPUTE_RECEIVED - A["support_cost_dispute"]
+    c_lost    = -W - S - DISPUTE_RECEIVED - DISPUTE_COUNTER - A["support_cost_dispute"] - fund
+    c_won     = Fee - S - DISPUTE_RECEIVED - A["support_cost_dispute"] - fund
     c_disp    = A["dispute_loss_share"] * c_lost + (1 - A["dispute_loss_share"]) * c_won
     exp = ok * c_ok + r * c_refund + f * c_fail + d * c_disp
     return dict(total=T, stripe=S, per_year=exp / years, c_ok=c_ok / years)
@@ -93,7 +95,7 @@ def sensitivity():
     global A
     base = copy.deepcopy(A)
     print("## Sensitivity: expected contribution per domain-year at OpenSRS Essential wholesale\n")
-    print("Each row changes one assumption from the base case; F is $4.00 for .com and .app, $9.00 for .studio, .io, .ai.\n")
+    print("Each row changes one assumption from the base case; F is $4.00 for .com and .app, $9.00 for .studio and .io, $10.00 for .ai.\n")
     cases = [
         ("base case", {}),
         ("disputes 0.25% (first) / 0.5% (renewal)", dict(dispute_rate_first=D("0.0025"), dispute_rate_renew=D("0.005"))),
@@ -103,9 +105,10 @@ def sensitivity():
         ("all cards international (share 100%)", dict(intl_share=D("1.0"))),
         ("Stripe Tax on every order (0.5%)", dict(tax_registered_share=D("1.0"))),
         ("no upstream refund on cancel (AGP pool exhausted)", dict(agp_recovery={k: D("0") for k in A["agp_recovery"]})),
+        ("wholesale deposits funded by card or PayPal (+3.09% of wholesale)", dict(funding_grossup=(D("1")/D("0.97") - D("1")))),
     ]
     table = WHOLESALE["opensrs_essential"]
-    picks = [("com", D("4.00")), ("app", D("4.00")), ("studio", D("9.00")), ("io", D("9.00")), ("ai", D("9.00"))]
+    picks = [("com", D("4.00")), ("app", D("4.00")), ("studio", D("9.00")), ("io", D("9.00")), ("ai", D("10.00"))]
     print("| case | " + " | ".join(f".{t} (F=${f})" for t, f in picks) + " |")
     print("|---|" + "---|" * len(picks))
     for name, patch in cases:
@@ -123,7 +126,7 @@ def renewals():
     print("| TLD | wholesale | F | customer pays | Stripe fee | expected contribution |")
     print("|---|---|---|---|---|---|")
     table = WHOLESALE["opensrs_essential"]
-    for tld, F in [("com", D("4.00")), ("dev", D("4.00")), ("app", D("4.00")), ("studio", D("9.00")), ("io", D("9.00")), ("ai", D("9.00"))]:
+    for tld, F in [("com", D("4.00")), ("dev", D("4.00")), ("app", D("4.00")), ("studio", D("9.00")), ("io", D("9.00")), ("ai", D("10.00"))]:
         y = 2 if tld == "ai" else 1   # .ai renews in 2-year units at OpenSRS (V)
         r = expected_contribution(tld, F, table[tld], y, renewal=True)
         print(f"| .{tld} | {table[tld]*y} | {F*y} | {q(r['total'])} | {q(r['stripe'])} | {q(r['per_year']*y)} per {y} yr |")
@@ -160,7 +163,7 @@ def main():
             for tld, W in table.items():
                 y = MIN_YEARS.get(tld, 1)
                 a = breakeven_fee(tld, W, y, target)
-                b = breakeven_fee(tld, W, 1, target, renewal=True)
+                b = breakeven_fee(tld, W, MIN_YEARS.get(tld, 1), target, renewal=True)
                 print(f"| .{tld} | {a} | {b} |")
             print()
     print("## Stripe cost on a single domestic card order (first order, no refund)\n")
@@ -174,17 +177,25 @@ def main():
     renewals()
     print("## Monthly fixed-cost scenarios and break-even volume\n")
     fixed = {
-        "lean (Vercel Pro 1 seat, Neon usage, Resend Free, KMS, fixed-IP gateway VPS)": D("20")+D("25")+D("0")+D("4")+D("6")+D("15"),
-        "with Vercel Static IPs ($100)": D("20")+D("100")+D("25")+D("20")+D("4")+D("15"),
+        "recommended path (Vercel Pro 20, Static IPs 100, Neon Scale 42 to 45, Resend Pro 20, KMS 4, domains and monitoring 15)":
+            (D("20")+D("100")+D("42")+D("20")+D("4")+D("15"), D("20")+D("100")+D("45")+D("20")+D("4")+D("15")),
+        "gateway path (Vercel Pro 20, Neon Scale 42 to 45, Resend Free, KMS 4, gateway 6, domains and monitoring 15)":
+            (D("20")+D("42")+D("0")+D("4")+D("6")+D("15"), D("20")+D("45")+D("0")+D("4")+D("6")+D("15")),
     }
-    for name, cost in fixed.items():
-        print(f"- {name}: about ${cost}/month")
+    for name, (lo, hi) in fixed.items():
+        print(f"- {name}: about ${lo} to ${hi}/month (Neon Scale = always-on 0.25 CU: 187.5 CU-h x $0.222 = $41.63 plus storage; Neon, gateway and monitoring are our own estimates; Private Data Transfer on Static IPs is extra)")
     print()
-    print("| fixed $/mo | expected contribution per domain-year | domain-years/month to break even |")
-    print("|---|---|---|")
-    for cost in fixed.values():
+    print("| scenario | fixed $/mo | expected contribution per domain-year | domain-years/month to break even |")
+    print("|---|---|---|---|")
+    for label, (lo, hi) in [("recommended", list(fixed.values())[0]), ("gateway", list(fixed.values())[1])]:
         for c in (D("1.50"), D("2.50"), D("3.00")):
-            print(f"| {cost} | {c} | {int((cost / c).to_integral_value(rounding='ROUND_CEILING'))} |")
+            a = int((lo / c).to_integral_value(rounding='ROUND_CEILING')); b = int((hi / c).to_integral_value(rounding='ROUND_CEILING'))
+            print(f"| {label} | {lo} to {hi} | {c} | {a} to {b} |")
+    print()
+    print("## Premium-priced names (why they are not sold at launch)\n")
+    for W_, F_ in ((D("108.90"), D("4.00")),):
+        r = expected_contribution("app", F_, W_, 1, renewal=True)
+        print(f"- A renewal at wholesale ${W_} with the standard fee ${F_}: customer pays ${q(r['total'])}, expected contribution ${q(r['per_year'])} per domain-year.")
 
 if __name__ == "__main__":
     main()

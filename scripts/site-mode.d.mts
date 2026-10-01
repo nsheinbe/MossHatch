@@ -1,0 +1,11 @@
+export type SiteMode = "demo" | "live";
+export declare const WEB_ORIGIN: string;
+export declare const SHARE_IMAGE: { path: string; width: number; height: number; alt: string };
+export declare function siteMode(env?: Record<string, string | undefined>): SiteMode;
+export declare const HOME: Record<SiteMode, { title: string; description: string }>;
+export declare const BANNER: string;
+export declare function shareTags(p: { title: string; description: string; url: string }): string;
+export declare function injectBanner(html: string): string;
+export declare function transformHome(html: string, mode: SiteMode): string;
+export declare const HAND_WRITTEN: Record<string, { title: string; description: string; path: string }>;
+export declare function transformPage(html: string, mode: SiteMode, rel?: string): string;

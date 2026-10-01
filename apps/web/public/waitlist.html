@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>Join the waitlist · Mosshatch</title>
+<meta name="description" content="Mosshatch isn't open yet. Join the waitlist and we will email you an invite when it is your turn. Joining does not reserve a name." />
+<link rel="canonical" href="https://mosshatch.com/waitlist" />
+<link rel="stylesheet" href="/commitments.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site">
+<a class="wordmark" href="/">Mosshatch</a>
+<nav aria-label="Site"><a href="/fees.html">Fees</a> <a href="/commitments.html">Commitments</a> <a href="/legal/index.html">Legal</a> <a href="/security.html">Security</a> <a href="/report.html">Report abuse</a></nav>
+</header>
+<main id="main">
+<h1>Join the waitlist</h1>
+<p>Mosshatch isn't open yet. The site is a preview: nothing you hatch there is registered or charged. Join the waitlist and we will email you an invite when it is your turn. We let people in a few at a time.</p>
+<p><strong>Joining does not reserve or register a domain name.</strong></p>
+<form class="wl-form" method="post" action="/api/waitlist">
+<input type="hidden" name="source" value="page" />
+<div><label for="wl-email">Email</label><input id="wl-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div>
+<div><label for="wl-name">The name you hatched (optional)</label><input id="wl-name" name="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="80" placeholder="moonfern.com" /></div>
+<fieldset>
+<legend>Would you pay a few dollars for a one-of-a-kind creature designed for your name? (optional)</legend>
+<label class="opt"><input type="radio" name="answer" value="yes" /> Yes</label>
+<label class="opt"><input type="radio" name="answer" value="no" /> No</label>
+<label class="opt"><input type="radio" name="answer" value="maybe" /> Maybe</label>
+</fieldset>
+<div class="hp" aria-hidden="true"><label for="wl-website">Leave this empty</label><input id="wl-website" name="website" type="text" tabindex="-1" autocomplete="off" /></div>
+<label class="check"><input type="checkbox" name="consent" value="yes" required /> <span>Email me about Mosshatch: a link to confirm, my invite when it is my turn, and occasional product news. I can leave with one click.</span></label>
+<div><button type="submit" class="wl-btn">Join the waitlist</button></div>
+</form>
+<h2>What we keep, and why</h2>
+<p>Your email, the name you typed and your answer, only to run the waitlist and to learn what people want. We never sell them. We do not keep your IP address; rate limits use a one-way hash of your network. Unconfirmed sign-ups are deleted after 30 days. Every email has a one-click link to leave. To have your entry deleted, write to <a href="mailto:support@mosshatch.com">support@mosshatch.com</a>.</p>
+<p>Read the <a href="/waitlist-privacy.html">waitlist privacy note</a> (a draft awaiting counsel).</p>
+</main>
+<footer class="site">
+<p>Mosshatch is a domain reseller, not an ICANN-accredited registrar. See <a href="/legal/registrant-rights.html">registrar of record and your rights</a>.</p>
+<p>Contact <a href="mailto:support@mosshatch.com">support@mosshatch.com</a>. Report abuse to <a href="mailto:abuse@mosshatch.com">abuse@mosshatch.com</a>. Security reports to <a href="mailto:security@mosshatch.com">security@mosshatch.com</a>.</p>
+</footer>
+</body>
+</html>

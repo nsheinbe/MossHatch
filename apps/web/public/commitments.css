@@ -1,0 +1,40 @@
+/* Public pages (commitments, legal, security, report, errors). Colours from the brand pairs checked in PLAN 4.10. */
+@font-face { font-family: "Young Serif"; src: url(/fonts/young-serif-latin-400-normal.woff2) format("woff2"); font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; src: url(/fonts/atkinson-hyperlegible-latin-400-normal.woff2) format("woff2"); font-display: swap; }
+@font-face { font-family: "Atkinson Hyperlegible"; font-weight: 700; src: url(/fonts/atkinson-hyperlegible-latin-700-normal.woff2) format("woff2"); font-display: swap; }
+body { margin: 0; background: #131a33; color: #f1ead8; font: 400 1.05rem/1.55 "Atkinson Hyperlegible", system-ui, sans-serif; }
+main { max-width: 42rem; margin: 0 auto; padding: 24px 20px 48px; }
+h1, h2 { font-family: "Young Serif", Georgia, serif; font-weight: 400; line-height: 1.2; }
+a { color: #ffb257; }
+a:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; box-shadow: 0 0 0 6px #131a33; }
+header.site, footer.site { max-width: 42rem; margin: 0 auto; padding: 16px 20px; }
+header.site { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
+header.site nav { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+header.site nav a, .wordmark { display: inline-block; min-height: 44px; line-height: 44px; }
+.wordmark { font-family: "Young Serif", Georgia, serif; font-size: 1.35rem; color: #f1ead8; text-decoration: none; }
+footer.site { border-top: 1px solid #2c365e; font-size: 0.95rem; }
+.draft-banner { border: 2px solid #ffb257; border-radius: 8px; padding: 12px 14px; background: #1c2547; }
+.skip { position: absolute; left: -9999px; top: 8px; background: #ffb257; color: #131a33; padding: 8px 12px; border-radius: 6px; }
+.skip:focus { left: 8px; }
+.doc-list li { margin: 6px 0; }
+.table-wrap { overflow-x: auto; }
+table.fees { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+table.fees caption { text-align: left; padding-bottom: 8px; color: rgba(241, 234, 216, 0.85); }
+table.fees th, table.fees td { border-bottom: 1px solid rgba(241, 234, 216, 0.25); padding: 8px 10px 8px 0; text-align: left; vertical-align: top; }
+.site-foot { margin-top: 40px; font-size: 0.9rem; color: rgba(241, 234, 216, 0.85); }
+.table-wrap:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }
+/* Demo mode: the permanent preview banner (injected at build time into every page of a demo build), and the waitlist page's form. */
+.demo-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 14px; padding: 8px 16px; background: #1c2547; border-bottom: 2px solid #ffb257; text-align: center; font-size: 0.95rem; line-height: 1.35; }
+.demo-banner p { margin: 0; }
+.demo-banner-cta, .wl-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0 18px; border-radius: 22px; border: 0; background: #ffb257; color: #131a33; font: 700 1rem/1 "Atkinson Hyperlegible", system-ui, sans-serif; text-decoration: none; cursor: pointer; }
+.demo-banner-cta:focus-visible, .wl-btn:focus-visible { outline: 3px solid #f1ead8; outline-offset: 2px; }
+.wl-form { display: grid; gap: 14px; margin: 20px 0; }
+.wl-form label { display: block; }
+.wl-form input[type="email"], .wl-form input[type="text"] { display: block; width: 100%; box-sizing: border-box; min-height: 48px; margin-top: 4px; padding: 0 14px; border-radius: 10px; border: 1px solid rgba(241, 234, 216, 0.5); background: #0f1530; color: #f1ead8; font: inherit; }
+.wl-form fieldset { border: 0; margin: 0; padding: 0; }
+.wl-form legend { padding: 0; margin-bottom: 6px; }
+.wl-form .opt { display: flex; gap: 8px; align-items: center; min-height: 36px; }
+.wl-form .check { display: flex; gap: 10px; align-items: flex-start; }
+.wl-form input[type="checkbox"], .wl-form input[type="radio"] { width: 22px; height: 22px; flex: none; accent-color: #ffb257; }
+.wl-form .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.wl-form input:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }

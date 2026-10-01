@@ -1,0 +1,23 @@
+{
+  "name": "@mosshatch/registrar",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@mosshatch/core": "*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./port": "./src/port.ts",
+    "./mock-port": "./src/mock-port.ts",
+    "./opensrs": "./src/opensrs/index.ts",
+    "./openprovider": "./src/openprovider/index.ts",
+    "./dns": "./src/dns.ts",
+    "./contract": "./src/contract.ts"
+  }
+}
