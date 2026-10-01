@@ -473,6 +473,12 @@ One entry per decision: context, choice, why, and what would change it, plus a s
 **Choice.** (1) `apps/registrar`: a second Vercel project from the same repository whose one function serves `createRegistrarRpc` over the Openprovider adapter (`registrar-rpc/serve.ts`), with no database, Stripe key or vault; its bundle build fails if web, database or Stripe code is pulled in. Its own configuration problems reach web's boot as reason codes, only for signed calls. No Static IPs yet (D-005): the Openprovider IP allow-list stays off for the dogfood, and the USD 20 balance and fuses bound the exposure. (2) One production web build, `VITE_SITE_MODE=invite`: static pages are the demo; `/api/v1/session` says whether the signed-in account may buy (it used an invite: `user_live_access`), and only then does the app hide the banner and use the shop routes. The server enforces the same rule on every purchase route (`liveGate`, 403 `invite_required`). (3) Spend fuses: 3 registrations a day and 10 in total by default when live, plus 5 paid operations a day per registrar instance.
 **Would change if.** Strangers are invited (turn on Static IPs and the allow-list first), or a self-run gateway replaces the registrar project (D-005's stronger option).
 
+## D-061 The brand launcher: talk, brief, credits, Slate
+**Status:** Proposed default (2026-10-01).
+**Context.** Owners want a first website for a name without leaving the grove. Slate (a separate app) offers a partner build API; the creature can be the conversation.
+**Choice.** (1) The creature is Claude (`claude-opus-5-5` by default) with a frozen per-conversation persona and two strict tools, `propose_brief` and `revise_site`; nothing is built until the owner approves a brief and its price. (2) Builds go to Slate's partner API, signed with a shared HMAC secret; Slate sees only a keyed pseudonym per account. (3) Usage is paid in prepaid credits (1 credit = 1 US cent) from an append-only ledger, priced at Slate's quote times a markup (1.5x default), refunded in full on failure, with per-account and global daily caps. (4) Off by default: the `launcher_enabled` flag plus the invite gate in production and staging; everyone else gets a static teaser. (5) Previews are framed only from one committed `frame-src` origin, otherwise linked out. (6) Voice is seams only; the microphone stays denied. Details in `docs/LAUNCHER.md`.
+**Would change if.** Stripe credit packs ship (grants stop being owner-only), publishing to the owner's domain ships (needs content screening of built pages first), or voice ships (its own decision).
+
 ## Where to veto
 An entry with status Needs your decision is answered in `PLAN.md` under Open decisions. Every Proposed default is vetoed through the assumption below; "new assumption to add" means `PLAN.md` Assumptions does not yet cover it and the plan editor adds one. D-023 and D-050 are records with nothing to veto.
 
@@ -525,3 +531,4 @@ An entry with status Needs your decision is answered in `PLAN.md` under Open dec
 | D-058 | Launch sequence: waitlist-only, dogfood, audit, entity, invite-only launch | decided by you |
 | D-059 | First year charged at the renewal price when renewal costs more (same price every year) | new assumption to add |
 | D-060 | Registrar credentials only in the `mosshatch-registrar` project; one invite-only build; spend fuses | new assumption to add |
+| D-061 | Brand launcher: Claude creature, Slate builds, prepaid credits at 1.5x, off by default behind a flag and invites | new assumption to add |

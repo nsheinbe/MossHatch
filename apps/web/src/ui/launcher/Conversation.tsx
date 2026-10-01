@@ -34,6 +34,8 @@ export function Conversation({ initial, status, onBalance }: { initial: Conv; st
   const keys = useRef(new Map<string, string>());
   /** A turn that brought a scroll moves focus to it (its heading); any other turn returns focus to the input. */
   const proposed = useRef(false);
+  /** Turns started; a late frame from an earlier turn must not pull focus off a newer turn's scroll. */
+  const turns = useRef(0);
   const name = conv.species_name;
   const domain = conv.domain;
 
@@ -69,11 +71,12 @@ export function Conversation({ initial, status, onBalance }: { initial: Conv; st
     if (words) setLines((l) => [...l, { who: "owner", text: words, at: new Date().toISOString() }]);
     setLive("");
     proposed.current = false;
+    const turnNo = ++turns.current;
     const amp = new TokenAmplitude();
     const stop = driveGlow(amp, (lvl) => handle.world?.setVoice(domain, lvl));
     try { await talk(conv.id, words, (e) => onEvent(e, amp)); }
     catch (e) { setLive(null); setNotice(explainLauncher(e)); if (words) setLines((l) => l.slice(0, -1)); if (words) setText(words); }
-    finally { stop(); setBusy(false); setConv((c) => ({ ...c, started: true })); if (!proposed.current) requestAnimationFrame(() => input.current?.focus()); }
+    finally { stop(); setBusy(false); setConv((c) => ({ ...c, started: true })); if (!proposed.current) requestAnimationFrame(() => { if (turns.current === turnNo && !proposed.current) input.current?.focus(); }); }
   }, [conv.id, domain, onEvent]);
 
   // The creature speaks first.

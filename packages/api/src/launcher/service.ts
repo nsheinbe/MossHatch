@@ -401,7 +401,7 @@ async function submitToSlate(ctx: AppContext, svc: LauncherServices, userId: str
 async function failBuild(ctx: AppContext, userId: string, id: string, code: string, status: "failed" | "refunded" | "canceled" = "failed") {
   await withUser(ctx.runtime, userId, async (c) => {
     await lockAccount(c, userId);
-    const b = (await c.query("select * from launcher_builds where id = $1 for update", [id])).rows[0];
+    const b = (await c.query("select * from launcher_builds where id = $1 and user_id = $2 for update", [id, userId])).rows[0];
     if (!b || ["failed", "refunded", "canceled", "ready"].includes(b.status)) return;
     const back = await refund(c, userId, id, code);
     await c.query("update launcher_builds set status = $2, error_code = $3, finished_at = $4, updated_at = $4 where id = $1", [id, status, code, ctx.clock.now()]);

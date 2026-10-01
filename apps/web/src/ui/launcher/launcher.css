@@ -65,10 +65,10 @@
 .lx-unfurl .lx-sheet { transform-origin: top center; animation: lx-unfurl 0.9s cubic-bezier(.2,.8,.2,1) both; }
 .lx-unfurl .lx-roller-b { animation: lx-roll 0.9s cubic-bezier(.2,.8,.2,1) both; }
 .lx-kicker { margin: 0 0 4px; font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold-ink); }
-.lx-title { font-family: var(--display); font-size: 1.7rem; line-height: 1.15; color: var(--ink); margin: 0 0 8px; }
+.lx-title { display: flow-root; font-family: var(--display); font-size: 1.7rem; line-height: 1.15; color: var(--ink); margin: 0 0 8px; }
 .lx-title:focus-visible { outline-offset: 4px; }
 .lx-subtitle { font-family: var(--display); font-size: 1.2rem; color: var(--ink); margin: 0 0 8px; }
-.lx-title::first-letter { float: left; font-size: 2.9rem; line-height: 0.85; margin: 4px 8px 0 0; padding: 4px 6px; color: #fff6dc; background: radial-gradient(circle at 30% 30%, #f3c86a, #b07a1e 70%); border: 1px solid #6b4710; border-radius: 4px; text-shadow: 0 1px 0 #6b4710; box-shadow: 0 0 16px rgba(255, 198, 92, 0.45); }
+.lx-title::first-letter { float: left; font-size: 2.9rem; line-height: 0.85; margin: 2px 5px 2px 0; padding: 4px 6px; color: #fff6dc; background: radial-gradient(circle at 30% 30%, #f3c86a, #b07a1e 70%); border: 1px solid #6b4710; border-radius: 4px; text-shadow: 0 1px 0 #6b4710; box-shadow: 0 0 16px rgba(255, 198, 92, 0.45); }
 .lx-oneliner { font-family: var(--display); font-size: 1.05rem; color: var(--ink-2); margin: 0 0 10px; clear: both; padding-top: 4px; }
 .lx-brief { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 8px 0 4px; font-size: 0.95rem; }
 .lx-brief dt { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gold-ink); padding-top: 3px; }
