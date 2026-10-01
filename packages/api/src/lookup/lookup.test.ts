@@ -65,6 +65,8 @@ describe("GET /api/lookup", () => {
       expect(r.status, q).toBe(400);
     }
     expect((await get("?name=" + "a".repeat(63))).status).toBe(200);
+    // As Vercel delivers it in production: the rewrite of /api/:path* to the one function appends `path=lookup`.
+    expect((await get("?name=moon&path=lookup")).status).toBe(200);
     const post = await h(new Request("https://mosshatch.com/api/lookup?name=moon", { method: "POST" }));
     expect(post!.status).toBe(405);
     const cross = await get("?name=moon", { "sec-fetch-site": "cross-site" });
