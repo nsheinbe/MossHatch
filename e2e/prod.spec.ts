@@ -117,9 +117,10 @@ test("persisted state is limited to calm, sound and rehideSeconds", async ({ pag
   expect(await page.evaluate(() => Object.keys(localStorage).length)).toBeLessThanOrEqual(1);
 });
 
-test("C-53 canary: searching sends nothing anywhere", async ({ page }) => {
-  const reqs: string[] = [];
-  page.on("request", (r) => reqs.push(r.method() + " " + new URL(r.url()).pathname));
+test("C-53 canary: a search sends one same-origin GET to /api/lookup with the name in the query, and nothing else anywhere", async ({ page }) => {
+  const reqs: URL[] = [];
+  const methods: string[] = [];
+  page.on("request", (r) => { reqs.push(new URL(r.url())); methods.push(r.method()); });
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await cancelDemo(page);
@@ -127,8 +128,12 @@ test("C-53 canary: searching sends nothing anywhere", async ({ page }) => {
   const before = reqs.length;
   await page.fill("#name-input", "secretcanaryname");
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
-  const after = reqs.slice(before);
-  expect(after.filter((r) => !r.startsWith("GET ") || /canary/i.test(r))).toEqual([]);
+  const after = reqs.slice(before), how = methods.slice(before);
+  const named = after.filter((u) => /canary/i.test(u.href));
+  expect(named.map((u) => u.pathname + u.search)).toEqual(["/api/lookup?name=secretcanaryname"]);
+  expect(after.every((u) => u.origin === "http://127.0.0.1:4173")).toBe(true);
+  expect(how.every((m) => m === "GET")).toBe(true);
+  expect(after.some((u) => /canary/i.test(u.pathname))).toBe(false);
   await expect(page.getByRole("link", { name: "commitments" })).toBeVisible();
 });
 

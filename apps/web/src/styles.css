@@ -67,6 +67,7 @@ button.chip:hover { border-color: var(--lantern); }
 .chip.taken { opacity: 0.85; }
 .chip.taken .name { text-decoration: line-through; text-decoration-thickness: 2px; }
 .chip.taken .ext { color: var(--st-sleeping); }
+.chip.unknown { border-style: dashed; }
 .chip .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .chips-list { position: absolute; left: 0; right: 0; bottom: calc(clamp(24px, 9vh, 96px) + 112px); display: flex; gap: 8px; overflow-x: auto; padding: 4px 16px; scroll-snap-type: x proximity; }
 .chips-list .chip { position: static; transform: none !important; flex: 0 0 auto; scroll-snap-align: start; }

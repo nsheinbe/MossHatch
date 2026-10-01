@@ -9,7 +9,7 @@ export default defineConfig({
   reporter: [["list"]],
   webServer: [
     { command: "node e2e/serve-dist.mjs 4173", url: "http://127.0.0.1:4173/", reuseExistingServer: true },
-    { command: "npm run dev -w @mosshatch/web -- --port 5173 --host 127.0.0.1", url: "http://127.0.0.1:5173/", reuseExistingServer: true },
+    { command: "npm run dev -w @mosshatch/web -- --port 5173 --host 127.0.0.1", url: "http://127.0.0.1:5173/", reuseExistingServer: true, env: { MH_FAKE_LOOKUP: "1" } },
     { command: "node scripts/e2e-server.mjs", url: "http://localhost:5174/", reuseExistingServer: true, timeout: 120_000 },
     { command: "node e2e/serve-cards.mjs 4175", url: "http://127.0.0.1:4175/", reuseExistingServer: true },
   ],
