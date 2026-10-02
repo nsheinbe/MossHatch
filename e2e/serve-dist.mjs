@@ -41,8 +41,9 @@ http.createServer((q, r) => {
   if (!p.startsWith(dist)) { r.writeHead(404); return r.end(); }
   if (!file(p) && file(p + ".html")) p += ".html";
   if (!file(p) && file(path.join(p, "index.html"))) p = path.join(p, "index.html");
-  // vercel.json rewrites to the app shell (/device, /checkout/return), as Vercel applies them after the filesystem.
-  if (!file(p) && (cfg.rewrites ?? []).some((w) => w.destination === "/index.html" && w.source === decodeURIComponent(q.url.split("?")[0]))) p = path.join(dist, "index.html");
+  // vercel.json rewrites to the app shell (/device, /checkout/return, /invite), as Vercel applies them after the filesystem. With
+  // cleanUrls the destination must be "/": Vercel 404s a rewrite to "/index.html", so this emulator honours only "/".
+  if (!file(p) && (cfg.rewrites ?? []).some((w) => w.destination === "/" && w.source === decodeURIComponent(q.url.split("?")[0]))) p = path.join(dist, "index.html");
   if (!file(p)) { r.writeHead(404, { ...base, "Content-Type": "text/html" }); return fs.createReadStream(path.join(dist, "404.html")).on("error", () => r.end()).pipe(r); }
   r.writeHead(200, { ...base, "Content-Type": types[path.extname(p)] ?? "application/octet-stream" }); fs.createReadStream(p).pipe(r);
 }).listen(+process.argv[2] || 4173, "127.0.0.1");
