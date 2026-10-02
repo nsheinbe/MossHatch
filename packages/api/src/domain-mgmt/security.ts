@@ -61,7 +61,7 @@ async function codeOutstanding(c: PoolClient, domainId: string): Promise<boolean
   return !!s?.code_issued_at && (!s.code_rerandomized_at || new Date(s.code_rerandomized_at) < new Date(s.code_issued_at));
 }
 
-/** Replace the code with one nobody sees. `.io` codes are set by OpenSRS support, so there is nothing to replace. */
+/** Replace the code with one nobody sees. Where support sets `.io` codes (OpenSRS, the mock: code_by_support), there is nothing to replace. */
 async function rerandomize(ctx: AppContext, fqdn: string): Promise<void> {
   try { await registrarOf(ctx).rerandomizeAuthCode(fqdn); }
   catch (e) { if (!(e instanceof RegistrarError && e.code === "code_by_support")) throw e; }
@@ -111,7 +111,7 @@ export async function issueCodeHandler(req: HandlerReq): Promise<HandlerResult> 
       try { issued = await registrarOf(ctx).issueAuthCode(d.fqdn_ascii); }
       catch (e) {
         if (e instanceof RegistrarError && e.code === "code_by_support") {
-          // .io: OpenSRS support sets the code. Keep a human request open with the 5-calendar-day duty of C-03.
+          // .io at OpenSRS (and the mock): support sets the code. Keep a human request open with the 5-calendar-day duty of C-03.
           const due = new Date(ctx.clock.now().getTime() + 5 * DAY_MS);
           await c.query("insert into domain_tickets (user_id, domain_id, kind, detail, sla_due_at, opened_at) values ($1,$2,'code_request',$3,$4,$5) on conflict do nothing", [userId, d.id, { action: actionOf(req).id }, due, ctx.clock.now()]);
           await audit(ctx, c, userId, "domain.code_requested", { resourceKind: "domain", resourceId: d.id });

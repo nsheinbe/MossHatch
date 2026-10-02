@@ -11,7 +11,7 @@ import { RegistrarError } from "@mosshatch/registrar/port";
 import { registrarWords } from "../transfers/registrar-words.ts";
 
 export const PENDING_STATUSES: TransferAwayStatus[] = ["pending_admin", "pending_owner", "pending_registry"];
-/** OpenSRS counts silence for five days as approval; the request is looked for that far back. */
+/** Silence for five days counts as approval; the request is looked for that far back. */
 export const TRANSFER_WINDOW_MS = 6 * DAY_MS;
 export const DECLINE_WINDOW_MS = 5 * DAY_MS;
 /** A transfer started with a code we issued must start inside the code's 24-hour life (plus an hour of grace); an older action does not explain it. */
