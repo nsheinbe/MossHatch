@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import { PRODUCTION_URL, type OpHttpRequest, type OpHttpTransport } from "@mosshatch/registrar/openprovider";
 import { registrarRpcFromEnv, registrarServeReasons, spendCapped } from "./serve.ts";
+import { RedisDailyCounter, redisRest } from "./shared-store.ts";
+import { RPC_HEADERS } from "./sign.ts";
 import { registrarFromEnv, registrarRpcBootReason } from "../domains/boot-wiring.ts";
 import { NotConfigured } from "../boot.ts";
 
@@ -14,7 +16,26 @@ const SECRET = "s".repeat(40);
 const LIVE = {
   MH_SCOPE: "registrar", MH_MODE: "production", VERCEL_ENV: "production", MH_REGISTRAR_MODE: "live", MH_REGISTRAR_PROVIDER: "openprovider",
   OPENPROVIDER_ENV: "production", OPENPROVIDER_USERNAME: "reseller@example.test", OPENPROVIDER_PASSWORD: "pw-not-real", REGISTRAR_RPC_SECRET: SECRET,
+  UPSTASH_REDIS_REST_URL: "https://redis.example.test", UPSTASH_REDIS_REST_TOKEN: "redis-token-not-real",
 };
+
+/** A fake Upstash Redis REST endpoint: SET NX PX, INCR and PEXPIRE over one in-memory map, shared by every instance given it. */
+function fakeRedis(): typeof fetch & { data: Map<string, string>; down: boolean; seen: { auth: string | null; cmd: string[] }[] } {
+  const data = new Map<string, string>(); const seen: { auth: string | null; cmd: string[] }[] = [];
+  const f = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (f.down) throw new TypeError("fetch failed");
+    const cmd = JSON.parse(String(init?.body)) as string[];
+    seen.push({ auth: new Headers(init?.headers).get("authorization"), cmd });
+    const reply = (result: unknown) => new Response(JSON.stringify({ result }), { status: 200 });
+    const [op, key] = [cmd[0]!.toUpperCase(), cmd[1]!];
+    if (op === "SET") { if (cmd.includes("NX") && data.has(key)) return reply(null); data.set(key, cmd[2]!); return reply("OK"); }
+    if (op === "INCR") { const n = Number(data.get(key) ?? "0") + 1; data.set(key, String(n)); return reply(n); }
+    if (op === "PEXPIRE") return reply(data.has(key) ? 1 : 0);
+    return new Response(JSON.stringify({ error: "ERR unknown command" }), { status: 400 });
+  }) as typeof fetch & { data: Map<string, string>; down: boolean; seen: { auth: string | null; cmd: string[] }[] };
+  f.data = data; f.down = false; f.seen = seen;
+  return f;
+}
 
 /** A fake Openprovider: login, prices (.com non-member 11.98 / 16.98) and the reseller balance. Records every request. */
 function fakeOpenprovider(): OpHttpTransport & { sent: OpHttpRequest[] } {
@@ -67,7 +88,7 @@ describe("web -> registrar project -> Openprovider live (fake)", () => {
   it("the live adapter calls the production endpoint and web gets live (not sample) prices through the signed RPC", async () => {
     const op = fakeOpenprovider();
     const logs: Record<string, unknown>[] = [];
-    const reg = registrarRpcFromEnv(LIVE, { transport: op, log: (l) => logs.push(l) });
+    const reg = registrarRpcFromEnv(LIVE, { transport: op, redisFetch: fakeRedis(), log: (l) => logs.push(l) });
     expect(reg.reasons).toEqual([]);
     const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
     expect(port!.capabilities().mode).toBe("live");
@@ -82,7 +103,7 @@ describe("web -> registrar project -> Openprovider live (fake)", () => {
     expect(JSON.stringify(logs)).not.toContain("pw-not-real");
   });
   it("a registrar project without Openprovider credentials makes web's boot name it, after the signature is checked", async () => {
-    const reg = registrarRpcFromEnv({ ...LIVE, OPENPROVIDER_PASSWORD: undefined }, { transport: fakeOpenprovider(), log: () => undefined });
+    const reg = registrarRpcFromEnv({ ...LIVE, OPENPROVIDER_PASSWORD: undefined }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
     const e = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler)).catch((x) => x);
     expect(e).toBeInstanceOf(NotConfigured);
     expect((e as NotConfigured).reason).toBe("openprovider_credentials_missing");
@@ -92,9 +113,9 @@ describe("web -> registrar project -> Openprovider live (fake)", () => {
     expect(await anon.text()).not.toContain("openprovider");
   });
   it("secrets that differ between the projects, a project without its secret, and an unreachable project are told apart", async () => {
-    const other = registrarRpcFromEnv({ ...LIVE, REGISTRAR_RPC_SECRET: "o".repeat(40) }, { transport: fakeOpenprovider(), log: () => undefined });
+    const other = registrarRpcFromEnv({ ...LIVE, REGISTRAR_RPC_SECRET: "o".repeat(40) }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
     expect(((await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(other.handler)).catch((x) => x)) as NotConfigured).reason).toBe("registrar_rpc_secret_mismatch");
-    const none = registrarRpcFromEnv({ ...LIVE, REGISTRAR_RPC_SECRET: undefined }, { transport: fakeOpenprovider(), log: () => undefined });
+    const none = registrarRpcFromEnv({ ...LIVE, REGISTRAR_RPC_SECRET: undefined }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
     expect(((await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(none.handler)).catch((x) => x)) as NotConfigured).reason).toBe("registrar_project_secret_missing");
     const down = (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch;
     expect(((await registrarFromEnv(WEB, { registrarMode: "live" }, down).catch((x) => x)) as NotConfigured).reason).toBe("registrar_rpc_unreachable");
@@ -102,7 +123,7 @@ describe("web -> registrar project -> Openprovider live (fake)", () => {
   });
   it("the kill switch in the registrar project refuses writes (fails closed on an unknown value)", async () => {
     for (const v of ["writes_paused", "nonsense"]) {
-      const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRAR_KILL_SWITCH: v }, { transport: fakeOpenprovider(), log: () => undefined });
+      const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRAR_KILL_SWITCH: v }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
       const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
       await expect(port!.setLock("moonfern.com", false)).rejects.toMatchObject({ code: "kill_switch" });
     }
@@ -125,8 +146,73 @@ describe("the registrar project's daily spend cap", () => {
     expect(calls).toBe(3);
   });
   it("MH_REGISTRAR_DAILY_SPEND_OPS=0 stops every paid operation", async () => {
-    const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRAR_DAILY_SPEND_OPS: "0" }, { transport: fakeOpenprovider(), log: () => undefined });
+    const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRAR_DAILY_SPEND_OPS: "0" }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
     const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
     await expect(port!.renew("moonfern.com", 1, 2027)).rejects.toMatchObject({ code: "registrar_daily_spend_cap" });
+  });
+});
+
+describe("the registrar project's shared store (Upstash Redis REST)", () => {
+  it("is required when live", () => {
+    expect(registrarServeReasons({ ...LIVE, UPSTASH_REDIS_REST_URL: undefined }).reasons).toContain("registrar_shared_store_missing");
+    expect(registrarServeReasons({ ...LIVE, UPSTASH_REDIS_REST_URL: "http://redis.example.test" }).reasons).toContain("registrar_shared_store_missing");
+    // The Vercel Marketplace names work too.
+    const { UPSTASH_REDIS_REST_URL: _u, UPSTASH_REDIS_REST_TOKEN: _t, ...rest } = LIVE;
+    expect(registrarServeReasons({ ...rest, KV_REST_API_URL: "https://kv.example.test", KV_REST_API_TOKEN: "t" }).reasons).toEqual([]);
+  });
+
+  it("a live project without it refuses every signed call with the reason, so web's boot names it", async () => {
+    const reg = registrarRpcFromEnv({ ...LIVE, UPSTASH_REDIS_REST_TOKEN: undefined }, { transport: fakeOpenprovider(), log: () => undefined });
+    expect(((await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler)).catch((x) => x)) as NotConfigured).reason).toBe("registrar_shared_store_missing");
+  });
+
+  it("sends each command as a JSON array with the token as a Bearer header", async () => {
+    const redis = fakeRedis();
+    expect(await redisRest({ url: "https://redis.example.test", token: "tok" }, redis)(["INCR", "k"])).toBe(1);
+    expect(redis.seen[0]).toEqual({ auth: "Bearer tok", cmd: ["INCR", "k"] });
+  });
+
+  it("a request replayed to another instance is refused: the nonce is shared", async () => {
+    const redis = fakeRedis(); const op = fakeOpenprovider();
+    const a = registrarRpcFromEnv(LIVE, { transport: op, redisFetch: redis, log: () => undefined });
+    const bLogs: Record<string, unknown>[] = [];
+    const b = registrarRpcFromEnv(LIVE, { transport: op, redisFetch: redis, log: (l) => bLogs.push(l) });
+    let captured: Request | undefined;
+    const port = await registrarFromEnv(WEB, { registrarMode: "live" }, (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const r = new Request(input, init); if (r.url.endsWith("/getBalance")) captured = r.clone(); return a.handler(r);
+    }) as typeof fetch);
+    await port!.getBalance();
+    expect(captured?.headers.get(RPC_HEADERS.nonce)).toBeTruthy();
+    const replay = await b.handler(captured!);
+    expect(replay.status).toBe(401);
+    expect(bLogs).toContainEqual({ event: "registrar_rpc_reject", reason: "replayed_nonce" });
+  });
+
+  it("the daily cap counts across instances", async () => {
+    const redis = fakeRedis(); const now = { now: () => new Date("2026-10-02T10:00:00Z") };
+    let calls = 0;
+    const port = { register: async () => { calls++; return { ok: true }; } } as unknown as RegistrarPort;
+    const counter = () => new RedisDailyCounter(redisRest({ url: "https://redis.example.test", token: "t" }, redis));
+    const one = spendCapped(port, 2, now, () => undefined, counter()), two = spendCapped(port, 2, now, () => undefined, counter());
+    await one.register({} as never); await two.register({} as never);
+    await expect(one.register({} as never)).rejects.toMatchObject({ code: "registrar_daily_spend_cap" });
+    await expect(two.register({} as never)).rejects.toMatchObject({ code: "registrar_daily_spend_cap" });
+    expect(calls).toBe(2);
+    // The day's key expires on its own.
+    expect(redis.seen.filter((s) => s.cmd[0] === "PEXPIRE")).toHaveLength(1);
+  });
+
+  it("fails closed: with Redis unreachable no call reaches Openprovider and nothing is unknown about the outcome", async () => {
+    const redis = fakeRedis(); const op = fakeOpenprovider();
+    const reg = registrarRpcFromEnv(LIVE, { transport: op, redisFetch: redis, log: () => undefined });
+    const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
+    const before = op.sent.length;
+    redis.down = true;
+    await expect(port!.getBalance()).rejects.toMatchObject({ code: "registrar_shared_store_unavailable", outcomeUnknown: false });
+    expect(op.sent.length).toBe(before);
+    // A paid operation refuses before the registrar too.
+    const capped = spendCapped({ renew: async () => { throw new Error("must not run"); } } as unknown as RegistrarPort, 5, { now: () => new Date() }, () => undefined,
+      new RedisDailyCounter(redisRest({ url: "https://redis.example.test", token: "t" }, redis)));
+    await expect(capped.renew("moonfern.com", 1, 2027)).rejects.toMatchObject({ code: "registrar_shared_store_unavailable" });
   });
 });

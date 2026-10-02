@@ -9,7 +9,7 @@ import { decodeJson, encodeJson, RPC_HEADERS, RPC_PATH_PREFIX, verifySignature }
  * on the explicit allow-list below with arguments that validate. Every authentication failure gets the same 401 body, so the reason is not an oracle;
  * the reason goes to `onReject` as a code (never a value).
  */
-export type RejectReason = "not_configured" | "bad_method_or_path" | "missing_headers" | "bad_timestamp" | "outside_window" | "bad_signature" | "replayed_nonce" | "body_too_large" | "command_not_allowed" | "bad_request";
+export type RejectReason = "not_configured" | "bad_method_or_path" | "missing_headers" | "bad_timestamp" | "outside_window" | "bad_signature" | "replayed_nonce" | "body_too_large" | "command_not_allowed" | "bad_request" | "nonce_store_unavailable";
 
 export interface NonceStore {
   /** True the first time a nonce is claimed, false on a replay. Entries must be kept until `expiresAtMs`. */
@@ -109,7 +109,11 @@ export function createRegistrarRpc(opts: RegistrarRpcOptions): (req: RpcRequest)
     let ok = false; for (const s of opts.secrets) ok = verifySignature(s, parts, sig) || ok;
     if (!ok) return reject("bad_signature", UNAUTH());
     // Claimed only after the signature verifies, so an unauthenticated caller cannot fill the store. Kept past the far edge of the window.
-    if (!(await opts.nonces.claim(nonce, Number(ts) * 1000 + windowS * 1000 + 1000, nowMs))) return reject("replayed_nonce", UNAUTH());
+    // A store that cannot answer refuses the call (fail closed): accepting it would let a replay through on another instance.
+    let fresh: boolean;
+    try { fresh = await opts.nonces.claim(nonce, Number(ts) * 1000 + windowS * 1000 + 1000, nowMs); }
+    catch { return reject("nonce_store_unavailable", reply(503, { error: { code: "registrar_shared_store_unavailable", kind: "unavailable", retryable: true, outcomeUnknown: false } })); }
+    if (!fresh) return reject("replayed_nonce", UNAUTH());
 
     const name = req.path.slice(RPC_PATH_PREFIX.length);
     if (!Object.hasOwn(RPC_COMMANDS, name)) return reject("command_not_allowed", reply(404, { error: { code: "command_not_allowed" } }));

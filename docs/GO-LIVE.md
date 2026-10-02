@@ -24,8 +24,9 @@ vault) can read it (PLAN 4.3b, threat rows 29 and 30). That is the "extra Vercel
 on Pro. Trade-off kept on purpose: the registrar project has no fixed egress IP (no Static IPs, D-005), so Openprovider's optional IP
 allow-list cannot be used yet; a leaked Openprovider password would work from anywhere. Mitigations: 2FA on the Openprovider control panel
 (the API login does not use it), a USD 20 balance as the hard spend ceiling, the spend fuses below, and the rotation runbook
-(`docs/runbooks/registrar-credential-exposure.md`). Turn on Static IPs for the registrar project and the Openprovider allow-list before
-strangers buy.
+(`docs/runbooks/registrar-credential-exposure.md`). Neither is an Openprovider requirement (the allow-list is optional
+there). Decided 2026-10-02 (D-061): the owner and a few people the owner knows personally may buy without them; turn on Static IPs for
+the registrar project and the Openprovider allow-list before the first invite from the waitlist.
 
 ## 1. AWS (production keys)
 
@@ -63,10 +64,20 @@ Check: in the panel, Reseller details shows the USD balance.
    | `OPENPROVIDER_USERNAME` | your Openprovider API login |
    | `OPENPROVIDER_PASSWORD` | its password |
    | `REGISTRAR_RPC_SECRET` | a new random secret, at least 32 characters: `openssl rand -base64 48` (keep it for step 6) |
-   | `MH_REGISTRAR_DAILY_SPEND_OPS` | optional; paid operations a UTC day per function instance, default `5` |
+   | `UPSTASH_REDIS_REST_URL` | the shared store's REST URL (`https://...upstash.io`; step 3a) |
+   | `UPSTASH_REDIS_REST_TOKEN` | its REST token (the read-write one, not the read-only one) |
+   | `MH_REGISTRAR_DAILY_SPEND_OPS` | optional; paid operations a UTC day across every function instance, default `5` |
    | `MH_REGISTRAR_KILL_SWITCH` | optional; `open` (default), `writes_paused` or `all_paused` |
 
    Never put these in the `mosshatch` project: its boot refuses any `OPENPROVIDER_*` variable (`registrar_key_outside_registrar_scope`).
+   **3a. The shared store.** Every function instance must see the same RPC nonces (so a captured request cannot be replayed on another
+   instance) and the same daily count of paid operations. In the `mosshatch-registrar` project: Storage (or Integrations, Marketplace),
+   **Upstash for Redis**, Create, the free plan, primary region `us-east-1` (next to the function), connected to **Production only**.
+   The integration adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or the `UPSTASH_REDIS_REST_*` names); either pair works, so you need
+   not copy them into the table above. Do not connect it to `mosshatch`: the store holds nothing web needs. Redis keeps only nonce markers
+   (expire after about a minute) and one counter a day (expires after two days), never a name, a person or a secret. A live registrar
+   project without it refuses every call (`registrar_shared_store_missing`); when Redis cannot be reached it refuses calls too
+   (`registrar_shared_store_unavailable`, nothing is sent to Openprovider), so an Upstash outage pauses selling and never weakens it.
 4. Settings, Git: set the Ignored Build Step to build production only (the registrar has no Preview variables, so a preview build would
    only answer "not configured"; skipping them keeps its traffic small). Settings, Deployment Protection: leave Standard Protection
    (it protects previews; the production URL must stay reachable by `mosshatch`).
@@ -163,6 +174,8 @@ Any 503 names what is still missing, as codes only:
 | `registrar_rpc_secret_mismatch` | the two projects have different `REGISTRAR_RPC_SECRET` values |
 | `registrar_project_secret_missing` | the registrar project has no (or a short) `REGISTRAR_RPC_SECRET` |
 | `openprovider_credentials_missing` | `OPENPROVIDER_USERNAME` / `OPENPROVIDER_PASSWORD` missing in the registrar project |
+| `registrar_shared_store_missing` | the Upstash store is not connected to the registrar project's Production environment (step 3a) |
+| `registrar_shared_store_unavailable` | the registrar project cannot reach Upstash; check the Upstash console, then redeploy the registrar project |
 | `registrar_scope_missing`, `live_outside_production`, `registrar_provider_unsupported`, `registrar_mode_invalid` | registrar project variables (step 3 table) |
 | `openprovider_sandbox_credentials_in_production`, `openprovider_env_registrar_mode_mismatch` | `OPENPROVIDER_ENV=production` with `MH_REGISTRAR_MODE=live` in the registrar project |
 | `registrar_mode_mismatch` | the registrar project answers in a mode other than live |
@@ -183,6 +196,25 @@ Any 503 names what is still missing, as codes only:
 Check: signed in, the "Mosshatch isn't open yet" banner is gone and searches show prices. In a private window (not signed in) the banner,
 the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show no prices: the demo still asks the
 public registries (RDAP) and never the shop routes, which answer `403 invite_required` to anyone without an invite.
+
+## 8a. Preflight (read-only, nothing is bought or charged)
+
+Before the first purchase, check everything the first purchase would trip over: the registrar project answers, the Openprovider balance
+covers the sell gate, every extension's live price matches `wholesale_prices` (the shop's own price guard runs, so a pass here means no
+`price_not_standard` today), the restricted Stripe key has each permission from step 5, and the four Products exist.
+
+```sh
+vercel env pull --environment=production .env.preflight      # in a checkout linked to the `mosshatch` project
+set -a; . ./.env.preflight; set +a
+node scripts/live-preflight.mjs
+rm .env.preflight
+# ok   prices    .com                       1y upstream USD 11.98 matches; customer pays USD 20.98 before tax
+# ...
+# preflight passed: nothing above stops the first purchase
+```
+It uses only `health`, `getBalance` and `quote` over the signed RPC, and probes Stripe with ids that cannot exist (a granted permission
+answers 404, a missing one 403). Unverified: that Stripe checks a restricted key's permission before it looks the object up; a probe that
+answers anything else prints `unknown`, never `ok`. Run it again any time; a `FAIL` line names the fix.
 
 ## 9. First purchase (a cheap .com)
 
@@ -240,6 +272,8 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
 
 ## Verified, and not
 
+- Before the first purchase, `scripts/live-preflight.mjs` (step 8a) checks the live prices, balance and Stripe key permissions without
+  buying anything (`packages/api/src/golive/preflight.test.ts`, offline).
 - Verified offline (tests, fakes, no network): the web to registrar signed RPC with the Openprovider adapter behind it, the live adapter
   calling `https://api.openprovider.eu/v1` (the host and `/v1` paths in Openprovider's OpenAPI document, fetched 2026-10-01; the older
   `/v1beta` path is not used), every boot reason code, the mode guard (live only with `VERCEL_ENV=production`, a live Stripe key and a live
@@ -252,9 +286,11 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
 - Unverified prices: whether Openprovider's live API quotes the same numbers as its public feed (the price guard refuses any difference),
   whether the .studio non-member promotion (21.99 to 2026-12-31) applies to API orders, and whether a delete inside the add grace period
   credits the balance (the refund drill in the rehearsal checks it).
-- Known gaps for later: the registrar project's nonce store and daily cap are per function instance (no database there); a replayed signed
-  request within 60 seconds on another instance is possible only for someone who captured one, and register is not idempotent upstream
-  but a second create of the same name is refused (346). Static pages (fees, legal) keep the demo banner even for invited accounts.
+- The registrar project's RPC nonces and daily cap live in Upstash Redis (step 3a), shared by every function instance and failing closed;
+  tested against a fake Redis only (`packages/api/src/registrar-rpc/serve.test.ts`), never the live Upstash API.
+- Known gaps for later: register is not idempotent upstream, but a second create of the same name is refused (346). The static pages (fees, legal, waitlist, errors) run no script, so they cannot
+  tell an invited account from a visitor: in the invite build their banner says "Mosshatch is invite-only for now. Unless you have been
+  invited, nothing you hatch is registered or charged.", which is true for both (`scripts/site-mode.mjs`, `bannerKind`).
   Transfer-away and Gate texts follow `domains.registrar`: an Openprovider domain reads "our registrar" and "our registrar's support"
   (who sends Openprovider's transfer-away email is UNVERIFIED); only an `opensrs` domain (the mock and sample path) names OpenSRS and
   Tucows. No email names a registrar: the transfer-in email (`transfer_submitted`) says "our registrar emailed the owner" only when the

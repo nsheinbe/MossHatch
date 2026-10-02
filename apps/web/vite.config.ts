@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { formatUsd, usd, feePerYear } from "@mosshatch/core";
 import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
-import { siteMode, transformHome } from "../../scripts/site-mode.mjs";
+import { bannerKind, siteMode, transformHome } from "../../scripts/site-mode.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
@@ -28,7 +28,7 @@ function staticPrices(): Plugin {
 
 /** Demo or live (scripts/site-mode.mjs): the title, description, canonical URL and share tags, and in demo mode the preview banner. */
 function siteMeta(): Plugin {
-  return { name: "mosshatch-site-meta", transformIndexHtml: (html, ctx) => (ctx.path === "/debug.html" ? html : transformHome(html, siteMode(process.env))) };
+  return { name: "mosshatch-site-meta", transformIndexHtml: (html, ctx) => (ctx.path === "/debug.html" ? html : transformHome(html, siteMode(process.env), bannerKind(process.env))) };
 }
 
 /** Strip comments and indentation from GLSL imported with ?raw (keeps line breaks for #directives). */
