@@ -257,4 +257,7 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   but a second create of the same name is refused (346). Static pages (fees, legal) keep the demo banner even for invited accounts.
   Transfer-away and Gate texts follow `domains.registrar`: an Openprovider domain reads "our registrar" and "our registrar's support"
   (who sends Openprovider's transfer-away email is UNVERIFIED); only an `opensrs` domain (the mock and sample path) names OpenSRS and
-  Tucows. The transfer-in email (`transfer_submitted`) and the account-closed email still name OpenSRS.
+  Tucows. No email names a registrar: the transfer-in email (`transfer_submitted`) says "our registrar emailed the owner" only when the
+  adapter reports that step, which the Openprovider adapter never does (whether Openprovider sends one is UNVERIFIED); the account-closed
+  email says the registrar keeps its records "for as long as registrar rules and the law require", with no period, because Openprovider's
+  privacy policy gives none (source in `docs/design/account-closure-export-erasure.md`, section 5).

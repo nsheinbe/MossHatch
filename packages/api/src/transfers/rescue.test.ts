@@ -152,7 +152,8 @@ describe("Phase 5 exit: no transfer is shown as complete before the adapter conf
     expect(t.owner_deadline_at).not.toBeNull();
     const stage = mailOf(h, "transfer_submitted");
     expect(stage).toHaveLength(1);
-    expect(stage[0]!.text).toMatch(/emailed the owner of owner-says-no\.studio to confirm the transfer/);
+    expect(stage[0]!.text).toMatch(/Our registrar emailed the owner of owner-says-no\.studio to confirm the transfer/);
+    expect(stage[0]!.text).not.toMatch(/OpenSRS|Tucows/);   // even on the mock (OpenSRS) path: the email names no registrar
     expect(h.registrar.ownerApprovalEmails).toHaveLength(1);
     h.registrar.transferIn.ownerDecline(f);
     await pass(h);
