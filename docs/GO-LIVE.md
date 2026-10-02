@@ -24,8 +24,9 @@ vault) can read it (PLAN 4.3b, threat rows 29 and 30). That is the "extra Vercel
 on Pro. Trade-off kept on purpose: the registrar project has no fixed egress IP (no Static IPs, D-005), so Openprovider's optional IP
 allow-list cannot be used yet; a leaked Openprovider password would work from anywhere. Mitigations: 2FA on the Openprovider control panel
 (the API login does not use it), a USD 20 balance as the hard spend ceiling, the spend fuses below, and the rotation runbook
-(`docs/runbooks/registrar-credential-exposure.md`). Turn on Static IPs for the registrar project and the Openprovider allow-list before
-strangers buy.
+(`docs/runbooks/registrar-credential-exposure.md`). Neither is an Openprovider requirement (the allow-list is optional
+there). Decided 2026-10-02 (D-061): the owner and a few people the owner knows personally may buy without them; turn on Static IPs for
+the registrar project and the Openprovider allow-list before the first invite from the waitlist.
 
 ## 1. AWS (production keys)
 
