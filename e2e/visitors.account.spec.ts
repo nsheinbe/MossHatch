@@ -29,8 +29,8 @@ async function signUp(page: Page, request: import("@playwright/test").APIRequest
 const clean = async (page: Page, what: string) => { const v = (await axe(page).analyze()).violations; expect(v.map((x) => `${what}: ${x.id} ${x.nodes[0]?.html.slice(0, 80)}`)).toEqual([]); };
 const openVisitors = async (page: Page) => {
   await page.getByRole("button", { name: "Account" }).click();
-  await page.getByRole("button", { name: "Visitors" }).click();
-  await expect(page.getByRole("region", { name: "Visitors", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Connected apps" }).click();
+  await expect(page.getByRole("region", { name: "Connected apps", exact: true })).toBeVisible();
 };
 
 test("visitors: token with passkey, agent proposal, approval card, OAuth consent, send everyone home", async ({ page, request, baseURL }) => {
@@ -117,9 +117,9 @@ test("visitors: token with passkey, agent proposal, approval card, OAuth consent
   await page.keyboard.press("Escape");
   await openVisitors(page);
   await expect(page.getByText("Connected app").first()).toBeVisible();
-  await page.getByRole("button", { name: "Send all visitors home" }).click();
-  await page.getByRole("button", { name: "Yes, send them all home" }).click();
-  await expect(page.getByText(/Every visitor was sent home/)).toBeVisible();
+  await page.getByRole("button", { name: "Disconnect everything" }).click();
+  await page.getByRole("button", { name: "Yes, disconnect everything" }).click();
+  await expect(page.getByText(/Everything was disconnected/)).toBeVisible();
   await clean(page, "visitors after send-home");
   expect((await request.get("/api/v1/whoami", { headers: { authorization: `Bearer ${token}` } })).status()).toBe(401);
   expect(errors).toEqual([]);

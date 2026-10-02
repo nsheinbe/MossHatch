@@ -64,7 +64,7 @@ export function AccountPanel() {
           {msg && <p role="alert" className="notice">{msg}</p>}
           {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
           <div className="row-actions">
-            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Visitors</button>
+            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Connected apps</button>
             <button type="button" className="btn secondary" aria-pressed={data === "export"} onClick={() => setData("export")}>Download my data</button>
             <button type="button" className="btn secondary" aria-pressed={data === "close"} onClick={() => setData("close")}>Close my account</button>
             <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>

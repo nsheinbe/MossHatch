@@ -47,7 +47,7 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
-  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, apiReachable, set } = useUi();
+  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, accountOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -55,6 +55,10 @@ export function App() {
     // After a hatch the camera frames the newborn; restore the Find view once the card is dismissed.
     if (ready && hatchPhase === "none") handle.world?.setView(view === "grove" || view === "ledger" ? "grove" : "find");
   }, [hatchPhase, ready, view]);
+
+  // Account and Connected apps share the same space: opening one closes the other, whichever button opened it.
+  useEffect(() => { if (accountOpen && useUi.getState().visitorsOpen) set({ visitorsOpen: false }); }, [accountOpen, set]);
+  useEffect(() => { if (visitorsOpen && useUi.getState().accountOpen) set({ accountOpen: false }); }, [visitorsOpen, set]);
 
   // Signing out (or losing the session) takes the account's domains out of the scene and closes their panel.
   useEffect(() => { if (!account) { dropRealGrove(); set({ domainPanel: null, view: useUi.getState().view === "ledger" ? "find" : useUi.getState().view }); } }, [account, set]);

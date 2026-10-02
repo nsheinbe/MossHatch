@@ -31,7 +31,7 @@ function describe(f: RequestFacts): string {
 export async function requestNotice(ctx: AppContext, c: PoolClient, userId: string, requestId: string, f: RequestFacts): Promise<void> {
   await send(ctx, c, userId, "agent.request", `agent.request:${requestId}`, {
     subject: "One of your tokens is waiting for your decision",
-    text: `Your token "${f.bindingName}" asked to ${describe(f)}.\n\nNothing happens unless you decide in Mosshatch. Sign in, open Account, then Visitors. The request expires on its own after 72 hours.\n\nIf you did not expect this, send every visitor home from the same place.\n`,
+    text: `Your token "${f.bindingName}" asked to ${describe(f)}.\n\nNothing happens unless you decide in Mosshatch. Sign in, open Account, then Connected apps. The request expires on its own after 72 hours.\n\nIf you did not expect this, use Disconnect everything in the same place.\n`,
   });
 }
 
@@ -39,7 +39,7 @@ export async function requestNotice(ctx: AppContext, c: PoolClient, userId: stri
 export async function approvedNotice(ctx: AppContext, c: PoolClient, userId: string, requestId: string, f: RequestFacts): Promise<void> {
   await send(ctx, c, userId, "agent.approved", `agent.approved:${requestId}`, {
     subject: "You approved a request from one of your tokens",
-    text: `At ${when(ctx.clock.now())} you used your passkey to let your token "${f.bindingName}" ${describe(f)}.\n\n${f.kind === "register" || f.kind === "renew" ? "Nothing is charged until you pay on Stripe. " : ""}If this was not you, sign in and send every visitor home, then write to security@mosshatch.com.\n`,
+    text: `At ${when(ctx.clock.now())} you used your passkey to let your token "${f.bindingName}" ${describe(f)}.\n\n${f.kind === "register" || f.kind === "renew" ? "Nothing is charged until you pay on Stripe. " : ""}If this was not you, sign in and use Disconnect everything under Account, Connected apps, then write to security@mosshatch.com.\n`,
   }, true);
 }
 
@@ -62,7 +62,7 @@ export async function prodWriteNotice(ctx: AppContext, c: PoolClient, userId: st
 /** "Send all visitors home" finished. */
 export async function sentHomeNotice(ctx: AppContext, c: PoolClient, userId: string, counts: { bindings: number }): Promise<void> {
   await send(ctx, c, userId, "visitors.sent_home", `visitors.sent_home:${crypto.randomUUID()}`, {
-    subject: "Every visitor was sent home",
+    subject: "Everything was disconnected from your Mosshatch account",
     text: `At ${when(ctx.clock.now())} every token and connected app on your Mosshatch account was revoked (${counts.bindings} in all), and every waiting request was declined.\n\nIf this was not you, sign in and check your passkeys, then write to security@mosshatch.com.\n`,
   }, true);
 }

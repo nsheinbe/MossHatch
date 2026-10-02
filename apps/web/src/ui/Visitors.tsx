@@ -89,7 +89,7 @@ export default function Visitors() {
     }
   };
   const revoke = async (v: Visitor) => { try { await revokeVisitor(v.id); done(`Revoked ${v.name}. It no longer works anywhere.`); } catch (e) { setMsg(explainVisitor(e)); } };
-  const home = async () => { try { const r = await sendHome(); setConfirmHome(false); done(`Every visitor was sent home (${r.revoked} revoked). Waiting requests were declined.`); } catch (e) { setMsg(explainVisitor(e)); } };
+  const home = async () => { try { const r = await sendHome(); setConfirmHome(false); done(`Everything was disconnected (${r.revoked} revoked). Waiting requests were declined.`); } catch (e) { setMsg(explainVisitor(e)); } };
   const saveThreshold = async (ev: React.FormEvent) => { ev.preventDefault(); try { await setThreshold(minor(threshold)); setMsg("Saved."); } catch (e) { setMsg(explainVisitor(e)); } };
 
   const live = (data?.visitors ?? []).filter((v) => !v.revoked_at);
@@ -97,7 +97,7 @@ export default function Visitors() {
   return (
     <main>
       <div className="panel ledger visitors" role="region" aria-labelledby="visitors-h">
-        <div className="head"><h2 id="visitors-h" ref={head} tabIndex={-1}>Visitors</h2></div>
+        <div className="head"><h2 id="visitors-h" ref={head} tabIndex={-1}>Connected apps</h2></div>
         <div className="body">
           <p className="notice">Apps, AI agents and command-line tools you have let act for you. None of them can buy anything or change sensitive DNS without your passkey, and you can take access back at any time.</p>
           {msg && <p role="status" className="notice">{msg}</p>}
@@ -129,7 +129,7 @@ export default function Visitors() {
 
               <section className="section" aria-labelledby="who-h">
                 <h3 id="who-h">Who has access</h3>
-                {live.length === 0 ? <p>Nothing has access yet. Create a token below to let an app or agent work with your names.</p> : (
+                {live.length === 0 ? <p>Nothing is connected yet. Create a token below to let an app or agent work with your names.</p> : (
                   <div className="table-wrap">
                     <table className="data">
                       <caption className="sr-only">Tokens and connected apps</caption>
@@ -225,14 +225,14 @@ export default function Visitors() {
               </section>
 
               <section className="section" aria-labelledby="home-h">
-                <h3 id="home-h">Send all visitors home</h3>
+                <h3 id="home-h">Disconnect everything</h3>
                 <p>Revokes every token, command-line sign-in and connected app at once, and declines every waiting request. It works even when something is going wrong.</p>
                 {confirmHome ? (
-                  <div className="row-actions" role="group" aria-label="Confirm sending every visitor home">
-                    <button type="button" className="btn primary" onClick={() => void home()}>Yes, send them all home</button>
+                  <div className="row-actions" role="group" aria-label="Confirm disconnecting everything">
+                    <button type="button" className="btn primary" onClick={() => void home()}>Yes, disconnect everything</button>
                     <button type="button" className="btn secondary" onClick={() => setConfirmHome(false)}>Cancel</button>
                   </div>
-                ) : <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setConfirmHome(true)}>Send all visitors home</button></div>}
+                ) : <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setConfirmHome(true)}>Disconnect everything</button></div>}
               </section>
             </>
           )}
