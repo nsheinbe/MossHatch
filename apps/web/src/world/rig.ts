@@ -18,6 +18,7 @@ export class CameraRig {
   view: ViewName = "find";
   private detailTarget = new THREE.Vector3();
   private sheetOffset = 0; // world-space sideways offset so the subject sits beside the panel
+  private sheetLift = 0;   // world-space vertical offset of the look point (negative: the subject sits higher, above a bottom sheet)
 
   setPointer(nx: number, ny: number) { this.pointer.set(nx, ny); }
   shake(a: number) { if (!this.calm) this.shakeAmt = Math.max(this.shakeAmt, a); }
@@ -37,10 +38,11 @@ export class CameraRig {
     return w / (t * this.aspect);
   }
 
-  setView(v: ViewName, target?: THREE.Vector3, offset = 0) {
+  setView(v: ViewName, target?: THREE.Vector3, offset = 0, lift = 0) {
     this.view = v;
     if (target) this.detailTarget.copy(target);
     this.sheetOffset = offset;
+    this.sheetLift = lift;
     this.retarget();
   }
 
@@ -67,7 +69,7 @@ export class CameraRig {
         const t = this.detailTarget;
         const d = Math.max(3.4, this.fitDistance(portrait ? 1.1 : 1.6));
         this.goal.pos.set(t.x + this.sheetOffset * 0.6, t.y + 1.1, t.z + d);
-        this.goal.look.set(t.x + this.sheetOffset, t.y + (portrait ? 0.35 : 0.5), t.z);
+        this.goal.look.set(t.x + this.sheetOffset, t.y + (portrait ? 0.35 : 0.5) + this.sheetLift, t.z);
         break;
       }
       case "hatch": {

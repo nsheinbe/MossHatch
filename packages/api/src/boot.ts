@@ -25,6 +25,7 @@ import { installClosureFromEnv } from "./closure/services.ts";
 import { inviteOnlyFromEnv, liveGateFromEnv } from "./waitlist/gate.ts";
 import { configurePriceTables, defaultPriceTable } from "./pricing/registrar.ts";
 import { spendFuseFromEnv } from "./compliance/velocity.ts";
+import { installLauncherFromEnv } from "./launcher/index.ts";
 import { buildProductionAws, probeProductionAws, productionAwsFromEnv, type AwsDeps, type ProductionAwsAdapters } from "./aws/production.ts";
 // api/index.ts runs each request inside this, so the AWS credential providers can read the request's OIDC token.
 export { runWithOidcToken } from "./aws/oidc.ts";
@@ -158,5 +159,8 @@ export async function bootFromEnv(env: Record<string, string | undefined>, deps:
   (ctx.services as Record<string, unknown>).liveGate = liveGateFromEnv(env, config.mode);
   // The dogfood spend fuse: a live process takes at most 3 registrations a day and 10 in all unless MH_LIVE_* says fewer or more.
   (ctx.services as Record<string, unknown>).spendFuse = spendFuseFromEnv(env, config.livemode);
+  // The brand launcher (docs/LAUNCHER.md): optional. An incomplete configuration leaves it off with reason codes; the app boots anyway.
+  const launcherOff = installLauncherFromEnv(ctx, env, config.mode);
+  if (launcherOff.length && (env.MH_FAKE_LAUNCHER === "1" || env.ANTHROPIC_API_KEY || env.SLATE_PARTNER_URL)) console.warn(JSON.stringify({ event: "launcher_not_configured", reasons: launcherOff }));
   return { router, ctx };
 }

@@ -51,6 +51,10 @@ export interface HandlerResult {
   cookies?: string[];
   /** Raw body for non-JSON responses (email-action confirm pages). */
   html?: string;
+  /** A Server-Sent Events stream (the launcher's creature turn): sent as `text/event-stream`, never cached or buffered. */
+  sse?: ReadableStream<Uint8Array>;
+  /** A file download (the launcher's site export): sent as an attachment with its own type, never rendered inline. */
+  download?: { body: Uint8Array<ArrayBuffer>; contentType: string; filename: string };
 }
 
 export type Handler = (req: HandlerReq) => Promise<HandlerResult>;

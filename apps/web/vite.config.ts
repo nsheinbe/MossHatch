@@ -89,6 +89,24 @@ function devApi(): Plugin {
             res.setHeader("content-type", "application/json");
             return res.end(JSON.stringify(out));
           }
+          if (url.startsWith("/__dev/slate/preview/")) {
+            // The fake Slate's preview pages (MH_FAKE_LAUNCHER=1): what Slate's own preview host serves in production.
+            const fake: any = app.ctx.services.launcher?.fakeSlate;
+            if (!fake) { res.statusCode = 404; return res.end(); }
+            res.setHeader("content-type", "text/html; charset=utf-8");
+            return res.end(fake.previewHtml(decodeURIComponent(url.split("/").pop()!.split("?")[0]!)));
+          }
+          if (url.startsWith("/__dev/launcher-credits")) {
+            // The owner's credit script (scripts/launcher-credits.mjs --grant) for one address, and the flag on.
+            const q = new URL(url, origin).searchParams;
+            const to = (q.get("email") ?? "").toLowerCase();
+            const cents = Number(q.get("cents") ?? "1000");
+            const u = (await app.ctx.cron.query("select id from users where lower(email) = $1", [to])).rows[0];
+            await app.ctx.cron.query("update flags set value = 'true'::jsonb where name = 'launcher_enabled'");
+            if (u && Number.isInteger(cents) && cents > 0) await app.ctx.cron.query("insert into launcher_credits (user_id, delta_minor, kind, created_by) values ($1, $2, 'grant', 'dev')", [u.id, cents]);
+            res.setHeader("content-type", "application/json");
+            return res.end(JSON.stringify({ ok: !!u }));
+          }
           if (url.startsWith("/__dev/transfer-away")) {
             // The mock registrar's out-of-band simulator: someone at another registrar starts a transfer of this name. The poll runs at once
             // (in production it runs every 5 minutes) so the page can show "needs attention" and the Stop button.
@@ -147,6 +165,12 @@ function devApi(): Plugin {
           out.headers.forEach((v, k) => { if (k !== "set-cookie") res.setHeader(k, v); });
           const sc = out.headers.getSetCookie();
           if (sc.length) res.setHeader("set-cookie", sc);
+          // The launcher's creature turn streams (Server-Sent Events): pass each chunk on as it comes.
+          if ((out.headers.get("content-type") ?? "").startsWith("text/event-stream") && out.body) {
+            res.flushHeaders?.();
+            for await (const chunk of out.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
+            return res.end();
+          }
           res.end(Buffer.from(await out.arrayBuffer()));
         } catch (e) {
           res.statusCode = 503; res.setHeader("content-type", "application/json");

@@ -22,6 +22,7 @@ export function CardPanel() {
       <div className="head"><h2 ref={head} tabIndex={-1}>{card.domain} hatched</h2></div>
       <div className="body">
         <PracticeHatchNotice domain={card.domain} />
+        {card.practice && <p className="notice"><span className="sample-tag">Practice hatch.</span> Nothing was bought, and {card.domain} is not registered to you.</p>}
         <img className="card-img" src={card.image} alt={`Portrait of ${card.domain}, a ${card.species}`} width={512} height={640} />
         <p className={`tier tier-${card.tier}`} style={{ marginTop: 10 }}><strong>{card.tierLabel}</strong></p>
         <p className="fineprint">Short, clean names hatch rarer creatures.</p>
@@ -31,7 +32,8 @@ export function CardPanel() {
         <p>{card.moss}</p>
         <p className="notice">Its card address will be <span style={{ fontWeight: 700 }}>{card.address}</span>. Cards are not live yet.</p>
         <div className="row-actions">
-          <button type="button" className="btn primary" onClick={again}>Hatch another</button>
+          <button type="button" className="btn primary" onClick={() => set({ talk: { domain: card.domain, source: "practice" }, hatchPhase: "none" })}>Talk to {card.species}</button>
+          <button type="button" className="btn secondary" onClick={again}>Hatch another</button>
           <button type="button" className="btn secondary" onClick={copy}>{copied ? "Copied" : "Copy card link"}</button>
         </div>
       </div>

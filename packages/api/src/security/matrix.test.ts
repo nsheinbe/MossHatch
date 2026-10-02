@@ -5,6 +5,7 @@ import { buildRouter } from "../routes.ts";
 import type { Route } from "../http/types.ts";
 import { mintToken } from "../util/token.ts";
 import { sha256 } from "../util/bytes.ts";
+import { buildServices, launcherConfigFromEnv } from "../launcher/index.ts";
 
 /**
  * ST-91, ST-92, ST-93, ST-67, ST-137, ST-16: the cross-tenant matrix and the principal walks, both GENERATED from the route
@@ -42,6 +43,10 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/agent\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
   // Account closure and export (closure module): A's ready export.
   { match: /^\/api\/v1\/account\/exports\/:id/, param: "id", id: () => ids.accountExport! },
+  // The brand launcher (docs/LAUNCHER.md): A's conversation and A's build. The launcher is switched on for everyone below, so
+  // B passes the gate and the refusal comes from ownership, not from the flag.
+  { match: /^\/api\/v1\/launcher\/conversations\/:id/, param: "id", id: () => ids.launcherConversation! },
+  { match: /^\/api\/v1\/launcher\/builds\/:id/, param: "id", id: () => ids.launcherBuild! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
@@ -76,6 +81,12 @@ beforeAll(async () => {
   const oc = (await h.app.db.owner.query("insert into oauth_clients (client_id, registration, redirect_uris) values ('mhc_matrixclient00000000000000000000','dcr','{https://matrix.example/cb}') returning id")).rows[0].id;
   ids.oauthRequest = (await h.app.db.owner.query("insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, created_at, expires_at) values ($1,'https://matrix.example/cb',$2,$3, now(), now() + interval '1 hour') returning id", [oc, "a".repeat(43), a.userId])).rows[0].id;
   ids.accountExport = (await h.app.db.owner.query("insert into account_exports (user_id, state, ready_at, expires_at, storage_ref) values ($1,'ready', now(), now() + interval '7 days', 'db:x') returning id", [a.userId])).rows[0].id;
+  (h.app.ctx.services as Record<string, unknown>).launcher = buildServices(h.app.ctx, launcherConfigFromEnv({ MH_FAKE_LAUNCHER: "1", MH_LAUNCHER_INVITE_ONLY: "0" }, "local").config!);
+  await h.app.db.owner.query("update flags set value = 'true'::jsonb where name = 'launcher_enabled'");
+  ids.launcherConversation = (await h.app.db.owner.query("insert into launcher_conversations (user_id, domain, source, spec, persona, model) values ($1,'alice-launch.com','practice','{}','fixture','fixture-model') returning id", [a.userId])).rows[0].id;
+  ids.launcherBuild = (await h.app.db.owner.query(
+    "insert into launcher_builds (user_id, conversation_id, proposal_id, kind, brief, slate_quote_id, slate_price_minor, price_minor, currency, quote_expires_at, status, slate_build_id) values ($1,$2,'p1','website','{}','q1',100,150,'usd', now() + interval '1 hour','ready','sb1') returning id",
+    [a.userId, ids.launcherConversation])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;

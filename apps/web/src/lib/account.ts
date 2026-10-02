@@ -9,6 +9,8 @@ export interface Me {
   recovery?: { banner?: string | null } | null;
   /** Invite-only live gate (server): whether this account may use the shop. Absent from older servers, read as no in an invite build. */
   live_access?: boolean;
+  /** Whether this account may talk to its creatures (the launcher: flag, configuration, invite). Absent or false: the teaser. */
+  launcher?: boolean;
 }
 
 export async function whoAmI(): Promise<Me | null> {

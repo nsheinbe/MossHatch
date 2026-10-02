@@ -231,6 +231,18 @@ function finish(r: HandlerResult): Response {
   const headers = new Headers(SECURITY_HEADERS);
   for (const [k, v] of Object.entries(r.headers ?? {})) headers.set(k, v);
   for (const c of r.cookies ?? []) headers.append("Set-Cookie", c);
+  if (r.sse) {
+    headers.set("Content-Type", "text/event-stream; charset=utf-8");
+    headers.set("Cache-Control", "no-store, no-transform");
+    headers.set("X-Accel-Buffering", "no");
+    return new Response(r.sse, { status: r.status ?? 200, headers });
+  }
+  if (r.download) {
+    headers.set("Content-Type", r.download.contentType);
+    headers.set("Content-Disposition", `attachment; filename="${r.download.filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`);
+    headers.set("Content-Security-Policy", "default-src 'none'; sandbox");
+    return new Response(r.download.body, { status: r.status ?? 200, headers });
+  }
   if (r.html !== undefined) {
     headers.set("Content-Type", "text/html; charset=utf-8");
     headers.set("Referrer-Policy", "no-referrer");

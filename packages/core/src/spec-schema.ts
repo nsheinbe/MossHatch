@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   ACCESSORIES, BIO_RE, CHARMS, COAT_PATTERNS, CRACKS, EARS, EFFECTS, EGG_PATTERNS, EMERGES, IDLES, NAME_RE, PARTICLES, REACTS, SPECIES,
-  TAILS, TIERS, WINGS, type CreatureSpec,
+  TAILS, TIERS, VOICE_TIMBRES, WINGS, type CreatureSpec,
 } from "./spec.ts";
 
 /**
@@ -44,6 +44,7 @@ export const CreatureSpecSchema = z.strictObject({
     react: z.enum(REACTS),
     pitch: z.number().min(0.8).max(1.35),
   }),
+  voice: z.strictObject({ timbre: z.enum(VOICE_TIMBRES), rate: z.number().min(0.7).max(1.4), pitch: z.number().min(0.7).max(1.4) }).optional(),
 }) satisfies z.ZodType<CreatureSpec>;
 
 export function parseCreatureSpec(input: unknown): CreatureSpec {

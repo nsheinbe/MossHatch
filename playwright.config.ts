@@ -23,6 +23,8 @@ export default defineConfig({
     { name: "public", testMatch: /public\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
     { name: "publish", testMatch: /publish\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
     { name: "invite", testMatch: /invite\.spec\.ts/, use: { baseURL: "http://localhost:5176", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
+    // The brand launcher with its fakes (MH_FAKE_LAUNCHER=1 in scripts/e2e-server.mjs): no model or Slate call from tests.
+    { name: "launcher", testMatch: /launcher\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
     { name: "account", testMatch: /account\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
   ],
 });

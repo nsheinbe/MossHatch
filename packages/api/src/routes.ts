@@ -16,6 +16,7 @@ import { registerAgentRoutes } from "./agents/routes.ts";
 import { registerCspRoutes } from "./csp/report.ts";
 import { registerClosureRoutes } from "./closure/routes.ts";
 import { requireLiveAccess } from "./waitlist/gate.ts";
+import { registerLauncher } from "./launcher/routes.ts";
 
 /** The route table. Each module adds one registration line. */
 export function buildRouter(): Router {
@@ -37,5 +38,6 @@ export function buildRouter(): Router {
   registerAgentRoutes(router);
   registerCspRoutes(router);
   registerClosureRoutes(router);
+  registerLauncher(router);
   return router;
 }
