@@ -3,7 +3,7 @@ import { MockRegistrarPort } from "@mosshatch/registrar/mock-port";
 import { loadConfig, modeFromEnv } from "./config/modeguard.ts";
 import { LocalKms, LocalPii } from "./kms.ts";
 import { systemClock, type AppContext } from "./ports.ts";
-import { createEmailTransport } from "./mail/transport.ts";
+import { createEmailTransport, resendFromEnv } from "./mail/transport.ts";
 import { NodeDnsResolver } from "./mail/dns.ts";
 import { MemoryAnchorSink } from "./ops/anchor.ts";
 import { MemoryErasureLedger } from "./ops/erasure.ts";
@@ -85,6 +85,7 @@ async function productionPreflight(env: Record<string, string | undefined>, deps
   if (!env.DATABASE_URL) reasons.push("database_not_configured");
   if (!env.MH_ORIGIN) reasons.push("origin_not_configured");
   if (!env.CRON_SECRET || env.CRON_SECRET.length < 32) reasons.push("cron_secret_not_configured");
+  if (!env.RESEND_API_KEY) reasons.push("email_not_configured");
   const aws = productionAwsFromEnv(env);
   reasons.push(...aws.reasons);
   let adapters: ProductionAwsAdapters | null = null;
@@ -115,7 +116,7 @@ export async function bootFromEnv(env: Record<string, string | undefined>, deps:
     clock: systemClock,
     kms: production ? production.kms : root ? new LocalKms(Buffer.from(root)) : new LocalKms(),
     pii: production ? production.pii : root ? new LocalPii(Buffer.from(root)) : new LocalPii(),
-    email: createEmailTransport(config, { log: (l) => console.info(l) }),
+    email: createEmailTransport(config, { log: (l) => console.info(l), resend: resendFromEnv(env) }),
     config,
     services: {},
   };
