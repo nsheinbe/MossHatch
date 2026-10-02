@@ -33,6 +33,8 @@ function built(spec: CreatureSpec): Built {
 }
 const EMPTY = new THREE.BufferGeometry();
 
+/** Walkers stay this far from the pool's centre. */
+const KEEP_R = POOL_R + 0.5;
 const SPEED: Record<string, number> = { fox: 0.9, hare: 1.0, beetle: 0.55, hedgehog: 0.5, owl: 0.5, koi: 0.6, moth: 1.1, salamander: 0.6, spiritfox: 0.8 };
 const MOONRIM = new THREE.Color(0.55, 0.66, 1.0);
 const _v = new THREE.Vector3();
@@ -55,6 +57,17 @@ export interface CreatureFx {
   burst?(kind: Particle, hue: number, p: THREE.Vector3, count: number): void;
 }
 
+/** Whether the straight walk from (ax, az) to (bx, bz) cuts through the pool's keep-out ring. */
+function crossesPool(ax: number, az: number, bx: number, bz: number) {
+  const ex = bx - ax, ez = bz - az;
+  const len2 = ex * ex + ez * ez;
+  if (len2 < 1e-6) return false;
+  const k = Math.min(1, -(ax * ex + az * ez) / len2);
+  // Heading away from the centre never crosses it.
+  if (k <= 0) return false;
+  return Math.hypot(ax + ex * k, az + ez * k) < KEEP_R + 0.1;
+}
+
 export class Creature {
   readonly id: string;
   readonly spec: CreatureSpec;
@@ -68,6 +81,9 @@ export class Creature {
   height = 1;
   private target = new THREE.Vector3();
   private waitLeft = 0;
+  /** Closest the creature has come to its current target, and how long since that last improved. */
+  private bestD = Infinity;
+  private stuckT = 0;
   private speed: number;
   private phase: number;
   private mat: THREE.ShaderMaterial;
@@ -145,11 +161,16 @@ export class Creature {
     const a = this.rnd() * Math.PI * 2;
     const r = 4.3 + this.rnd() * 3.2;
     this.target.set(Math.cos(a) * r, 0, Math.sin(a) * r * 0.8);
-    this.waitLeft = 0;
+    // The squashed ellipse can dip inside the pool bank; push such points back out.
+    const tr = Math.hypot(this.target.x, this.target.z);
+    if (tr < KEEP_R + 0.4) this.target.multiplyScalar((KEEP_R + 0.4) / tr);
+    this.resetProgress();
   }
 
+  private resetProgress() { this.waitLeft = 0; this.bestD = Infinity; this.stuckT = 0; }
+
   /** Send the creature toward a ground point (used when a demo creature walks into the trees). */
-  goTo(x: number, z: number) { this.target.set(x, 0, z); this.waitLeft = 0; }
+  goTo(x: number, z: number) { this.target.set(x, 0, z); this.resetProgress(); }
 
   /** The reaction to a tap, from the spec. */
   react(fx?: CreatureFx) {
@@ -188,19 +209,32 @@ export class Creature {
       } else {
         const dx = this.target.x - this.pos.x, dz = this.target.z - this.pos.z;
         const d = Math.hypot(dx, dz);
-        if (d < 0.15) { this.pickTarget(); this.waitLeft = 1 + this.rnd() * 3; }
+        // Give up on a target it has made no headway toward, so it never walks in place.
+        if (d < this.bestD - 0.05) { this.bestD = d; this.stuckT = 0; } else this.stuckT += dt;
+        if (d < 0.15 || this.stuckT > 2.5) { this.pickTarget(); this.waitLeft = 1 + this.rnd() * 3; }
         else {
-          const want = Math.atan2(dx, dz);
+          let wx = dx, wz = dz;
+          const r = Math.hypot(this.pos.x, this.pos.z);
+          if (!flies && r > 1e-3 && crossesPool(this.pos.x, this.pos.z, this.target.x, this.target.z)) {
+            // Walk round the pool's edge, the short way, instead of into the water.
+            const side = this.pos.x * this.target.z - this.pos.z * this.target.x > 0 ? 1 : -1;
+            const out = Math.max(0, KEEP_R + 0.3 - r);
+            wx = (-this.pos.z * side + this.pos.x * out) / r;
+            wz = (this.pos.x * side + this.pos.z * out) / r;
+          }
+          const want = Math.atan2(wx, wz);
           let da = want - this.heading;
           da = Math.atan2(Math.sin(da), Math.cos(da));
-          this.heading += da * Math.min(1, dt * 3);
-          const v = this.speed * slow * Math.min(1, d);
+          this.heading += da * Math.min(1, dt * 4);
+          // Slow to turn on the spot rather than striding off the wrong way.
+          const facing = Math.max(0, (Math.cos(da) + 0.3) / 1.3);
+          const v = this.speed * slow * Math.min(1, d) * facing;
           this.pos.x += Math.sin(this.heading) * v * dt;
           this.pos.z += Math.cos(this.heading) * v * dt;
           moving = Math.min(1, v / 0.6);
           // Keep out of the pool.
-          const r = Math.hypot(this.pos.x, this.pos.z);
-          if (!flies && r < POOL_R + 0.5) { this.pos.x *= (POOL_R + 0.5) / r; this.pos.z *= (POOL_R + 0.5) / r; this.pickTarget(); }
+          const nr = Math.hypot(this.pos.x, this.pos.z);
+          if (!flies && nr < KEEP_R && nr > 1e-3) { this.pos.x *= KEEP_R / nr; this.pos.z *= KEEP_R / nr; }
         }
       }
     }
