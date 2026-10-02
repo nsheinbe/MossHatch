@@ -1,6 +1,7 @@
 # Owner-run, manual only (docs/GO-LIVE.md steps 4 and 8): applies pending migrations, publishes the legal documents,
-# sets the sell gate floor, then (optionally) emails one waitlist invite. The secrets live in GitHub (Settings, Secrets and
-# variables, Actions): DATABASE_URL_OWNER (Neon owner role) and RESEND_API_KEY. Both scripts print names and counts only.
+# sets the sell gate floor, then (optionally) emails one waitlist invite and (optionally) creates the four Stripe Products checkout
+# needs (step 5). The secrets live in GitHub (Settings, Secrets and variables, Actions): DATABASE_URL_OWNER (Neon owner role),
+# RESEND_API_KEY and, for the Stripe step, STRIPE_SECRET_KEY (the rk_live_ key). The scripts print names, counts and ids only.
 name: go-live database
 on:
   workflow_dispatch:
@@ -13,6 +14,11 @@ on:
         description: "Waitlist address to invite (leave empty to skip)"
         required: false
         default: ""
+      stripe_catalog:
+        description: "Create the Stripe Products checkout needs (idempotent; needs the STRIPE_SECRET_KEY secret)"
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 jobs:
@@ -37,3 +43,8 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL: ${{ inputs.invite_email }}
         run: node scripts/waitlist-invite.mjs --email "$EMAIL"
+      - name: stripe products
+        if: ${{ inputs.stripe_catalog }}
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: node scripts/stripe-catalog.mjs
