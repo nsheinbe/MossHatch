@@ -29,7 +29,20 @@ async function handle(request: Request): Promise<Response> {
   if ("error" in b) {
     return new Response(JSON.stringify({ error: { code: "not_configured", reason: b.error } }), { status: 503, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
-  return b.router.dispatch(b.ctx, request);
+  return b.router.dispatch(b.ctx, withoutRewriteParam(request));
+}
+
+/**
+ * Vercel's rewrite ("/api/:path*" -> "/api/index" in vercel.json) adds the captured segment as a `path` query parameter. It carries
+ * nothing of the caller's, and routes that refuse unknown parameters (search, quote) would answer 400 unexpected_param, so it is
+ * removed before the router sees the request. No route reads a parameter called `path`.
+ */
+function withoutRewriteParam(request: Request): Request {
+  const url = new URL(request.url);
+  if (!url.searchParams.has("path")) return request;
+  url.searchParams.delete("path");
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  return new Request(url, { method: request.method, headers: request.headers, body: hasBody ? request.body : undefined, redirect: request.redirect, signal: request.signal, ...(hasBody ? { duplex: "half" } : {}) } as RequestInit);
 }
 
 export default {
