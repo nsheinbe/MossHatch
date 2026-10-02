@@ -37,16 +37,16 @@ export async function makePerson(k: Kit, tag: string, o: { second?: boolean; reg
   return { user, key, login: email, second, registrantAddr };
 }
 
-/** Register the name at the mock registrar and record it as the person's domain. */
-export async function makeDomain(k: Kit, p: Person, fqdn: string, o: { registrantEmail?: string } = {}): Promise<{ id: string; fqdn: string }> {
+/** Register the name at the mock registrar and record it as the person's domain (`registrar` is the `domains.registrar` value, 'mock' by default). */
+export async function makeDomain(k: Kit, p: Person, fqdn: string, o: { registrantEmail?: string; registrar?: string } = {}): Promise<{ id: string; fqdn: string }> {
   const reg = { ...REGISTRANT, email: o.registrantEmail ?? p.registrantAddr };
   k.registrar.setKind(fqdn, "available");
   await k.registrar.register({ fqdn, years: 1, regUsername: "u" + Math.random().toString(36).slice(2, 10), regPassword: "pw" + Math.random().toString(36).slice(2, 16), registrant: reg });
   const st = (await k.registrar.getDomain(fqdn))!;
   const row = (await k.app.db.owner.query(
     `insert into domains (user_id, fqdn_ascii, tld, registrar, state, registered_at, registry_created_at, expires_at, locked, nameservers, dns_hosted_here, livemode)
-     values ($1,$2,$3,'mock','registered',$4,$4,$5,$6,$7,true,false) returning id`,
-    [p.user.userId, fqdn, fqdn.slice(fqdn.indexOf(".") + 1), k.app.clock.now(), st.expiresAt, st.locked, st.nameservers])).rows[0];
+     values ($1,$2,$3,$8,'registered',$4,$4,$5,$6,$7,true,false) returning id`,
+    [p.user.userId, fqdn, fqdn.slice(fqdn.indexOf(".") + 1), k.app.clock.now(), st.expiresAt, st.locked, st.nameservers, o.registrar ?? "mock"])).rows[0];
   return { id: row.id, fqdn };
 }
 

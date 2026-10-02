@@ -21,7 +21,7 @@ export const FUSE_LIMITS = { code_issue: 5, unlock: 10, ns_change: 20, contact_c
 export type FuseClass = keyof typeof FUSE_LIMITS;
 
 export interface DomainRow {
-  id: string; user_id: string; fqdn_ascii: string; tld: string; state: string; locked: boolean; nameservers: string[];
+  id: string; user_id: string; fqdn_ascii: string; tld: string; registrar: string; state: string; locked: boolean; nameservers: string[];
   ds_present: boolean; dns_hosted_here: boolean; dispute_lock_state: string | null; released_at: Date | null; livemode: boolean;
   auto_renew: boolean; expires_at: Date | null; registry_created_at: Date | null;
 }

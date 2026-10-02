@@ -275,7 +275,9 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   credits the balance (the refund drill in the rehearsal checks it).
 - Known gaps for later: the registrar project's nonce store and daily cap are per function instance (no database there); a replayed signed
   request within 60 seconds on another instance is possible only for someone who captured one, and register is not idempotent upstream
-  but a second create of the same name is refused (346). Transfer-away and Gate texts still name OpenSRS and Tucows. The static pages (fees,
-  legal, waitlist, errors) run no script, so they cannot tell an invited account from a visitor: in the invite build their banner says
-  "Mosshatch is invite-only for now. Unless you have been invited, nothing you hatch is registered or charged.", which is true for both
-  (`scripts/site-mode.mjs`, `bannerKind`).
+  but a second create of the same name is refused (346). The static pages (fees, legal, waitlist, errors) run no script, so they cannot
+  tell an invited account from a visitor: in the invite build their banner says "Mosshatch is invite-only for now. Unless you have been
+  invited, nothing you hatch is registered or charged.", which is true for both (`scripts/site-mode.mjs`, `bannerKind`).
+  Transfer-away and Gate texts follow `domains.registrar`: an Openprovider domain reads "our registrar" and "our registrar's support"
+  (who sends Openprovider's transfer-away email is UNVERIFIED); only an `opensrs` domain (the mock and sample path) names OpenSRS and
+  Tucows. The transfer-in email (`transfer_submitted`) and the account-closed email still name OpenSRS.
