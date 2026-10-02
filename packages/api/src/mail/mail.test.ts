@@ -249,6 +249,14 @@ describe("ST-149 mail contains no vault secret, bearer token or approval link", 
     expect(buildMail("signup_code", SAMPLE.signup_code as never, { to: ["x@example.com"], dedupeKey: "d2" }).klass).toBe("A");
     expect(buildMail("receipt", SAMPLE.receipt as never, { to: ["x@example.com"], dedupeKey: "d3" }).klass).toBe("C");
   });
+  it("no email names a registrar, and account_closed states no registrar retention period (live names are at Openprovider)", () => {
+    const owner = renderMail("transfer_submitted", { ...SAMPLE.transfer_submitted, stage: "pending_owner" } as never).text;
+    expect(owner).toContain("Our registrar emailed the owner of example-name.com to confirm the transfer. Someone must confirm it there by 2026-10-06 12:00 UTC");
+    const closed = renderMail("account_closed", SAMPLE.account_closed as never).text;
+    expect(closed).toContain("Our registrar keeps its own registration and payment records for as long as registrar rules and the law require.");
+    expect(closed).not.toMatch(/\d+ (years?|months?)/);
+    for (const text of [owner, ...MAIL_KINDS.map((k) => renderMail(k, SAMPLE[k] as never).text)]) expect(text).not.toMatch(/OpenSRS|Tucows|Openprovider/);
+  });
   it("the receipt formats money from minor units", () => {
     expect(renderMail("receipt", { ...SAMPLE.receipt, totalMinor: "5", taxMinor: "0" } as never).text).toContain("USD 0.05");
     expect(renderMail("receipt", SAMPLE.receipt as never).text).toContain("USD 21.98");

@@ -43,7 +43,8 @@ The Privacy Notice says erased data may persist in database history for the rest
 | Stripe | Delete the customer | Charges and refunds stay in Stripe's ledger under their own retention. |
 | Resend | Remove the contact | Message logs persist 30 days. |
 | Cards (hatchkind.com) | Unpublish, invalidate the CDN cache | Phase 6 surface, designed here. |
-| OpenSRS | None possible | Keeps registration and payment records for 3 years (MSA 3.9); the Privacy Notice says so. |
+| Openprovider (live registrar) | None possible | Its privacy policy, section 11 (https://www.openprovider.com/legal/privacy-policy, no effective date shown, read 2026-10-02), gives no single period: "Domain registration and registration-data records may be retained during the active registration or account lifecycle and for at least two years after expiry, deletion, transfer or termination where required by the ICANN Registrar Accreditation Agreement, applicable registry rules or other legal obligations" and "Account, transaction, billing, support, security, complaint and compliance records are retained for the period required under applicable tax, accounting, security, contractual and legal requirements." The `account_closed` email therefore says "for as long as registrar rules and the law require" and names no period; the Privacy Notice should quote the policy. |
+| OpenSRS (mock and sample path) | None possible | MSA 3.9 binds us, the reseller, not OpenSRS: we keep registration records and payment records and hand them to Tucows within 2 business days. It states ICANN's rule as "three years after a domain name has expired" and sets no period for OpenSRS's own records (https://assets.opensrs.com/Uploads/Master-Services-Agreement.pdf, read 2026-10-02). The earlier email line "OpenSRS keeps its own registration and payment records for 3 years" read 3.9 the wrong way round. |
 
 ## 6. Released names
 

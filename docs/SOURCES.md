@@ -101,6 +101,7 @@ Contents: 1 Registrars, 2 Registry facts, 3 Stripe, 4 Tax and consumer law, 5 IC
 | Registrar lifecycle windows at candidate upstreams | Gandi late renewal to day 45 for `.com/.app/.dev/.studio`; pending delete 15 days for `.ai`/`.io` versus 5 | https://docs.gandi.net/en/domain_names/renew/deadlines.html | 2026-09-29 | lifecycle-and-consumer-law |
 | Porkbun refund and grace | 4-day (96 h) refund window with 5% fee; renewal grace window 35-45 days | https://kb.porkbun.com/article/293-can-domain-names-be-changed-or-refunded | 2026-09-29 | lifecycle-and-consumer-law |
 | Name.com refund gate | API exposes `isRefundable`, which accounts for ICANN AGP limits | https://docs.name.com/guides/refunds-flow | 2026-09-29 | lifecycle-and-consumer-law |
+| Openprovider data retention (Privacy Policy s11) | Registration-data records "may be retained ... for at least two years after expiry, deletion, transfer or termination where required by the ICANN Registrar Accreditation Agreement, applicable registry rules or other legal obligations"; account, transaction and billing records "for the period required under applicable tax, accounting, security, contractual and legal requirements"; no single period (so the account-closed email states none) | https://www.openprovider.com/legal/privacy-policy | 2026-10-02 | cheaper-upstreams-2026-09-30 |
 
 ## 2. Registry facts
 

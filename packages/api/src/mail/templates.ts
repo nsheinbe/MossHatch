@@ -175,8 +175,10 @@ export const TEMPLATES = {
     klass: "C", schema: z.strictObject({ fqdn, orderId: z.uuid(), stage: z.enum(["pending_owner", "pending_registry"]), deadline: iso, timing: z.enum(["standard", "registry"]) }),
     render: (v, l) => {
       const timing = v.timing === "registry" ? "The registry sets the timing and we cannot predict it." : "A transfer can take several days and sometimes about two weeks. It stays Traveling until the registry confirms.";
+      // No registrar name: this stage comes only from an adapter that reports the owner email (OpenSRS, the mock). Whether Openprovider,
+      // where live names are, sends one is UNVERIFIED and its adapter never reports the stage (docs/registrar-parity.md).
       const step = v.stage === "pending_owner"
-        ? `Our registrar, OpenSRS, emailed the owner of ${v.fqdn} to confirm the transfer. Someone must confirm it there by ${when(v.deadline)}, or the transfer ends.`
+        ? `Our registrar emailed the owner of ${v.fqdn} to confirm the transfer. Someone must confirm it there by ${when(v.deadline)}, or the transfer ends.`
         : `The registry asked the current registrar to release ${v.fqdn}. It has until ${when(v.deadline)} to answer, and silence counts as agreement.`;
       return { subject: `We asked for ${v.fqdn} to move to Mosshatch`, text: `${step}\n\n${timing} We take the payment when the name arrives, or before your card hold ends, and refund it in full if the transfer fails.\n\nOrder: ${v.orderId}\nSign in at ${l.home} to follow it.\n` };
     },
@@ -241,7 +243,9 @@ export const TEMPLATES = {
   }),
   account_closed: def({
     klass: "B", schema: z.strictObject({ closedAt: iso }),
-    render: (v) => ({ subject: "Your Mosshatch account is closed", text: `Your Mosshatch account closed on ${when(v.closedAt)}. We now erase your email addresses, contact details and passkeys, and we deleted your customer record at Stripe.\n\nThe law makes us keep receipts, payment records and the record of what you agreed to, under an account number instead of your name, until each one's retention ends. Our registrar, OpenSRS, keeps its own registration and payment records for 3 years. This is the last email we send you.\n` }),
+    // No registrar name and no period: Openprovider's privacy policy (s11) ties its retention to registrar, registry, tax and legal rules and
+    // names no single figure (source in docs/design/account-closure-export-erasure.md, section 5).
+    render: (v) => ({ subject: "Your Mosshatch account is closed", text: `Your Mosshatch account closed on ${when(v.closedAt)}. We now erase your email addresses, contact details and passkeys, and we deleted your customer record at Stripe.\n\nThe law makes us keep receipts, payment records and the record of what you agreed to, under an account number instead of your name, until each one's retention ends. Our registrar keeps its own registration and payment records for as long as registrar rules and the law require. This is the last email we send you.\n` }),
   }),
   account_export_ready: def({
     klass: "B", schema: z.strictObject({ readyAt: iso, expiresAt: iso }),
