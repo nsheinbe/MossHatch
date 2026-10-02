@@ -184,6 +184,25 @@ Check: signed in, the "Mosshatch isn't open yet" banner is gone and searches sho
 the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show no prices: the demo still asks the
 public registries (RDAP) and never the shop routes, which answer `403 invite_required` to anyone without an invite.
 
+## 8a. Preflight (read-only, nothing is bought or charged)
+
+Before the first purchase, check everything the first purchase would trip over: the registrar project answers, the Openprovider balance
+covers the sell gate, every extension's live price matches `wholesale_prices` (the shop's own price guard runs, so a pass here means no
+`price_not_standard` today), the restricted Stripe key has each permission from step 5, and the four Products exist.
+
+```sh
+vercel env pull --environment=production .env.preflight      # in a checkout linked to the `mosshatch` project
+set -a; . ./.env.preflight; set +a
+node scripts/live-preflight.mjs
+rm .env.preflight
+# ok   prices    .com                       1y upstream USD 11.98 matches; customer pays USD 20.98 before tax
+# ...
+# preflight passed: nothing above stops the first purchase
+```
+It uses only `health`, `getBalance` and `quote` over the signed RPC, and probes Stripe with ids that cannot exist (a granted permission
+answers 404, a missing one 403). Unverified: that Stripe checks a restricted key's permission before it looks the object up; a probe that
+answers anything else prints `unknown`, never `ok`. Run it again any time; a `FAIL` line names the fix.
+
 ## 9. First purchase (a cheap .com)
 
 1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$20.98**.
@@ -240,6 +259,8 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
 
 ## Verified, and not
 
+- Before the first purchase, `scripts/live-preflight.mjs` (step 8a) checks the live prices, balance and Stripe key permissions without
+  buying anything (`packages/api/src/golive/preflight.test.ts`, offline).
 - Verified offline (tests, fakes, no network): the web to registrar signed RPC with the Openprovider adapter behind it, the live adapter
   calling `https://api.openprovider.eu/v1` (the host and `/v1` paths in Openprovider's OpenAPI document, fetched 2026-10-01; the older
   `/v1beta` path is not used), every boot reason code, the mode guard (live only with `VERCEL_ENV=production`, a live Stripe key and a live
@@ -254,5 +275,7 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   credits the balance (the refund drill in the rehearsal checks it).
 - Known gaps for later: the registrar project's nonce store and daily cap are per function instance (no database there); a replayed signed
   request within 60 seconds on another instance is possible only for someone who captured one, and register is not idempotent upstream
-  but a second create of the same name is refused (346). Transfer-away and Gate texts still name OpenSRS and Tucows; static pages (fees,
-  legal) keep the demo banner even for invited accounts.
+  but a second create of the same name is refused (346). Transfer-away and Gate texts still name OpenSRS and Tucows. The static pages (fees,
+  legal, waitlist, errors) run no script, so they cannot tell an invited account from a visitor: in the invite build their banner says
+  "Mosshatch is invite-only for now. Unless you have been invited, nothing you hatch is registered or charged.", which is true for both
+  (`scripts/site-mode.mjs`, `bannerKind`).
