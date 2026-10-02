@@ -197,6 +197,10 @@ table.data td.val { word-break: break-all; }
 .panel.device { max-width: 640px; }
 .panel.device code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .panel.device fieldset { border: 0; padding: 0; margin: 8px 0; }
+.choices { border: 0; padding: 0; margin: 8px 0; }
+.choices legend { padding: 0; margin-bottom: 4px; }
+.form-grid .choices label.check { display: flex; margin: 10px 0; }
+.choices .check .fineprint { display: block; margin-top: 2px; }
 .panel.device legend { font-weight: 700; margin-bottom: 4px; }
 .linklike { background: none; border: 0; padding: 0; text-decoration: underline; font: inherit; }
 /* Phase 4-5: the Nest, the Gate and Rescue (lazy chunks) */

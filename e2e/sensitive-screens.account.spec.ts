@@ -425,6 +425,7 @@ test("visitors: a new token is shown once and never inside a live region", async
   await page.getByRole("button", { name: "Visitors" }).click();
   const region = page.getByRole("region", { name: "Visitors", exact: true });
   await expect(region.getByRole("heading", { name: "New token" })).toBeVisible({ timeout: 20_000 });
+  await region.getByLabel("Name", { exact: true }).fill("Build bot");
   await region.getByRole("button", { name: "Create with passkey" }).click();
   await region.getByRole("group", { name: "Confirm with your passkey" }).getByRole("button", { name: "Approve with passkey" }).click();
   const shown = region.locator("code.token-once");

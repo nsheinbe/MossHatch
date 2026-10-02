@@ -52,8 +52,8 @@ test("visitors: token with passkey, agent proposal, approval card, OAuth consent
   await openVisitors(page);
   await clean(page, "visitors");
   await page.getByLabel("Name", { exact: true }).fill("Build bot");
-  await page.getByLabel("What it can do, one scope per line").fill("register.propose:*");
-  await page.getByLabel("Spend cap in dollars, for purchases you approve").fill("100");
+  await page.getByRole("checkbox", { name: /Suggest names to buy/ }).check();
+  await page.getByLabel("Most it can ask you to spend, in dollars").fill("100");
   await page.getByRole("button", { name: "Create with passkey" }).click();
   await expect(page.getByRole("heading", { name: "Confirm with your passkey" })).toBeVisible();
   await expect(page.getByText(/Create a token named "Build bot"/)).toBeVisible();
