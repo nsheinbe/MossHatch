@@ -8,6 +8,7 @@ import { appendAudit } from "../audit.ts";
 import { closeAlerts, raiseAlert } from "../ops/alerts.ts";
 import { addBusinessDays, audit, DAY_MS, ensureSecurityRow, mapRegistrarError, notifyDomainEvent, ownedDomain, registrarOf, userIdOf, type DomainRow } from "./common.ts";
 import { RegistrarError } from "@mosshatch/registrar/port";
+import { registrarWords } from "../transfers/registrar-words.ts";
 
 export const PENDING_STATUSES: TransferAwayStatus[] = ["pending_admin", "pending_owner", "pending_registry"];
 /** OpenSRS counts silence for five days as approval; the request is looked for that far back. */
@@ -15,7 +16,11 @@ export const TRANSFER_WINDOW_MS = 6 * DAY_MS;
 export const DECLINE_WINDOW_MS = 5 * DAY_MS;
 /** A transfer started with a code we issued must start inside the code's 24-hour life (plus an hour of grace); an older action does not explain it. */
 export const CODE_WINDOW_MS = 25 * 3_600_000;
-export const NO_CANCEL_NOTE = "Only the owner's decline link in the email from OpenSRS, or Tucows support, can end a pending transfer. Stop re-locks the domain and replaces the code, and we asked for help.";
+/** Neither upstream has a call to cancel a transfer away (docs/registrar-parity.md); `registrar` is the domain's `domains.registrar`. */
+export function noCancelNote(registrar: string | null | undefined): string {
+  const w = registrarWords(registrar);
+  return `Only the owner's decline in the email from ${w.from}, or ${w.support}, can end a pending transfer. Stop re-locks the domain and replaces the code, and we asked for help.`;
+}
 
 const iso = (x: unknown) => (x ? new Date(x as string).toISOString() : null);
 
@@ -24,7 +29,7 @@ async function attentionNotice(ctx: AppContext, c: PoolClient, d: DomainRow, t: 
   const decline = new Date(new Date(t.requested_at).getTime() + DECLINE_WINDOW_MS).toISOString();
   await notifyDomainEvent(ctx, c, d.user_id, {
     kind: "domain.transfer_unrequested", domainId: d.id, subject: "A transfer of your domain started and you did not ask for it",
-    text: `A transfer of ${d.fqdn_ascii} to ${who} started ${new Date(t.requested_at).toISOString()}. You did not ask for it. Decline it in the email from OpenSRS before ${decline}, or press "Stop this transfer" on the domain page. Silence for five days counts as approval.`,
+    text: `A transfer of ${d.fqdn_ascii} to ${who} started ${new Date(t.requested_at).toISOString()}. You did not ask for it. Decline it in the email from ${registrarWords(d.registrar).from} before ${decline}, or press "Stop this transfer" on the domain page. Silence for five days counts as approval.`,
   });
 }
 
@@ -125,9 +130,9 @@ export async function stopHandler(req: HandlerReq): Promise<HandlerResult> {
       await audit(ctx, c, userId, "domain.transfer_stopped", { resourceKind: "domain", resourceId: d.id, detail: { pending_remains: res.pendingTransferRemains, ticket: ticketId } });
       await notifyDomainEvent(ctx, c, userId, {
         kind: "domain.transfer_stopped", domainId: d.id, subject: "Stop was pressed for a domain on your Mosshatch account",
-        text: `${d.fqdn_ascii} was locked again and its transfer code was replaced. ${NO_CANCEL_NOTE}`,
+        text: `${d.fqdn_ascii} was locked again and its transfer code was replaced. ${noCancelNote(d.registrar)}`,
       });
-      return json({ domain: d.fqdn_ascii, relocked: true, code_replaced: true, pending_transfer_remains: res.pendingTransferRemains, ticket_id: ticketId, message: NO_CANCEL_NOTE });
+      return json({ domain: d.fqdn_ascii, relocked: true, code_replaced: true, pending_transfer_remains: res.pendingTransferRemains, ticket_id: ticketId, message: noCancelNote(d.registrar) });
     });
   } catch (e) { throw mapRegistrarError(e); }
 }
@@ -145,8 +150,8 @@ export async function transferStateHandler(req: HandlerReq): Promise<HandlerResu
       state: !open ? "none" : open.state === "stopped" ? "stopped_pending" : open.explained ? "requested" : "unrequested",
       stop_available: !!open,
       can_cancel_upstream: false,
-      note: open ? NO_CANCEL_NOTE : null,
-      message: open && !open.explained ? `A transfer to ${open.gaining_registrar ?? "another registrar"} started ${iso(open.requested_at)}. You did not ask for it. Decline it in the email from OpenSRS, or press Stop this transfer.` : null,
+      note: open ? noCancelNote(d.registrar) : null,
+      message: open && !open.explained ? `A transfer to ${open.gaining_registrar ?? "another registrar"} started ${iso(open.requested_at)}. You did not ask for it. Decline it in the email from ${registrarWords(d.registrar).from}, or press Stop this transfer.` : null,
       transfers: rows.map((r) => ({ id: r.id, gaining_registrar: r.gaining_registrar, upstream_status: r.upstream_status, requested_at: iso(r.requested_at), requested_by_you: r.explained, state: r.state, decline_by: dueAt(r) })),
       ticket: ticket ? { id: ticket.id, kind: ticket.kind, opened_at: iso(ticket.opened_at) } : null,
       timing: "A transfer can take several days and sometimes about two weeks. It stays Traveling until the registry confirms.",

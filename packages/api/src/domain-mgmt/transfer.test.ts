@@ -13,7 +13,7 @@ const row = async (sql: string, args: unknown[]) => (await k.app.db.owner.query(
 
 describe("ST-125: an unrequested pending transfer-away", () => {
   it("raises the alert within 10 minutes, turns the domain to needs attention, emails every address; Stop re-locks, re-randomises the code and opens the ticket", async () => {
-    const d = await makeDomain(k, alice, "st125-hostile.com");
+    const d = await makeDomain(k, alice, "st125-hostile.com", { registrar: "openprovider" });   // where live names are held
     // The attacker knows a code (leaked from an earlier issue, or set through the registrar's own end-user interface).
     const code = "LeakedCode2026xyz";
     k.registrar.setAuthInfo(d.fqdn, code);
@@ -38,6 +38,7 @@ describe("ST-125: an unrequested pending transfer-away", () => {
       const m = k.app.email.to(to).find((x) => x.kind === "domain.transfer_unrequested");
       expect(m, to).toBeTruthy();
       expect(m!.text).toContain("You did not ask for it"); expect(m!.text).toContain("Evil Registrar LLC"); expect(linkOf(m!.text)).toBeTruthy();
+      expect(m!.text).toContain("Decline it in the email from our registrar"); expect(m!.text).not.toMatch(/OpenSRS|Tucows/);
     }
     // A second poll does not raise a second alert or send a second mail.
     k.app.email.clear();
@@ -49,16 +50,20 @@ describe("ST-125: an unrequested pending transfer-away", () => {
     await refreshSession(k, alice);
     const view = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/transfer`);
     expect(view.json.state).toBe("unrequested"); expect(view.json.stop_available).toBe(true); expect(view.json.can_cancel_upstream).toBe(false);
-    expect(view.json.message).toContain("press Stop this transfer");
+    expect(view.json.message).toContain("press Stop this transfer"); expect(view.json.message).toContain("email from our registrar");
+    expect(view.json.note).toContain("our registrar's support");
     const sec = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/security`);
     expect(sec.json.state).toBe("needs_attention"); expect(sec.json.attention.kind).toBe("unrequested_transfer");
+    expect(sec.json.attention.message).toContain("email from our registrar");
+    for (const text of [view.text, sec.text]) expect(text).not.toMatch(/OpenSRS|Tucows/);
 
-    // Stop: re-lock, new code, ticket. The panel says plainly that only the owner or Tucows can end the transfer.
+    // Stop: re-lock, new code, ticket. The panel says plainly that only the owner or our registrar's support can end the transfer.
     expect(k.registrar.authCodeMatches(d.fqdn, code)).toBe(true);
     const stop = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/transfer/stop`, {});
     expect(stop.status).toBe(200);
     expect(stop.json.relocked).toBe(true); expect(stop.json.code_replaced).toBe(true); expect(stop.json.pending_transfer_remains).toBe(true);
-    expect(stop.json.message).toContain("decline link"); expect(stop.json.message).toContain("Tucows");
+    expect(stop.json.message).toContain("owner's decline in the email from our registrar, or our registrar's support, can end a pending transfer");
+    expect(stop.json.message).not.toMatch(/OpenSRS|Tucows/);
     expect(k.registrar.domainRecord(d.fqdn)!.locked).toBe(true);
     expect(k.registrar.authCodeMatches(d.fqdn, code)).toBe(false);
     const ticket = await row("select kind, state from domain_tickets where domain_id = $1", [d.id]);
@@ -70,6 +75,20 @@ describe("ST-125: an unrequested pending transfer-away", () => {
     expect((await row("select 1 from domain_tickets where domain_id = $1", [d.id]))).toHaveLength(1);
     expect((await row("select released_at from domains where id = $1", [d.id]))[0].released_at).toBeNull();
     expect(await everythingStored(k)).not.toContain(code);
+  });
+
+  it("names the registrar that holds the domain: OpenSRS and Tucows only for an 'opensrs' domain (the mock and sample path)", async () => {
+    const p = await makePerson(k, "naming");
+    const sample = await makeDomain(k, p, "st125-sample.com", { registrar: "opensrs" });
+    const live = await makeDomain(k, p, "st125-live.com", { registrar: "openprovider" });
+    const a = await call(k, p, "POST", `/api/v1/domains/${sample.fqdn}/transfer/stop`, {});
+    expect(a.status).toBe(200);
+    expect(a.json.message).toContain("decline in the email from OpenSRS, or Tucows support, can end a pending transfer");
+    expect(k.app.email.sent.find((m) => m.kind === "domain.transfer_stopped" && m.text.includes(sample.fqdn))!.text).toContain("Tucows support");
+    const b = await call(k, p, "POST", `/api/v1/domains/${live.fqdn}/transfer/stop`, {});
+    expect(b.status).toBe(200);
+    expect(b.json.message).toContain("our registrar's support"); expect(b.json.message).not.toMatch(/OpenSRS|Tucows/);
+    expect(k.app.email.sent.find((m) => m.kind === "domain.transfer_stopped" && m.text.includes(live.fqdn))!.text).not.toMatch(/OpenSRS|Tucows/);
   });
 
   it("a transfer that matches a committed transfer-out action is expected: no alert, no needs attention", async () => {

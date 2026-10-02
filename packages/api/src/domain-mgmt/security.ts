@@ -12,6 +12,7 @@ import {
   ownedDomain, registrarOf, takeFuse, userIdOf, type DomainRow,
 } from "./common.ts";
 import { assertTransferAllowed } from "./specs.ts";
+import { registrarWords } from "../transfers/registrar-words.ts";
 
 type Params = Record<string, unknown>;
 
@@ -219,7 +220,7 @@ export async function attentionOf(ctx: Pick<AppContext, "clock">, c: PoolClient,
   const t = (await c.query("select gaining_registrar, requested_at from domain_transfers_away where domain_id = $1 and state in ('open','stopped') and not explained order by requested_at desc limit 1", [d.id])).rows[0];
   if (t) {
     const who = t.gaining_registrar ? String(t.gaining_registrar) : "another registrar";
-    return { kind: "unrequested_transfer", message: `A transfer to ${who} started ${new Date(t.requested_at).toISOString()}. You did not ask for it. Decline it in the email from OpenSRS, or press Stop this transfer.` };
+    return { kind: "unrequested_transfer", message: `A transfer to ${who} started ${new Date(t.requested_at).toISOString()}. You did not ask for it. Decline it in the email from ${registrarWords(d.registrar).from}, or press Stop this transfer.` };
   }
   const v = (await c.query("select state, deadline_at from registrant_verifications where domain_id = $1 and state in ('pending','suspended') order by created_at desc limit 1", [d.id])).rows[0];
   if (v?.state === "suspended") return { kind: "registrant_suspended", message: "This domain is on hold because the registrant email was not verified in time. Verify it to lift the hold." };

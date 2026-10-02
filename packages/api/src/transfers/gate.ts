@@ -10,24 +10,34 @@ import { ordersSvc } from "../orders/support.ts";
 import { releaseDomain } from "../domains/release.ts";
 import { DAY_MS, timingFor, transferPolicy } from "./policy.ts";
 import { logTransfer, mailUser, UUID_RE } from "./store.ts";
+import { registrarWords } from "./registrar-words.ts";
 
 /**
- * The Gate (transfer-out) with a wholesale upstream (plan 4.3b "The Gate with a wholesale upstream"). OpenSRS has no API to start,
- * approve or decline an outbound transfer: the owner unlocks and takes a code here (both behind the passkey, in domain-mgmt), the
- * gaining registrar starts the transfer, and OpenSRS emails the registrant to approve or decline, with five days of silence counting
- * as approval. This module shows that honestly (GET /domains/:id/gate), mails the owner when a requested transfer starts, releases the
- * domain once it has left (cause `transferred_out`), and offers the operator a denial that accepts only the Transfer Policy reasons.
+ * The Gate (transfer-out) with a wholesale upstream (plan 4.3b "The Gate with a wholesale upstream"). Neither OpenSRS nor Openprovider
+ * has an API to start, approve or decline an outbound transfer: the owner unlocks and takes a code here (both behind the passkey, in
+ * domain-mgmt), the gaining registrar starts the transfer, and the registrar of record emails the registrant to approve or decline,
+ * with five days of silence counting as approval. This module shows that honestly (GET /domains/:id/gate), mails the owner when a
+ * requested transfer starts, releases the domain once it has left (cause `transferred_out`), and offers the operator a denial that
+ * accepts only the Transfer Policy reasons.
  */
 
 const iso = (x: unknown) => (x ? new Date(x as string).toISOString() : null);
-export const APPROVAL_NOTE = "Our registrar, OpenSRS, emails the registrant a link to approve or decline the transfer. Silence for five days counts as approval. That email is the last checkpoint, and we cannot approve or decline it for you.";
-export const CANCEL_NOTE = "Until the new registrar uses the code, lock the domain again: that replaces the code. Once a transfer is pending, only the decline link in the email from OpenSRS, or Tucows support, can end it. Stop this transfer locks the domain, replaces the code and asks Tucows for help.";
-export const GATE_STEPS = [
-  "Unlock the domain with your passkey.",
-  "Get the transfer code with your passkey. We show it once and replace it after 24 hours or when you lock the domain again.",
-  "Give the code to your new registrar and start the transfer there.",
-  "Our registrar, OpenSRS, emails the registrant to approve or decline. Silence for five days counts as approval.",
-];
+/** The Gate's texts for a domain held at `registrar` (`domains.registrar`). */
+export function approvalNote(registrar: string | null | undefined): string {
+  return `${registrarWords(registrar).ours} emails the registrant to approve or decline the transfer. Silence for five days counts as approval. That email is the last checkpoint, and we cannot approve or decline it for you.`;
+}
+export function cancelNote(registrar: string | null | undefined): string {
+  const w = registrarWords(registrar);
+  return `Until the new registrar uses the code, lock the domain again: that replaces the code. Once a transfer is pending, only a decline in the email from ${w.from}, or ${w.support}, can end it. Stop this transfer locks the domain, replaces the code and asks ${w.support} for help.`;
+}
+export function gateSteps(registrar: string | null | undefined): string[] {
+  return [
+    "Unlock the domain with your passkey.",
+    "Get the transfer code with your passkey. We show it once and replace it after 24 hours or when you lock the domain again.",
+    "Give the code to your new registrar and start the transfer there.",
+    `${registrarWords(registrar).ours} emails the registrant to approve or decline. Silence for five days counts as approval.`,
+  ];
+}
 
 type Block = { code: "too_new" | "recently_transferred" | "change_of_registrant" | "dispute_lock" | "contact_change_pending"; message: string; until: string | null };
 
@@ -82,7 +92,7 @@ export async function gateHandler(req: HandlerReq): Promise<HandlerResult> {
         requested_at: iso(open.requested_at), gaining_registrar: open.gaining_registrar, upstream_status: open.upstream_status, requested_by_you: open.explained,
         decline_by: new Date(new Date(open.requested_at).getTime() + 5 * DAY_MS).toISOString(), stopped: open.state === "stopped", stop_available: true,
       } : null,
-      steps: GATE_STEPS, approval: APPROVAL_NOTE, cancel: CANCEL_NOTE, can_cancel_upstream: ordersSvc(ctx).registrar.capabilities().cancelTransferAway,
+      steps: gateSteps(d.registrar), approval: approvalNote(d.registrar), cancel: cancelNote(d.registrar), can_cancel_upstream: ordersSvc(ctx).registrar.capabilities().cancelTransferAway,
       // C-04: a payment dispute, an unpaid balance or a card problem never blocks unlock or code release.
       billing_blocks_transfer: false,
       timing: timingFor(d.tld),
@@ -143,8 +153,8 @@ export const NEVER_USED: readonly TransferDenialReason[] = ["non_payment"];
 
 /**
  * C-05, the operator's denial console (no route: the operator works through the ops surface). Only the Transfer Policy reasons are
- * accepted, never "pay first"; the reason is recorded, the Stop ticket carries it for Tucows (OpenSRS has no API to NACK), and the
- * registrant is emailed the reason.
+ * accepted, never "pay first"; the reason is recorded, the Stop ticket carries it to our registrar's support (neither OpenSRS nor
+ * Openprovider has an API to NACK), and the registrant is emailed the reason.
  */
 export async function denyTransferAway(ctx: AppContext, o: { domainId: string; reason: string; operator: string }): Promise<{ ticketId: string }> {
   if (!(TRANSFER_DENIAL_REASONS as readonly string[]).includes(o.reason)) throw new HttpError(422, "reason_not_allowed");
