@@ -1,4 +1,5 @@
 import type { Config, EmailMessage, EmailPort } from "../ports.ts";
+import { FROM_DEFAULT } from "../waitlist/text.ts";
 
 /**
  * Resend over HTTPS. UNVERIFIED against the network: no request in this repository has reached Resend; the tests
@@ -40,4 +41,10 @@ export function createEmailTransport(config: Pick<Config, "mode">, deps: { resen
   if (config.mode === "local" || config.mode === "preview") return new LogOnlyEmail(deps.log);
   if (!deps.resend) throw new Error("resend_not_configured");
   return new ResendTransport(deps.resend);
+}
+
+/** Resend settings from the environment (`RESEND_API_KEY`, sender `MH_EMAIL_FROM`, else the waitlist's sender), or none without a key. */
+export function resendFromEnv(env: Record<string, string | undefined>): ConstructorParameters<typeof ResendTransport>[0] | undefined {
+  if (!env.RESEND_API_KEY) return undefined;
+  return { apiKey: env.RESEND_API_KEY, from: env.MH_EMAIL_FROM ?? env.WAITLIST_FROM ?? FROM_DEFAULT };
 }

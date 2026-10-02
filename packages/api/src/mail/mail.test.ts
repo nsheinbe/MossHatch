@@ -6,7 +6,7 @@ import { mintToken } from "../util/token.ts";
 import { FakeDns, type FakeZone } from "./dns.ts";
 import { GatedEmail, MailGateError, verifyMailDomain, type MailDomainExpectation } from "./gate.ts";
 import { assertMailSafe, buildMail, EMAIL_ACTION_PURPOSES, MAIL_KINDS, MailRenderError, renderMail, TEMPLATES, type MailKind } from "./templates.ts";
-import { createEmailTransport, LogOnlyEmail, ResendTransport } from "./transport.ts";
+import { createEmailTransport, LogOnlyEmail, resendFromEnv, ResendTransport } from "./transport.ts";
 
 const EXP: MailDomainExpectation = { spfInclude: "amazonses.com", dkimSelectors: ["resend"] };
 const GOOD: FakeZone = {
@@ -79,6 +79,11 @@ describe("ST-146 SPF, DKIM and DMARC gate", () => {
     expect(lines).toHaveLength(2);
     expect(lines.join("\n")).not.toContain("example.com");                             // no address in the log
     expect(() => createEmailTransport({ mode: "production" }, {})).toThrow("resend_not_configured");
+    // Boot builds production email from the environment: a key gives Resend with the waitlist's sender unless MH_EMAIL_FROM says otherwise.
+    expect(resendFromEnv({})).toBeUndefined();
+    expect(resendFromEnv({ RESEND_API_KEY: "re_test" })).toEqual({ apiKey: "re_test", from: "Mosshatch <hello@send.mosshatch.com>" });
+    expect(resendFromEnv({ RESEND_API_KEY: "re_test", MH_EMAIL_FROM: "M <m@x.test>" })?.from).toBe("M <m@x.test>");
+    expect(createEmailTransport({ mode: "production" }, { resend: resendFromEnv({ RESEND_API_KEY: "re_test" }) })).toBeInstanceOf(ResendTransport);
   });
   it("ST-146: through sendMail a refused receipt leaves no email_log row and sends after the gate opens", async () => {
     const app: TestApp = await createTestApp();

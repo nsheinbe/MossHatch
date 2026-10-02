@@ -20,7 +20,7 @@ const LIVE_MONEY = {
   STRIPE_SECRET_KEY: "rk_live_" + "x".repeat(24), STRIPE_WEBHOOK_SECRET: "whsec_" + "w".repeat(32), MH_REGISTRAR_MODE: "live", MH_REGISTRAR_PROVIDER: "openprovider",
   REGISTRAR_RPC_URL: "https://registrar.mosshatch.com", REGISTRAR_RPC_SECRET: "r".repeat(40),
 };
-const base = () => ({ MH_MODE: "local", MH_ORIGIN: "http://localhost:3000", CRON_SECRET: "c".repeat(40), DATABASE_URL: db.urlFor("runtime"), DATABASE_URL_CRON: db.urlFor("cron") });
+const base = () => ({ MH_MODE: "local", MH_ORIGIN: "http://localhost:3000", CRON_SECRET: "c".repeat(40), DATABASE_URL: db.urlFor("runtime"), DATABASE_URL_CRON: db.urlFor("cron"), RESEND_API_KEY: "re_" + "k".repeat(24) });
 
 describe("bootFromEnv", () => {
   it("assembles the app in local mode and serves the health route and search", async () => {
@@ -43,7 +43,7 @@ describe("bootFromEnv", () => {
     expect((e as NotConfigured).reasons).toEqual(["aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured", ...missingLive]);
     expect((e as NotConfigured).reason).toBe(["aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured", ...missingLive].join(","));
     const bare = await bootFromEnv({ MH_MODE: "production" }).catch((x) => x);
-    expect((bare as NotConfigured).reasons).toEqual(["database_not_configured", "origin_not_configured", "cron_secret_not_configured", "aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured",
+    expect((bare as NotConfigured).reasons).toEqual(["database_not_configured", "origin_not_configured", "cron_secret_not_configured", "email_not_configured", "aws_oidc_not_configured", "kms_not_configured", "anchor_not_configured",
       "vercel_env_not_production", "stripe_secret_key_missing", "stripe_webhook_secret_missing", "registrar_mode_not_live", "registrar_provider_not_openprovider", "registrar_rpc_url_missing", "registrar_rpc_secret_missing"]);
   });
   it("production with AWS configured probes it live (fake AWS); the code-level kill (PRODUCTION_LIVE_WIRED false) still refuses the live money paths", async () => {
