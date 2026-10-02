@@ -254,5 +254,7 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   credits the balance (the refund drill in the rehearsal checks it).
 - Known gaps for later: the registrar project's nonce store and daily cap are per function instance (no database there); a replayed signed
   request within 60 seconds on another instance is possible only for someone who captured one, and register is not idempotent upstream
-  but a second create of the same name is refused (346). Transfer-away and Gate texts still name OpenSRS and Tucows; static pages (fees,
-  legal) keep the demo banner even for invited accounts.
+  but a second create of the same name is refused (346). Static pages (fees, legal) keep the demo banner even for invited accounts.
+  Transfer-away and Gate texts follow `domains.registrar`: an Openprovider domain reads "our registrar" and "our registrar's support"
+  (who sends Openprovider's transfer-away email is UNVERIFIED); only an `opensrs` domain (the mock and sample path) names OpenSRS and
+  Tucows. The transfer-in email (`transfer_submitted`) and the account-closed email still name OpenSRS.

@@ -215,7 +215,7 @@ export const TEMPLATES = {
   transfer_away_started: def({
     klass: "B", schema: z.strictObject({ fqdn, requestedAt: iso, declineBy: iso, freezeToken: actionToken.optional() }),
     link: { purpose: "freeze", field: "freezeToken", optional: true },
-    render: (v, l) => ({ subject: `A transfer of ${v.fqdn} to another registrar started`, text: `A transfer of ${v.fqdn} to another registrar started on ${when(v.requestedAt)}, after you unlocked it and took its transfer code with your passkey.\n\nOur registrar, OpenSRS, emails the registrant to confirm or decline it. Silence until ${when(v.declineBy)} counts as agreement. To keep the name, decline in that email or press Stop this transfer on the domain page.\n\n${notYou(l.action, "Sign in to follow the transfer.")}\n` }),
+    render: (v, l) => ({ subject: `A transfer of ${v.fqdn} to another registrar started`, text: `A transfer of ${v.fqdn} to another registrar started on ${when(v.requestedAt)}, after you unlocked it and took its transfer code with your passkey.\n\nOur registrar emails the registrant to confirm or decline it. Silence until ${when(v.declineBy)} counts as agreement. To keep the name, decline in that email or press Stop this transfer on the domain page.\n\n${notYou(l.action, "Sign in to follow the transfer.")}\n` }),
   }),
   transfer_denied: def({
     klass: "C", schema: z.strictObject({ fqdn, reason: z.enum(["fraud", "identity_dispute", "non_payment", "owner_objection", "within_60_days_creation", "within_60_days_transfer", "udrp", "urs", "court_order", "tdrp", "cor_lock"]) }),

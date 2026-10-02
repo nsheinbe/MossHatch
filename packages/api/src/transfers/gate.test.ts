@@ -11,15 +11,15 @@ const DAY = 86_400_000;
 const make = async () => per.make() as Promise<TH>;
 
 /** A name registered here long ago (so the 60-day rule is behind it), at the mock registrar and in the account. */
-async function oldDomain(h: TH, o: Owner, fqdn: string, ageDays = 400): Promise<string> {
+async function oldDomain(h: TH, o: Owner, fqdn: string, ageDays = 400, registrar = "opensrs"): Promise<string> {
   h.registrar.setKind(fqdn, "available");
   await h.registrar.register({ fqdn, years: 1, regUsername: "mhgate" + fqdn.length, regPassword: "p".repeat(14), registrant: { name: "Ada Moss", email: o.email, phone: "+1.5555550100", street: "1 Fern Lane", city: "Portland", region: "OR", postalCode: "97201", country: "US" } });
   const st = (await h.registrar.getDomain(fqdn))!;
   const created = new Date(h.app.clock.now().getTime() - ageDays * DAY);
   return (await h.app.db.owner.query(
     `insert into domains (user_id, fqdn_ascii, tld, registrar, state, registered_at, registry_created_at, expires_at, locked, nameservers, dns_hosted_here, livemode)
-     values ($1,$2,$3,'opensrs','active',$4,$4,$5,true,$6,true,false) returning id`,
-    [o.userId, fqdn, fqdn.slice(fqdn.indexOf(".") + 1), created, st.expiresAt, st.nameservers])).rows[0].id as string;
+     values ($1,$2,$3,$7,'active',$4,$4,$5,true,$6,true,false) returning id`,
+    [o.userId, fqdn, fqdn.slice(fqdn.indexOf(".") + 1), created, st.expiresAt, st.nameservers, registrar])).rows[0].id as string;
 }
 const gate = (h: TH, o: Owner, id: string) => h.app.call("GET", `/api/v1/domains/${id}/gate`, { cookie: o.cookie });
 async function stepUp(h: TH, o: Owner, type: string, target: string): Promise<string> {
@@ -63,7 +63,8 @@ describe("The Gate: unlock, code, approval by email at the gaining side, detecti
     let g = await gate(h, o, id);
     expect(g.json).toMatchObject({ state: "locked", transferable: true, blocks: [], billing_blocks_transfer: false, can_cancel_upstream: false, pending: null });
     expect(g.json.steps).toHaveLength(4);
-    expect(g.json.approval).toMatch(/emails the registrant a link to approve or decline.*Silence for five days counts as approval/);
+    expect(g.json.approval).toMatch(/^Our registrar, OpenSRS, emails the registrant to approve or decline the transfer\. Silence for five days counts as approval/);
+    expect(g.json.cancel).toContain("only a decline in the email from OpenSRS, or Tucows support, can end it");
     expect(g.json.timing).toMatch(/several days and sometimes about two weeks/);
 
     expect((await post(h, o, `/api/v1/domains/${f}/unlock`, await stepUp(h, o, "domain.unlock", f))).status).toBe(200);
@@ -75,7 +76,7 @@ describe("The Gate: unlock, code, approval by email at the gaining side, detecti
     expect(g.json.code).toMatchObject({ outstanding: true, shown_once: true });
     expect(g.text).not.toContain(code);
 
-    // The gaining registrar starts the transfer; OpenSRS emails the registrant. transfer.poll sees it and it is explained by the code issue.
+    // The gaining registrar starts the transfer; the registrar of record emails the registrant. transfer.poll sees it and it is explained by the code issue.
     h.registrar.oob.startTransferAway(f, { status: "pending_owner", gainingRegistrar: "Other Registrar Inc" });
     await pass(h);
     o = await relogin(h, o);
@@ -84,7 +85,8 @@ describe("The Gate: unlock, code, approval by email at the gaining side, detecti
     expect(g.json.pending).toMatchObject({ requested_by_you: true, gaining_registrar: "Other Registrar Inc", stop_available: true });
     const started = mailOf(h, "transfer_away_started");
     expect(started).toHaveLength(1);
-    expect(started[0]!.text).toMatch(/emails the registrant to confirm or decline it\. Silence until .* counts as agreement/);
+    expect(started[0]!.text).toMatch(/Our registrar emails the registrant to confirm or decline it\. Silence until .* counts as agreement/);
+    expect(started[0]!.text).not.toMatch(/OpenSRS|Tucows/);
     expect(started[0]!.text).toMatch(/\/api\/v1\/email-actions\//);    // the freeze link
     expect(started[0]!.text).not.toContain(code);
     expect(mailOf(h, "domain.transfer_unrequested")).toHaveLength(0);
@@ -104,6 +106,18 @@ describe("The Gate: unlock, code, approval by email at the gaining side, detecti
     expect(g.json.log.map((l: { event: string }) => l.event)).toEqual(expect.arrayContaining(["away_requested", "away_completed"]));
     // Idempotent: another sweep releases nothing twice.
     expect(await gateSweep(h.app.ctx)).toEqual({ notified: 0, released: 0 });
+  });
+
+  it("a domain held at Openprovider (live) gets registrar-neutral texts: no OpenSRS, no Tucows", async () => {
+    const h = await make();
+    const o = await makeOwner(h, "gate-live@example.org");
+    const id = await oldDomain(h, o, "held-live.com", 400, "openprovider");
+    const g = await gate(h, o, id);
+    expect(g.json.approval).toMatch(/^Our registrar emails the registrant to approve or decline the transfer\. Silence for five days counts as approval/);
+    expect(g.json.cancel).toContain("only a decline in the email from our registrar, or our registrar's support, can end it");
+    expect(g.json.cancel).toContain("asks our registrar's support for help");
+    expect(g.json.steps[3]).toBe("Our registrar emails the registrant to approve or decline. Silence for five days counts as approval.");
+    expect(g.text).not.toMatch(/OpenSRS|Tucows/);
   });
 
   it("an unrequested transfer is needs attention, gets no 'you asked for it' mail, and is still released if it completes", async () => {
@@ -175,7 +189,7 @@ describe("C-06, C-04, C-03: why a name cannot leave yet, and what never blocks i
 });
 
 describe("C-05: the denial console offers only the Transfer Policy reasons and emails the reason", () => {
-  it("refuses 'pay first' and unknown reasons, accepts a must-deny reason, opens the ticket for Tucows and tells the registrant why", async () => {
+  it("refuses 'pay first' and unknown reasons, accepts a must-deny reason, opens the ticket for our registrar's support and tells the registrant why", async () => {
     const h = await make();
     const o = await makeOwner(h, "gate-deny@example.org");
     const f = "udrp-held.com";
