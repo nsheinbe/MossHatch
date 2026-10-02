@@ -10,7 +10,7 @@ import { takeHandoff } from "../lib/handoff";
  * shows the honest state, and only when the name is registered does the egg rise and hatch. The creature is an egg until then.
  */
 export function OrderReturn() {
-  const { orderId, orderSession, set } = useUi();
+  const { orderId, orderSession, accountOpen, set } = useUi();
   const [order, setOrder] = useState<OrderView | null>(null);
   const [gone, setGone] = useState(false);
   const started = useRef(false);
@@ -42,7 +42,8 @@ export function OrderReturn() {
     return () => { alive = false; window.clearTimeout(timer); };
   }, [orderId, orderSession]);
 
-  if (!orderId) return null;
+  // The order panel shares the right-hand side with Account: it steps aside while Account is open (still polling) and comes back after.
+  if (!orderId || accountOpen) return null;
   const dismiss = () => { set({ orderId: null, orderSession: null }); history.replaceState(null, "", "/"); };
   return (
     <aside className="panel side" role="region" aria-label="Your order" aria-live="polite" style={{ top: "auto", bottom: 96 }}>
