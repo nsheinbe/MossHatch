@@ -2,11 +2,25 @@ import { currentInvite } from "./waitlist";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { api, ApiError } from "./api";
 
+export type RecoveryPath = "codes_email" | "email_only";
+
+/** The recovery banner from /me: a request still open (pending, cooling_off) or the hold after one finished (holding). */
+export interface RecoveryBanner {
+  id: string;
+  status: "pending" | "cooling_off" | "holding";
+  path: RecoveryPath;
+  startedAt: string | null;
+  coolingOffUntil: string | null;
+  holdUntil: string | null;
+}
+
 export interface Me {
   user: { id: string; email: string };
-  credentials: { id: string; label: string; backup_eligible: boolean; created_at?: string }[];
+  /** Suspended credentials are the ones a recovery paused (30 days; signing in with one undoes the recovery). */
+  credentials: { id: string; label: string; backup_eligible: boolean; created_at?: string; suspended?: boolean }[];
   addresses: { id: string; address: string; kind: string; verified: boolean }[];
-  recovery?: { banner?: string | null } | null;
+  recovery?: RecoveryBanner | null;
+  hold?: { active: boolean; allHeldUntil: string | null; secretRevealUntil: string | null };
   /** Invite-only live gate (server): whether this account may use the shop. Absent from older servers, read as no in an invite build. */
   live_access?: boolean;
 }
@@ -33,6 +47,37 @@ export async function signIn(): Promise<void> {
   await api("POST", "/api/v1/auth/login/verify", { response });
 }
 
+type RegistrationOptions = Parameters<typeof startRegistration>[0]["optionsJSON"];
+
+/**
+ * Recovery step 1: ask for the emailed code. On `codes_email` it goes out at once; on `email_only` the first ask starts a
+ * 72-hour wait and an ask after the wait sends it. The answer is the same whether or not the address has an account.
+ */
+export const recoveryStart = (email: string, path: RecoveryPath) => api("POST", "/api/v1/auth/recovery/start", { email, path });
+
+/**
+ * Step 2: redeem the emailed code (with a saved recovery code on `codes_email`). Both are spent here; the server answers
+ * with options for the new passkey and a 30-minute registration ticket (the pre-auth cookie).
+ */
+export async function recoveryRedeem(email: string, code: string, recoveryCode?: string): Promise<RegistrationOptions> {
+  const { options } = await api<{ options: RegistrationOptions }>("POST", "/api/v1/auth/recovery/redeem", { email, code, recoveryCode });
+  return options;
+}
+
+/**
+ * Step 3: create the new passkey, which completes the recovery and signs in. Without options (the prompt was closed after a
+ * redeem), fresh ones come from the registration ticket, so the spent codes are not needed again. Returns when the hold ends.
+ */
+export async function recoveryPasskey(options?: RegistrationOptions): Promise<{ holdUntil: string | null }> {
+  const optionsJSON = options ?? (await api<{ options: RegistrationOptions }>("POST", "/api/v1/auth/register/options", {})).options;
+  const response = await startRegistration({ optionsJSON });
+  const out = await api<{ holdUntil?: string | null }>("POST", "/api/v1/auth/register/verify", { response });
+  return { holdUntil: out.holdUntil ?? null };
+}
+
+/** Cancel a recovery that has not finished, from a signed-in session (the emailed cancel link has its own page). */
+export const recoveryCancel = () => api<{ ok: boolean; cancelled: boolean }>("POST", "/api/v1/auth/recovery/cancel", {});
+
 export const signOut = () => api("POST", "/api/v1/auth/logout", {});
 export const revokeAll = () => api("POST", "/api/v1/auth/sessions/revoke-all", {});
 
@@ -52,6 +97,7 @@ export function explain(e: unknown): string {
     case "email_not_verified": return "Use one of your verified email addresses for the registrant contact.";
     case "contact_required": return "Add your registrant contact first.";
     case "name_unavailable": return "Someone else just took that name. Nothing was charged.";
+    case "recovery_not_open": return "This recovery was cancelled or has already finished. Start again if you still need it.";
     case "network": return "The connection failed. Check your network.";
     default: return e.status === 503 ? "Accounts are not connected in this preview." : "That did not work. Try again.";
   }

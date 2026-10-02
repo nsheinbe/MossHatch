@@ -1,14 +1,15 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI } from "../lib/account";
+import { RecoverAccount, RecoveryNotice } from "./Recovery";
 import { currentInvite, openWaitlist } from "../lib/waitlist";
 import { buildSiteMode } from "../lib/site";
 
-type Step = "choose" | "code" | "codes";
+type Step = "choose" | "code" | "codes" | "recover";
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
 const AccountData = lazy(() => import("./AccountData"));
 
-/** Sign-up (emailed code, then a passkey), passkey sign-in, and the small account view. No passwords anywhere. */
+/** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the small account view. No passwords anywhere. */
 export function AccountPanel() {
   const { accountOpen, account, set } = useUi();
   const [step, setStep] = useState<Step>("choose");
@@ -39,12 +40,15 @@ export function AccountPanel() {
   const refresh = async () => set({ account: await whoAmI() });
 
   if (account) {
+    const live = account.credentials.filter((c) => !c.suspended).length;
+    const paused = account.credentials.length - live;
     return (
       <aside className="panel side" role="region" aria-label="Your account">
         <div className="head"><h2 ref={head} tabIndex={-1}>Your account</h2></div>
         <div className="body">
+          {account.recovery && <RecoveryNotice recovery={account.recovery} onCancelled={async (m) => { await refresh(); setMsg(m); }} />}
           <p>Signed in as <strong>{account.user.email}</strong>.</p>
-          <p className="notice">{account.credentials.length} {account.credentials.length === 1 ? "passkey" : "passkeys"}. {account.credentials.length < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
+          <p className="notice">{live} {live === 1 ? "passkey" : "passkeys"}{paused ? `, and ${paused} paused by the recovery` : ""}. {live < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
           {msg && <p role="alert" className="notice">{msg}</p>}
           {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
           <div className="row-actions">
@@ -58,6 +62,12 @@ export function AccountPanel() {
         </div>
       </aside>
     );
+  }
+
+  if (step === "recover") {
+    // A finished recovery signs in: the account view below takes over and shows the hold.
+    return <RecoverAccount initialEmail={email} onBack={() => { setMsg(null); setStep("choose"); }} onClose={() => set({ accountOpen: false })}
+      onRecovered={async () => { await refresh(); setStep("choose"); }} />;
   }
 
   if (step === "codes") {
@@ -83,8 +93,10 @@ export function AccountPanel() {
           <>
             <p>Sign in with a passkey. There are no passwords.</p>
             <div className="row-actions">
-              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); await refresh(); set({ accountOpen: false }); })}>Sign in with a passkey</button>
+              {/* The recovery banner is shown at every sign-in, so the panel stays open while there is one. */}
+              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); const me = await whoAmI(); set({ account: me, accountOpen: !!me?.recovery }); })}>Sign in with a passkey</button>
             </div>
+            <p><button type="button" className="linklike lost-passkey" onClick={() => { setMsg(null); setStep("recover"); }}>Lost your passkey?</button></p>
             <hr className="rule" />
             {needInvite ? (
               <div role="group" aria-label="Invite only">

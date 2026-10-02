@@ -199,6 +199,16 @@ table.data td.val { word-break: break-all; }
 .panel.device fieldset { border: 0; padding: 0; margin: 8px 0; }
 .panel.device legend { font-weight: 700; margin-bottom: 4px; }
 .linklike { background: none; border: 0; padding: 0; text-decoration: underline; font: inherit; }
+/* Account recovery (Recovery.tsx) */
+.lost-passkey { min-height: 44px; }
+.rec-paths { border: 0; padding: 0; margin: 14px 0 0; }
+.rec-paths legend { font-weight: 700; padding: 0; margin-bottom: 4px; }
+.rec-radio { display: flex; gap: 10px; align-items: center; min-height: 44px; font-weight: 700; }
+.rec-radio input { width: 20px; height: 20px; flex: none; accent-color: var(--lantern); }
+.rec-paths .notice { margin: 0 0 8px 30px; }
+.rec-field { display: block; margin-top: 10px; }
+.rec-help { margin-top: 4px; }
+.rec-held { margin: 0 0 8px; padding-left: 20px; }
 /* Phase 4-5: the Nest, the Gate and Rescue (lazy chunks) */
 .tabs { flex-wrap: wrap; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
