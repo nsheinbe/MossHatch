@@ -6,6 +6,7 @@ import { openproviderGuardReasons } from "../config/openprovider-guard.ts";
 import type { Mode } from "../ports.ts";
 import { registrarScopeReasons } from "./scope.ts";
 import { createRegistrarRpc, MemoryNonceStore, type NonceStore, type RpcResponse } from "./server.ts";
+import { MemoryDailyCounter, RedisDailyCounter, RedisNonceStore, redisConfigFromEnv, redisRest, type DailyCounter } from "./shared-store.ts";
 
 /**
  * The `registrar` Vercel project (apps/registrar): the only process that holds the reseller credentials (PLAN 4.3b, threat rows 29
@@ -16,20 +17,25 @@ import { createRegistrarRpc, MemoryNonceStore, type NonceStore, type RpcResponse
  *   MH_SCOPE=registrar, MH_REGISTRAR_MODE=live, MH_REGISTRAR_PROVIDER=openprovider, OPENPROVIDER_ENV=production,
  *   OPENPROVIDER_USERNAME, OPENPROVIDER_PASSWORD, REGISTRAR_RPC_SECRET (32+ characters; the same value as in `web`),
  *   optional REGISTRAR_RPC_SECRET_PREVIOUS (rotation overlap), MH_REGISTRAR_KILL_SWITCH (open | writes_paused | all_paused),
- *   MH_REGISTRAR_DAILY_SPEND_OPS (paid operations per UTC day per instance; default 5 when live).
+ *   MH_REGISTRAR_DAILY_SPEND_OPS (paid operations per UTC day across all instances; default 5 when live), and the shared store
+ *   UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL and KV_REST_API_TOKEN), required when live (shared-store.ts).
  *
  * A misconfigured project still answers: an unsigned or badly signed call gets the usual 401, a signed call gets 503 with the reason
  * code (never a value), so `web`'s boot can name what is missing (`openprovider_credentials_missing` and the rest below).
  */
 export type RegistrarServeReason =
   | "registrar_scope_missing" | "registrar_rpc_secret_missing" | "registrar_mode_invalid" | "registrar_provider_unsupported"
-  | "openprovider_credentials_missing" | "live_outside_production" | "registrar_config_invalid" | string;
+  | "openprovider_credentials_missing" | "live_outside_production" | "registrar_config_invalid" | "registrar_shared_store_missing" | string;
 
 export interface RegistrarServeDeps {
   /** Tests pass a fake; production uses fetch. */
   transport?: OpHttpTransport;
   clock?: { now(): Date };
   nonces?: NonceStore;
+  /** The daily count of paid operations. Defaults to the shared store when configured, else per instance. */
+  spendCounter?: DailyCounter;
+  /** The shared store's fetch (tests pass a fake Redis). */
+  redisFetch?: typeof fetch;
   /** Codes only. Production writes one JSON line per event to the function log. */
   log?: (line: Record<string, unknown>) => void;
 }
@@ -37,21 +43,20 @@ export interface RegistrarServeDeps {
 const PAID = new Set(["register", "renew", "startTransferIn", "restore"]);
 
 /**
- * A per-instance cap on paid operations a UTC day: a second fuse behind web's database-backed `limits.daily_registrations` and the
- * spend fuse. It is in memory (the project has no database), so it bounds one instance, not the fleet; the Openprovider balance is the
- * hard limit behind both.
+ * A cap on paid operations a UTC day: a second fuse behind web's database-backed `limits.daily_registrations` and the spend fuse, with the
+ * Openprovider balance as the hard limit behind both. With the shared store the count covers every instance; the in-memory counter
+ * (sandbox, tests) bounds one instance. A counter that cannot answer refuses the operation (fail closed).
  */
-export function spendCapped(port: RegistrarPort, maxPerDay: number, clock: { now(): Date }, onTrip: () => void): RegistrarPort {
-  let day = ""; let used = 0;
+export function spendCapped(port: RegistrarPort, maxPerDay: number, clock: { now(): Date }, onTrip: () => void, counter: DailyCounter = new MemoryDailyCounter()): RegistrarPort {
   return new Proxy(port, {
     get(target, prop, recv) {
       const v = Reflect.get(target, prop, recv);
       if (typeof prop !== "string" || !PAID.has(prop) || typeof v !== "function") return typeof v === "function" ? v.bind(target) : v;
       return async (...args: unknown[]) => {
-        const today = clock.now().toISOString().slice(0, 10);
-        if (today !== day) { day = today; used = 0; }
-        if (used >= maxPerDay) { onTrip(); throw new RegistrarError("rate_limited", "daily spend cap reached", { retryable: false, outcomeUnknown: false, code: "registrar_daily_spend_cap" }); }
-        used++;
+        let used: number;
+        try { used = await counter.take(clock.now().toISOString().slice(0, 10)); }
+        catch { throw new RegistrarError("unavailable", "shared store unavailable", { retryable: true, outcomeUnknown: false, code: "registrar_shared_store_unavailable" }); }
+        if (used > maxPerDay) { onTrip(); throw new RegistrarError("rate_limited", "daily spend cap reached", { retryable: false, outcomeUnknown: false, code: "registrar_daily_spend_cap" }); }
         return (v as (...a: unknown[]) => unknown).apply(target, args);
       };
     },
@@ -93,6 +98,8 @@ export function registrarServeReasons(env: Record<string, string | undefined>): 
     if ([...used].some((p) => p !== "openprovider")) reasons.push("registrar_provider_unsupported");
   } catch { reasons.push("registrar_provider_unsupported"); }
   if (!env.OPENPROVIDER_USERNAME || !env.OPENPROVIDER_PASSWORD) reasons.push("openprovider_credentials_missing");
+  // Live selling needs the nonces and the daily cap shared by every instance (shared-store.ts).
+  if (live && !redisConfigFromEnv(env)) reasons.push("registrar_shared_store_missing");
   return { reasons: [...new Set(reasons)], mode, live };
 }
 
@@ -101,6 +108,8 @@ export function registrarRpcFromEnv(env: Record<string, string | undefined>, dep
   const clock = deps.clock ?? { now: () => new Date() };
   const log = deps.log ?? ((line) => console.info(JSON.stringify(line)));
   const { reasons, live, mode } = registrarServeReasons(env);
+  const redisCfg = redisConfigFromEnv(env);
+  const redis = redisCfg ? redisRest(redisCfg, deps.redisFetch ?? fetch) : null;
   const secrets = reasons.includes("registrar_rpc_secret_missing") ? [] : [env.REGISTRAR_RPC_SECRET!, ...(env.REGISTRAR_RPC_SECRET_PREVIOUS ? [env.REGISTRAR_RPC_SECRET_PREVIOUS] : [])];
   let port: RegistrarPort;
   const blocking = reasons.filter((r) => r !== "registrar_rpc_secret_missing");
@@ -118,13 +127,14 @@ export function registrarRpcFromEnv(env: Record<string, string | undefined>, dep
       });
       const capRaw = env.MH_REGISTRAR_DAILY_SPEND_OPS;
       const cap = capRaw !== undefined && /^\d{1,6}$/.test(capRaw) ? Number(capRaw) : live ? 5 : null;
-      port = cap === null ? adapter : spendCapped(adapter, cap, clock, () => log({ event: "registrar_alert", kind: "daily_spend_cap", detail: String(cap) }));
+      const counter = deps.spendCounter ?? (redis ? new RedisDailyCounter(redis) : new MemoryDailyCounter());
+      port = cap === null ? adapter : spendCapped(adapter, cap, clock, () => log({ event: "registrar_alert", kind: "daily_spend_cap", detail: String(cap) }), counter);
     } catch {
       port = refusingPort("registrar_config_invalid");
       log({ event: "registrar_not_configured", reasons: ["registrar_config_invalid"] });
     }
   }
-  const rpc = createRegistrarRpc({ port, secrets, clock, nonces: deps.nonces ?? new MemoryNonceStore(), onReject: (r) => log({ event: "registrar_rpc_reject", reason: r }) });
+  const rpc = createRegistrarRpc({ port, secrets, clock, nonces: deps.nonces ?? (redis ? new RedisNonceStore(redis) : new MemoryNonceStore()), onReject: (r) => log({ event: "registrar_rpc_reject", reason: r }) });
   return {
     reasons,
     async handler(request: Request): Promise<Response> {
