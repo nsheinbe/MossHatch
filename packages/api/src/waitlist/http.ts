@@ -72,11 +72,16 @@ async function readBody(r: Request): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-/** Cross-site posts are refused (the form and the app post same-origin). A request without these headers (curl) is allowed. */
+/**
+ * Cross-site posts are refused (the form and the app post same-origin). A request without these headers (curl) is allowed.
+ * Our own pages send `Referrer-Policy: no-referrer` (the confirm and unsubscribe links carry a token), and under that policy a
+ * browser posts their forms with `Origin: null`. That is accepted only when the browser itself says the post is same-origin.
+ */
 function sameSite(d: WaitlistDeps, r: Request): boolean {
   const site = r.headers.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") return false;
   const origin = r.headers.get("origin");
+  if (origin === "null") return site === "same-origin";
   return !origin || origin === d.origin || origin === new URL(r.url).origin;
 }
 

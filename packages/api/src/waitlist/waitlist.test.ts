@@ -97,7 +97,8 @@ describe("waitlist", () => {
     // The unsubscribe token cannot confirm, and the confirm token cannot unsubscribe (single purpose).
     expect((await post({ t: u }, { form: true, path: "/api/waitlist/confirm" })).status).toBe(404);
     expect((await get(`/api/waitlist/unsubscribe?t=${t}`)).status).toBe(404);
-    const done = await post({ t }, { form: true, path: "/api/waitlist/confirm" });
+    // As a browser posts the confirm page's form: that page is no-referrer, so the Origin header is "null".
+    const done = await post({ t }, { form: true, path: "/api/waitlist/confirm", headers: { origin: "null", "sec-fetch-site": "same-origin" } });
     expect(done.status).toBe(200);
     expect(done.text).toContain("You're #1 in line");
     r = await row();
@@ -184,6 +185,10 @@ describe("waitlist", () => {
     expect((await post(good(), { headers: { origin: "https://evil.example" } })).json.error.code).toBe("cross_site");
     expect((await post(good(), { headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
     expect((await post(good(), { headers: { origin: ORIGIN, "sec-fetch-site": "same-origin" } })).status).toBe(202);
+    // Our pages are no-referrer, so a browser posts their forms with Origin: null; only a same-origin one is accepted.
+    expect((await post(good(), { headers: { origin: "null", "sec-fetch-site": "same-origin" } })).status).toBe(202);
+    expect((await post(good(), { headers: { origin: "null", "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    expect((await post(good(), { headers: { origin: "null" } })).status).toBe(403);
     expect((await get("/api/waitlist/else")).status).toBe(404);
     const html = await post({ email: "bad", consent: "yes" }, { form: true });
     expect(html.status).toBe(400);
