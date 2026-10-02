@@ -11,9 +11,9 @@
     { "source": "/.well-known/oauth-authorization-server", "destination": "/api/index" },
     { "source": "/.well-known/oauth-protected-resource", "destination": "/api/index" },
     { "source": "/.well-known/oauth-protected-resource/:path*", "destination": "/api/index" },
-    { "source": "/checkout/return", "destination": "/index.html" },
-    { "source": "/device", "destination": "/index.html" },
-    { "source": "/invite", "destination": "/index.html" }
+    { "source": "/checkout/return", "destination": "/" },
+    { "source": "/device", "destination": "/" },
+    { "source": "/invite", "destination": "/" }
   ],
   "headers": [
     {
