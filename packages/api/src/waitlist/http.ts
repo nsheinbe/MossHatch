@@ -3,7 +3,7 @@ import { connect } from "@mosshatch/db";
 import type { EmailPort } from "../ports.ts";
 import { ResendTransport } from "../mail/transport.ts";
 import { MAX_BODY_BYTES, NET_LIMIT, TOKEN_LIMIT, WaitlistError, confirm, join, limitNetwork, tokenLive, unsubscribe, type Answer, type Source, type WaitlistDeps } from "./service.ts";
-import { FROM_DEFAULT, homeLink, page, para, tokenForm } from "./text.ts";
+import { homeLink, page, para, tokenForm } from "./text.ts";
 
 /**
  * The waitlist endpoints, served by api/index.ts before (and independently of) the full API boot, so they work while the full API
@@ -13,7 +13,7 @@ import { FROM_DEFAULT, homeLink, page, para, tokenForm } from "./text.ts";
  *   POST /api/waitlist/confirm         confirm once; shows the place in line
  *   GET  /api/waitlist/unsubscribe?t=  a page with a Leave button
  *   POST /api/waitlist/unsubscribe     leave (also RFC 8058 one-click: the token in the query, `List-Unsubscribe=One-Click` in the body)
- * Joining needs DATABASE_URL and RESEND_API_KEY. Existing confirmation and unsubscribe links remain usable without email delivery.
+ * Joining needs DATABASE_URL, RESEND_API_KEY and an explicit valid WAITLIST_FROM. Existing confirmation and unsubscribe links remain usable without email delivery.
  */
 export const WAITLIST_PREFIX = "/api/waitlist";
 
@@ -22,12 +22,24 @@ export class NullEmail implements EmailPort {
   async send() { return { id: "none" }; }
 }
 
+/** Presence of a key is insufficient: joining requires an explicit valid sender.
+ * Provider/domain verification still needs the operator's controlled live check. */
+export function waitlistSenderConfigured(env: Record<string, string | undefined>): boolean {
+  const from = env.WAITLIST_FROM ?? "";
+  if (!env.RESEND_API_KEY || !from || from.length > 254 || /[\r\n\x00-\x1f\x7f]/.test(from)) return false;
+  const match = /^(?:[^<>"\r\n]{1,80} <)?([^<>]+)>?$/.exec(from);
+  if (!match || from.includes("<") !== from.endsWith(">")) return false;
+  const address = match[1]!;
+  return /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(address)
+    && !address.startsWith(".") && !address.includes("..") && !address.includes(".@");
+}
+
 export function depsFromEnv(env: Record<string, string | undefined>): WaitlistDeps | null {
   if (!env.DATABASE_URL) return null;
   const origin = (env.WAITLIST_ORIGIN ?? env.MH_ORIGIN ?? "https://mosshatch.com").replace(/\/$/, "");
   // The hash key: WAITLIST_SECRET when set, otherwise derived from the database URL (a secret this deployment already holds).
   const secret = crypto.createHash("sha256").update("mosshatch-waitlist\0" + (env.WAITLIST_SECRET ?? env.DATABASE_URL)).digest();
-  const email: EmailPort = env.RESEND_API_KEY ? new ResendTransport({ apiKey: env.RESEND_API_KEY, from: env.WAITLIST_FROM ?? FROM_DEFAULT }) : new NullEmail();
+  const email: EmailPort = waitlistSenderConfigured(env) ? new ResendTransport({ apiKey: env.RESEND_API_KEY!, from: env.WAITLIST_FROM! }) : new NullEmail();
   return { pool: connect(env.DATABASE_URL, { max: 3 }), clock: { now: () => new Date() }, email, secret, origin, warn: (l) => console.warn(l) };
 }
 
@@ -39,11 +51,11 @@ export async function handleWaitlist(request: Request, env: Record<string, strin
   if (path !== WAITLIST_PREFIX && !path.startsWith(WAITLIST_PREFIX + "/")) return null;
   if (path === WAITLIST_PREFIX + "/status") {
     if (request.method !== "GET") return jsonRes(405, { error: { code: "method_not_allowed" } }, { allow: "GET" });
-    return jsonRes(200, { joiningAvailable: Boolean(env.DATABASE_URL && env.RESEND_API_KEY), deliveryConfigured: Boolean(env.RESEND_API_KEY) });
+    return jsonRes(200, { joiningAvailable: Boolean(env.DATABASE_URL && waitlistSenderConfigured(env)), deliveryConfigured: waitlistSenderConfigured(env) });
   }
   // Fail before opening a pool or writing an entry. Never claim a confirmation
   // was delivered when the deployment has no sender configured.
-  if (path.replace(/\/$/, "") === WAITLIST_PREFIX && request.method === "POST" && !env.RESEND_API_KEY) {
+  if (path.replace(/\/$/, "") === WAITLIST_PREFIX && request.method === "POST" && !waitlistSenderConfigured(env)) {
     if ((request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
       return htmlRes(503, page("The waitlist is taking a pause", para("We cannot deliver confirmation emails right now. No signup was saved. Please try again later.") + '<p><a href="/waitlist">Back to the form</a></p>'));
     }
