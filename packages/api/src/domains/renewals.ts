@@ -1,3 +1,4 @@
+import { readFundingLease, releaseFundingLease, reserveFunding } from "../orders/funding.ts";
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
@@ -251,15 +252,20 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
   // A card the network replaced with another brand is a new card: even a Renew now click pays on Checkout until the mandate is signed again.
   if (mandate?.reconsentRequiredAt) { await setHeld(ctx, term, "reconsent_required"); return "wait"; }
 
-  const claimed = await ltx(m, async (c) => {
+  const fundingLease = await readFundingLease(ctx, svcOf(ctx).registrar);
+  let claimed;
+  try { claimed = await ltx(m, async (c) => {
     const cur = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state as string | undefined;
     if (cur !== "draft") return null;
     // A Checkout payment for this order is being recorded: no off-session charge is sent beside it.
     const last = await latestOp(c, o.id, "renew_charge");
     if (last && last.state !== "resolved" && isCheckoutOp(last)) return "checkout" as const;
+    if (!(await reserveFunding(ctx, c, o, fundingLease, { excludeTermId: term.id }))) return "funds" as const;
     await c.query("update renewal_terms set state = 'charging', held_reason = null where id = $1 and state in ('scheduled','held','charging','payment_failed')", [term.id]);
     return claimOp(c, m, o.id, "renew_charge", { term: term.id, req: { customer: card.customer, payment_method: card.paymentMethod } });
   });
+  } finally { await releaseFundingLease(svcOf(ctx).registrar, fundingLease); }
+  if (claimed === "funds") { await setHeld(ctx, term, "funds_gate"); return "wait"; }
   if (!claimed) return "progressed";                        // another worker moved the order
   if (claimed === "checkout") {
     await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 60_000)]);
@@ -345,7 +351,7 @@ async function failedCharge(m: M, o: OrderRow, term: TermRow, kind: "declined" |
   const nextDay = DECLINE_LADDER_DAYS[rung];
   const nextAt = kind === "declined" && nextDay !== undefined ? new Date(Math.max(term.chargeAt.getTime() + nextDay * DAY_MS, now.getTime() + 60_000)) : null;
   await ltx(m, async (c) => {
-    await c.query("update orders set failure_code = $2, next_check_at = $3, check_count = check_count + 1 where id = $1 and state = 'draft'", [o.id, kind === "declined" ? "card_declined" : "authentication_required", nextAt]);
+    await c.query("update orders set funding_reserved_minor = 0, failure_code = $2, next_check_at = $3, check_count = check_count + 1 where id = $1 and state = 'draft'", [o.id, kind === "declined" ? "card_declined" : "authentication_required", nextAt]);
     await c.query("update renewal_terms set state = $2, held_reason = $3, try = $4, next_try_at = $5 where id = $1", [term.id, nextAt ? "charging" : "payment_failed", nextAt ? null : kind, rung, nextAt]);
     if (!nextAt) await raiseAlert(ctx, c, { severity: "warn", kind: "renewal_payment_failed", subject: o.id, detail: { order_id: o.id, kind } });
     const to = await customerAddresses(c, o.userId);
@@ -402,7 +408,7 @@ export async function cancelDraftRenewals(reg: RegistrarPort, fqdn: string): Pro
 async function finishRenewed(m: M, o: OrderRow, term: TermRow | null, op: Op | null, expires: Date | null): Promise<Step> {
   const ctx = m.ctx;
   const done = await ltx(m, async (c) => {
-    const r = await move(m, c, o.id, "renewing_upstream", "renewed", { registrar_expires_at: expires, registered_at: ctx.clock.now(), next_check_at: null, check_count: 0, failure_code: null }, { cause: "job", detail: { renewal: true } });
+    const r = await move(m, c, o.id, "renewing_upstream", "renewed", { funding_reserved_minor: 0, registrar_expires_at: expires, registered_at: ctx.clock.now(), next_check_at: null, check_count: 0, failure_code: null }, { cause: "job", detail: { renewal: true } });
     if (!r) return null;
     if (op) await resolveOp(c, op.id, "renewed", { registrarOrderId: op.registrarOrderId ?? undefined });
     if (term) await c.query("update renewal_terms set state = 'renewed', held_reason = null where id = $1", [term.id]);
@@ -722,13 +728,16 @@ export async function renewalCheckoutPaid(ctx: AppContext, orderId: string, sess
     }
   }
   const cur0 = o;
-  const claimed = mine() && term ? await ltx(m, async (c) => {
+  const fundingLease = mine() && term ? await readFundingLease(ctx, svc.registrar) : null;
+  let claimed;
+  try { claimed = mine() && term ? await ltx(m, async (c) => {
     const cur = (await c.query("select state from orders where id = $1 for update", [cur0.id])).rows[0]?.state as string | undefined;
     if (cur !== "draft") return null;
     const last = await latestOp(c, cur0.id, "renew_charge");
     if (last && last.state !== "resolved" && !isCheckoutOp(last)) return "busy" as const;   // an off-session try started meanwhile
+    if (!(await reserveFunding(ctx, c, cur0, fundingLease, { excludeTermId: term.id }))) return null;
     return claimOp(c, m, cur0.id, "renew_charge", { term: term.id, via: "checkout" });
-  }) : null;
+  }) : null; } finally { await releaseFundingLease(svc.registrar, fundingLease); }
   if (claimed === "busy") throw new RenewalChargeInFlight();
   if (claimed && term) {
     await charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, claimed.op.id);

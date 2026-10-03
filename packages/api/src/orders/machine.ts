@@ -1,3 +1,4 @@
+import { readFundingLease, releaseFundingLease, reserveFunding } from "./funding.ts";
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError } from "@mosshatch/registrar/port";
@@ -273,7 +274,15 @@ async function evaluateAuthorization(m: M, o: OrderRow, pi: PaymentIntent, billi
     // Only a Checkout that carried setup_future_usage=off_session leaves a card that may be charged later (C-31).
     card_reusable: o.saveCard && !!pi.customer && !!pi.payment_method,
   };
-  const result = await ltx(m, async (c) => {
+  const fundingLease = await readFundingLease(m.ctx, m.svc.registrar);
+  let result;
+  try { result = await ltx(m, async (c) => {
+    const state = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state;
+    if (!["checkout_open", "payment_failed"].includes(state)) return "gone" as const;
+    if (!(await reserveFunding(m.ctx, c, o, fundingLease))) {
+      await move(m, c, o.id, ["checkout_open", "payment_failed"], "canceling", { void_reason: "registrar_unavailable", cancel_pi_id: pi.id }, { cause: "job", detail: { funding: "below_floor" } });
+      return "funds" as const;
+    }
     await c.query("savepoint authorize");
     let row: OrderRow | null;
     try { row = await move(m, c, o.id, ["checkout_open", "payment_failed"], to, patch, { cause: "job", detail: to === "paid_before_registration" ? { unexpected_capture: true } : undefined }); await c.query("release savepoint authorize"); }
@@ -294,7 +303,7 @@ async function evaluateAuthorization(m: M, o: OrderRow, pi: PaymentIntent, billi
       [o.id, o.userId, pi.id, amount, amount - o.subtotalMinor, pi.currency, pi.status, o.livemode, region, billing?.country?.toUpperCase() ?? null, pi.card_brand ?? null],
     );
     return "ok" as const;
-  });
+  }); } finally { await releaseFundingLease(m.svc.registrar, fundingLease); }
   return result === "gone" ? "wait" : "progressed";
 }
 
@@ -490,7 +499,7 @@ async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string
   const at = now(m);
   const expires = r.expiresAt ?? dom?.expiresAt ?? null;
   const moved = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, ["registering", "paid_before_registration", "outcome_unknown"], "registered", { registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0 }, { cause: "job" });
+    const row = await move(m, c, o.id, ["registering", "paid_before_registration", "outcome_unknown"], "registered", { funding_reserved_minor: 0, registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0 }, { cause: "job" });
     if (!row) return null;
     if (r.op) await resolveOp(c, r.op.id, "registered", { registrarOrderId: r.registrarOrderId });
     await createDomainRow(m, c, o, { registrarRef: r.registrarOrderId, at, dom });
@@ -936,7 +945,8 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
     }
   }
   const done = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, "canceling", "voided", {}, { cause: "job", detail: { reason: o.voidReason } });
+    const unresolved = (await c.query("select 1 from order_operations where order_id = $1 and kind = 'register' and state = 'sent'", [o.id])).rowCount;
+    const row = await move(m, c, o.id, "canceling", "voided", unresolved ? {} : { funding_reserved_minor: 0 }, { cause: "job", detail: { reason: o.voidReason } });
     if (!row) return null;
     await c.query("update payments set status = 'canceled' where order_id = $1 and status = 'requires_capture'", [o.id]);
     return row;
