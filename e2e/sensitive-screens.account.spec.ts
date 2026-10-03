@@ -422,9 +422,10 @@ test("visitors: a new token is shown once and never inside a live region", async
   api.on("GET", "^/api/v1/approvals$", { approvals: [] });
   api.on("POST", "^/api/v1/bindings$", { id: "0190f0f0-0000-7000-8000-00000000b001", token: TOKEN, prefix: TOKEN.slice(0, 12), expires_at: "2026-10-30T00:00:00.000Z", scopes: ["domains.read:*"] });
   await page.getByRole("button", { name: "Account", exact: true }).click();
-  await page.getByRole("button", { name: "Visitors" }).click();
-  const region = page.getByRole("region", { name: "Visitors", exact: true });
+  await page.getByRole("button", { name: "Connected apps" }).click();
+  const region = page.getByRole("region", { name: "Connected apps", exact: true });
   await expect(region.getByRole("heading", { name: "New token" })).toBeVisible({ timeout: 20_000 });
+  await region.getByLabel("Name", { exact: true }).fill("Build bot");
   await region.getByRole("button", { name: "Create with passkey" }).click();
   await region.getByRole("group", { name: "Confirm with your passkey" }).getByRole("button", { name: "Approve with passkey" }).click();
   const shown = region.locator("code.token-once");
@@ -434,6 +435,13 @@ test("visitors: a new token is shown once and never inside a live region", async
   await clean(page, "token shown once");
   await region.getByRole("button", { name: "I stored it" }).click();
   await expect(shown).toHaveCount(0);
+  // Account and Connected apps never show together: opening one closes the other.
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Your account" })).toBeVisible();
+  await expect(region).toHaveCount(0);
+  await page.getByRole("button", { name: "Connected apps" }).click();
+  await expect(region).toBeVisible();
+  await expect(page.getByRole("region", { name: "Your account" })).toHaveCount(0);
   expect(await page.content()).not.toContain(TOKEN);
 });
 
@@ -459,8 +467,8 @@ test("ST-72 approval card: more access signs the token's access as the server ha
   api.on("POST", `^/api/v1/bindings/${esc(BID)}/widen$`, {});
   api.on("POST", `^/api/v1/approvals/${esc(RID)}/resolve$`, { state: "completed" });
   await page.getByRole("button", { name: "Account", exact: true }).click();
-  await page.getByRole("button", { name: "Visitors" }).click();
-  const region = page.getByRole("region", { name: "Visitors", exact: true });
+  await page.getByRole("button", { name: "Connected apps" }).click();
+  const region = page.getByRole("region", { name: "Connected apps", exact: true });
   await region.getByRole("button", { name: "Review" }).click();
   const card = region.locator(".approval-card");
   await expect(card.getByRole("heading", { name: "Give a token more access" })).toBeVisible({ timeout: 20_000 });

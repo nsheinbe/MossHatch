@@ -7,7 +7,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40   # the full e2e suite alone takes 15 to 22 minutes depending on the runner; 25 cut passing runs off
     services:
       postgres:
         image: postgres:16

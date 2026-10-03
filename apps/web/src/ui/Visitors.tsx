@@ -11,6 +11,30 @@ const KIND = (v: Visitor) => (v.connected_app ? "Connected app" : v.kind === "cl
 const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 const minor = (dollars: string) => Math.round(Number(dollars || "0") * 100);
 
+/** The everyday choices for a new token, in plain words. Each applies to every name you own; anything narrower is under Advanced. */
+const CHOICES = [
+  { scope: "domains.read:*", label: "See my names", hint: "Names, expiry dates and settings." },
+  { scope: "dns.read:*", label: "Read DNS records" },
+  { scope: "dns.write:*", label: "Change DNS records", hint: "Changes to mail, nameservers and other sensitive records still wait for your passkey." },
+  { scope: "register.propose:*", label: "Suggest names to buy", hint: "Nothing is bought until you approve it with your passkey." },
+  { scope: "renew.propose:*", label: "Suggest renewals", hint: "You approve each one." },
+  { scope: "transfer.status:*", label: "Check transfers in progress" },
+] as const;
+/** Whether any of these scopes lets the token ask you to pay, so a spend cap means something. */
+const canSpend = (scopes: readonly string[]) => scopes.some((x) => /^(register|renew)\.propose:/.test(x));
+
+const WORDS: Record<string, string> = {
+  "domains.read": "See names", "dns.read": "Read DNS", "dns.write": "Change DNS", "nest.names": "List secret names", "secrets.read": "Read secrets",
+  "secrets.write": "Write secrets", "recipes.plan": "Plan recipes", "recipes.apply": "Apply recipes", "register.propose": "Suggest names to buy",
+  "renew.propose": "Suggest renewals", "transfer.status": "Check transfers", "mandate.off": "Turn auto-renew off",
+};
+/** "dns.write:example.com" reads as "Change DNS on example.com"; the raw scope is still shown next to it. */
+function describeScope(raw: string): string {
+  const [cap = "", res = "", env] = raw.split(":");
+  if (cap === "domains.read") return res === "*" ? "See all names" : `See ${res}`;
+  return `${WORDS[cap] ?? cap} ${res === "*" ? "on all names" : `on ${res}`}${env ? (env === "*" ? ", every environment" : `, ${env}`) : ""}`;
+}
+
 /**
  * Visitors (PLAN 4.5, threat row 15): everything that holds a token for this account, what it may do, when it was last used and
  * what it has spent; the requests waiting for you; one button that sends every visitor home. Lazy chunk, opened from Account.
@@ -27,7 +51,7 @@ export default function Visitors() {
   const [made, setMade] = useState<{ name: string; token: string } | null>(null);
   const [edit, setEdit] = useState<string | null>(null);
   const [confirmHome, setConfirmHome] = useState(false);
-  const [form, setForm] = useState({ name: "Build bot", scopes: "domains.read:*", cap: "0", days: "30" });
+  const [form, setForm] = useState({ name: "", picks: ["domains.read:*"] as string[], extra: "", cap: "0", days: "30" });
   const [change, setChange] = useState({ scopes: "", cap: "", days: "" });
   const [threshold, setThr] = useState("");
   const head = useRef<HTMLHeadingElement>(null);
@@ -47,7 +71,11 @@ export default function Visitors() {
     ev.preventDefault();
     if (!account) return;
     setMsg(null); setMade(null);
-    const input = { name: form.name.trim(), scopes: lines(form.scopes), spend_cap_minor: minor(form.cap), expires_in_days: Number(form.days) };
+    const scopes = [...new Set([...form.picks, ...lines(form.extra)])];
+    if (!form.name.trim()) { setMsg("Give the token a name, like the app or agent that will use it."); return; }
+    if (scopes.length === 0) { setMsg("Pick at least one thing the token can do."); return; }
+    const spends = canSpend(scopes);
+    const input = { name: form.name.trim(), scopes, spend_cap_minor: spends ? minor(form.cap) : 0, expires_in_days: Number(form.days) };
     setReq({ type: "agent.token.create" as StepUpType, target: account.user.id, input, run: async (actionId) => { const t = await createToken(actionId); setMade({ name: input.name, token: t.token }); await load(); } });
   };
   const applyChange = async (v: Visitor) => {
@@ -61,7 +89,7 @@ export default function Visitors() {
     }
   };
   const revoke = async (v: Visitor) => { try { await revokeVisitor(v.id); done(`Revoked ${v.name}. It no longer works anywhere.`); } catch (e) { setMsg(explainVisitor(e)); } };
-  const home = async () => { try { const r = await sendHome(); setConfirmHome(false); done(`Every visitor was sent home (${r.revoked} revoked). Waiting requests were declined.`); } catch (e) { setMsg(explainVisitor(e)); } };
+  const home = async () => { try { const r = await sendHome(); setConfirmHome(false); done(`Everything was disconnected (${r.revoked} revoked). Waiting requests were declined.`); } catch (e) { setMsg(explainVisitor(e)); } };
   const saveThreshold = async (ev: React.FormEvent) => { ev.preventDefault(); try { await setThreshold(minor(threshold)); setMsg("Saved."); } catch (e) { setMsg(explainVisitor(e)); } };
 
   const live = (data?.visitors ?? []).filter((v) => !v.revoked_at);
@@ -69,9 +97,9 @@ export default function Visitors() {
   return (
     <main>
       <div className="panel ledger visitors" role="region" aria-labelledby="visitors-h">
-        <div className="head"><h2 id="visitors-h" ref={head} tabIndex={-1}>Visitors</h2></div>
+        <div className="head"><h2 id="visitors-h" ref={head} tabIndex={-1}>Connected apps</h2></div>
         <div className="body">
-          <p className="notice">Tokens, command-line sign-ins and connected apps that can act for you. None of them can buy anything or change sensitive DNS without your passkey.</p>
+          <p className="notice">Apps, AI agents and command-line tools you have let act for you. None of them can buy anything or change sensitive DNS without your passkey, and you can take access back at any time.</p>
           {msg && <p role="status" className="notice">{msg}</p>}
           {!data && !msg && <p role="status">Loading.</p>}
           {open && openCard && (
@@ -101,7 +129,7 @@ export default function Visitors() {
 
               <section className="section" aria-labelledby="who-h">
                 <h3 id="who-h">Who has access</h3>
-                {live.length === 0 ? <p>No visitors.</p> : (
+                {live.length === 0 ? <p>Nothing is connected yet. Create a token below to let an app or agent work with your names.</p> : (
                   <div className="table-wrap">
                     <table className="data">
                       <caption className="sr-only">Tokens and connected apps</caption>
@@ -111,7 +139,7 @@ export default function Visitors() {
                           <tr key={v.id}>
                             <td>{v.name}{v.paused ? " (paused)" : ""}<br /><code className="fineprint">{v.prefix}</code></td>
                             <td>{KIND(v)}{v.connected_app?.redirect_host ? <><br /><span className="fineprint">returns to {v.connected_app.redirect_host}</span></> : null}{v.connected_app?.reported_name ? <><br /><span className="fineprint">calls itself {v.connected_app.reported_name} (not verified)</span></> : null}</td>
-                            <td><ul className="plain">{v.scopes.map((s) => <li key={s}><code>{s}</code></li>)}</ul></td>
+                            <td><ul className="plain">{v.scopes.map((s) => <li key={s}>{describeScope(s)} <code className="fineprint">{s}</code></li>)}</ul></td>
                             <td>{when(v.last_used_at)}</td>
                             <td>{when(v.expires_at)}</td>
                             <td>{v.kind === "agent" ? `${usd(v.spend.spent_minor)} of ${usd(v.spend.cap_minor)}` : "Cannot spend"}</td>
@@ -141,6 +169,7 @@ export default function Visitors() {
 
               <section className="section" aria-labelledby="new-h">
                 <h3 id="new-h">New token</h3>
+                <p className="fineprint">A token is a key you paste into an app or agent so it can work with your names. You see it once.</p>
                 {made ? (
                   <div>
                     {/* Only the sentence is announced; a live region would read the token itself aloud. */}
@@ -151,14 +180,33 @@ export default function Visitors() {
                 ) : (
                   <form className="form-grid" onSubmit={create}>
                     <label htmlFor="tok-name">Name</label>
-                    <input id="tok-name" className="text-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
-                    <label htmlFor="tok-scopes">What it can do, one scope per line</label>
-                    <textarea id="tok-scopes" className="text-input" rows={3} value={form.scopes} onChange={(e) => setForm({ ...form, scopes: e.target.value })} spellCheck={false} aria-describedby="tok-scopes-hint" />
-                    <p id="tok-scopes-hint" className="fineprint">For example <code>dns.read:example.com</code>, <code>secrets.read:example.com:dev</code> or <code>register.propose:*</code>. Production needs <code>:prod</code> by name.</p>
-                    <label htmlFor="tok-cap">Spend cap in dollars, for purchases you approve</label>
-                    <input id="tok-cap" className="text-input" inputMode="decimal" value={form.cap} onChange={(e) => setForm({ ...form, cap: e.target.value })} />
-                    <label htmlFor="tok-days">Days until it expires (at most 90)</label>
-                    <input id="tok-days" className="text-input" inputMode="numeric" value={form.days} onChange={(e) => setForm({ ...form, days: e.target.value })} />
+                    <input id="tok-name" className="text-input" value={form.name} placeholder="For example: Claude, deploy script" onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
+                    <fieldset className="choices">
+                      <legend>What it can do</legend>
+                      {CHOICES.map((c) => (
+                        <label key={c.scope} className="check">
+                          <input type="checkbox" checked={form.picks.includes(c.scope)} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, c.scope] : form.picks.filter((x) => x !== c.scope) })} />
+                          <span>{c.label}{"hint" in c ? <span className="fineprint">{c.hint}</span> : null}</span>
+                        </label>
+                      ))}
+                    </fieldset>
+                    {canSpend([...form.picks, ...lines(form.extra)]) ? (
+                      <>
+                        <label htmlFor="tok-cap">Most it can ask you to spend, in dollars</label>
+                        <input id="tok-cap" className="text-input" inputMode="decimal" value={form.cap} onChange={(e) => setForm({ ...form, cap: e.target.value })} aria-describedby="tok-cap-hint" />
+                        <p id="tok-cap-hint" className="fineprint">A ceiling across all its suggestions. You still approve every purchase yourself.</p>
+                      </>
+                    ) : null}
+                    <label htmlFor="tok-days">Expires after</label>
+                    <select id="tok-days" className="text-input" value={form.days} onChange={(e) => setForm({ ...form, days: e.target.value })}>
+                      <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days (the longest)</option>
+                    </select>
+                    <details>
+                      <summary>Advanced: one name only, secrets, recipes</summary>
+                      <label htmlFor="tok-scopes">Extra scopes, one per line</label>
+                      <textarea id="tok-scopes" className="text-input" rows={3} value={form.extra} onChange={(e) => setForm({ ...form, extra: e.target.value })} spellCheck={false} aria-describedby="tok-scopes-hint" />
+                      <p id="tok-scopes-hint" className="fineprint">For example <code>dns.read:example.com</code>, <code>secrets.read:example.com:dev</code> or <code>recipes.plan:example.com</code>. Production secrets need <code>:prod</code> and a name.</p>
+                    </details>
                     <div className="row-actions"><button type="submit" className="btn primary" disabled={!account}>Create with passkey</button></div>
                   </form>
                 )}
@@ -177,14 +225,14 @@ export default function Visitors() {
               </section>
 
               <section className="section" aria-labelledby="home-h">
-                <h3 id="home-h">Send all visitors home</h3>
+                <h3 id="home-h">Disconnect everything</h3>
                 <p>Revokes every token, command-line sign-in and connected app at once, and declines every waiting request. It works even when something is going wrong.</p>
                 {confirmHome ? (
-                  <div className="row-actions" role="group" aria-label="Confirm sending every visitor home">
-                    <button type="button" className="btn primary" onClick={() => void home()}>Yes, send them all home</button>
+                  <div className="row-actions" role="group" aria-label="Confirm disconnecting everything">
+                    <button type="button" className="btn primary" onClick={() => void home()}>Yes, disconnect everything</button>
                     <button type="button" className="btn secondary" onClick={() => setConfirmHome(false)}>Cancel</button>
                   </div>
-                ) : <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setConfirmHome(true)}>Send all visitors home</button></div>}
+                ) : <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setConfirmHome(true)}>Disconnect everything</button></div>}
               </section>
             </>
           )}

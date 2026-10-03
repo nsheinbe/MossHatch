@@ -155,8 +155,8 @@ details summary { cursor: pointer; min-height: 32px; }
 
 .text-input { display: block; width: 100%; min-height: 48px; padding: 0 16px; margin-top: 4px; border-radius: 24px; border: 1px solid rgba(241,234,216,.4); background: rgba(11,18,33,.66); color: var(--shell); }
 .rule { border: 0; border-top: 1px solid var(--glass-border); margin: 18px 0; }
-.codes { list-style: none; padding: 0; margin: 10px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.codes code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; }
+.codes { list-style: none; padding: 12px 14px; margin: 10px 0; display: grid; grid-template-columns: 1fr; gap: 6px; border-radius: 12px; background: rgba(11,18,33,.5); user-select: all; }
+.codes code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; letter-spacing: .04em; overflow-wrap: anywhere; }
 
 /* Phase 3: domain panel, ledger */
 .side.wide { width: min(560px, calc(100vw - 32px)); }
@@ -197,6 +197,10 @@ table.data td.val { word-break: break-all; }
 .panel.device { max-width: 640px; }
 .panel.device code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .panel.device fieldset { border: 0; padding: 0; margin: 8px 0; }
+.choices { border: 0; padding: 0; margin: 8px 0; }
+.choices legend { padding: 0; margin-bottom: 4px; }
+.form-grid .choices label.check { display: flex; margin: 10px 0; }
+.choices .check .fineprint { display: block; margin-top: 2px; }
 .panel.device legend { font-weight: 700; margin-bottom: 4px; }
 .linklike { background: none; border: 0; padding: 0; text-decoration: underline; font: inherit; }
 /* Phase 4-5: the Nest, the Gate and Rescue (lazy chunks) */

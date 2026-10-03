@@ -5,6 +5,22 @@ import { currentInvite, openWaitlist } from "../lib/waitlist";
 import { buildSiteMode } from "../lib/site";
 
 type Step = "choose" | "code" | "codes";
+
+/** Show a recovery code in groups of five so it is easier to read and copy out by hand. The server ignores spaces. */
+const groupCode = (c: string) => c.match(/.{1,5}/g)?.join(" ") ?? c;
+const codesText = (codes: string[]) =>
+  `Mosshatch recovery codes\nCreated ${new Date().toISOString().slice(0, 10)}. Each code works once. Keep them somewhere safe.\n\n${codes.map(groupCode).join("\n")}\n`;
+
+async function copyCodes(codes: string[]): Promise<boolean> {
+  try { await navigator.clipboard.writeText(codes.map(groupCode).join("\n")); return true; } catch { return false; }
+}
+
+function downloadCodes(codes: string[]): void {
+  const url = URL.createObjectURL(new Blob([codesText(codes)], { type: "text/plain" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: "mosshatch-recovery-codes.txt" });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
 const AccountData = lazy(() => import("./AccountData"));
 
@@ -48,7 +64,7 @@ export function AccountPanel() {
           {msg && <p role="alert" className="notice">{msg}</p>}
           {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
           <div className="row-actions">
-            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Visitors</button>
+            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Connected apps</button>
             <button type="button" className="btn secondary" aria-pressed={data === "export"} onClick={() => setData("export")}>Download my data</button>
             <button type="button" className="btn secondary" aria-pressed={data === "close"} onClick={() => setData("close")}>Close my account</button>
             <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
@@ -65,10 +81,15 @@ export function AccountPanel() {
       <aside className="panel side" role="region" aria-label="Your recovery codes">
         <div className="head"><h2 ref={head} tabIndex={-1}>Save your recovery codes</h2></div>
         <div className="body">
-          <p>These ten codes are the way back in if you lose every passkey. They are shown once.</p>
-          <ul className="codes">{codes.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
+          <p>If you ever lose every passkey, one of these codes and a code we email you will get you back in. Each code works once. We only show them now, so copy them into a password manager or download the file.</p>
+          <ul className="codes">{codes.map((c) => <li key={c}><code>{groupCode(c)}</code></li>)}</ul>
           <div className="row-actions">
-            <button type="button" className="btn primary" onClick={() => { setCodes([]); setStep("choose"); void refresh().then(() => set({ accountOpen: false })); }}>I saved them</button>
+            <button type="button" className="btn secondary" onClick={() => void copyCodes(codes).then((ok) => setMsg(ok ? "Copied all ten codes." : "Could not copy. Select the codes and copy them by hand, or download the file."))}>Copy all</button>
+            <button type="button" className="btn secondary" onClick={() => { downloadCodes(codes); setMsg("Downloaded mosshatch-recovery-codes.txt."); }}>Download .txt</button>
+          </div>
+          {msg && <p role="status" className="notice">{msg}</p>}
+          <div className="row-actions">
+            <button type="button" className="btn primary" onClick={() => { setCodes([]); setMsg(null); setStep("choose"); void refresh().then(() => set({ accountOpen: false })); }}>I saved them</button>
           </div>
         </div>
       </aside>
