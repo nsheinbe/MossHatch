@@ -93,7 +93,7 @@ export function selectRegistrar(env: Record<string, string | undefined>, factori
  * default sandbox). Credentials are read from `env` at each login, never copied elsewhere. `MH_MODE` is the deployment; the adapter refuses
  * production credentials outside production and sandbox credentials in production (the config guard refuses the same combinations at boot).
  */
-export function openproviderFromEnv(env: Record<string, string | undefined>, deps: { killSwitch: KillSwitch; transport?: OpHttpTransport; onAlert?: ConstructorParameters<typeof OpenproviderAdapter>[0]["onAlert"]; log?: ConstructorParameters<typeof OpenproviderAdapter>[0]["log"] }): OpenproviderAdapter {
+export function openproviderFromEnv(env: Record<string, string | undefined>, deps: { killSwitch: KillSwitch; transport?: OpHttpTransport; onAlert?: ConstructorParameters<typeof OpenproviderAdapter>[0]["onAlert"]; log?: ConstructorParameters<typeof OpenproviderAdapter>[0]["log"]; loginCache?: ConstructorParameters<typeof OpenproviderAdapter>[0]["loginCache"] }): OpenproviderAdapter {
   const target = (env.OPENPROVIDER_ENV ?? "sandbox").toLowerCase();
   if (target !== "sandbox" && target !== "production") throw bad();
   const deployment = (["local", "preview", "staging", "production"].includes(env.MH_MODE ?? "") ? env.MH_MODE : "local") as Deployment;
@@ -101,5 +101,6 @@ export function openproviderFromEnv(env: Record<string, string | undefined>, dep
   return new OpenproviderAdapter({
     mode: target === "production" ? "live" : "sandbox", deployment, credentials, transport: deps.transport ?? fetchTransport(), killSwitch: deps.killSwitch,
     ...(deps.onAlert ? { onAlert: deps.onAlert } : {}), ...(deps.log ? { log: deps.log } : {}),
+    ...(deps.loginCache ? { loginCache: deps.loginCache } : {}),
   });
 }
