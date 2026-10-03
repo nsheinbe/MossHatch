@@ -22,6 +22,7 @@ function sharedRedis() {
       if (read(keys[1]!) !== argv[0]) return 0;
       if (argv[1] === "token") put(keys[0]!, argv[2]!, Number(argv[3]));
       else put(keys[3]!, argv[1]!, Number(argv[3]));
+      put(keys[2]!, "1", Number(argv[4]));
       rows.delete(keys[1]!); return 1;
     }
     if (script === INVALIDATE_LOGIN) { if (read(keys[0]!) !== argv[0]) return 0; rows.delete(keys[0]!); return 1; }
@@ -36,6 +37,19 @@ function adapter(redis: RedisCommand, transport: OpHttpTransport, logs: unknown[
 }
 
 describe("shared Openprovider authentication", () => {
+  it("malformed HTTP200 bearer responses never enter the shared cache or authorize a provider read", async () => {
+    for (const token of ["invalid bearer", "control\u0000bearer", "x".repeat(16_385)]) {
+      const redis = sharedRedis(), logs: unknown[] = []; let calls = 0;
+      const transport: OpHttpTransport = { request: async (r) => {
+        calls++; expect(r.url.endsWith("/auth/login")).toBe(true);
+        return { status: 200, body: JSON.stringify({ code: 0, data: { token } }) };
+      } };
+      await expect(adapter(redis.command, transport, logs).getBalance()).rejects.toMatchObject({ code: "openprovider_login_invalid_response", outcomeUnknown: false });
+      expect([...redis.rows.keys()].some((key) => key.includes(":token:"))).toBe(false);
+      await expect(adapter(redis.command, transport, logs).getBalance()).rejects.toMatchObject({ code: "openprovider_login_backoff" });
+      expect(calls).toBe(1); expect(JSON.stringify(logs)).not.toContain(token);
+    }
+  });
   it("1000 cold independent adapters fill one shared token; cache reads never send credentials or extend token expiry", async () => {
     const redis = sharedRedis(), logs: unknown[] = []; let logins = 0, reads = 0;
     const transport: OpHttpTransport = { request: async (r) => {
@@ -100,6 +114,20 @@ describe("shared Openprovider authentication", () => {
       await cache.invalidate(input, token);
     }
     for (const start of starts) expect(starts.filter((t) => t >= start && t < start + 60_000).length).toBeLessThanOrEqual(29);
+  });
+  it("a delayed Redis admission reply cannot compress actual provider-login starts", async () => {
+    const redis = sharedRedis(); let delayed = false;
+    const command: RedisCommand = async (args) => {
+      const result = await redis.command(args);
+      if (!delayed && args[1] === ACQUIRE_LOGIN && Array.isArray(result) && result[0] === "owner") { delayed = true; redis.advance(4900); }
+      return result;
+    };
+    const cache = new RedisOpenproviderLoginCache(command, async (ms) => redis.advance(ms)), starts: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const token = await cache.get(input, async () => { starts.push(redis.now()); redis.advance(20); return "token-" + i; });
+      await cache.invalidate(input, token);
+    }
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(2100);
   });
   it("unreachable Redis fails closed before any provider request", async () => {
     let calls = 0;

@@ -26,6 +26,8 @@ if ARGV[2] == 'token' then
 else
   redis.call('SET', KEYS[4], ARGV[2], 'PX', ARGV[4])
 end
+-- Preserve actual provider-start spacing even when the admission HTTP response was delayed.
+redis.call('SET', KEYS[3], '1', 'PX', ARGV[5])
 redis.call('DEL', KEYS[2])
 return 1`;
 
@@ -35,6 +37,7 @@ return 0`;
 
 const failure = (code: string) => new RegistrarError("unavailable", "registrar login unavailable", { code, retryable: true, outcomeUnknown: false });
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+const validToken = (token: unknown): token is string => typeof token === "string" && token.length > 0 && token.length <= 16_384 && !/[\x00-\x20\x7f]/.test(token);
 type LoginInput = { host: string; username: string; password: string; ttlMs?: number };
 
 /** Trusted server Redis only. Keys contain digests; bearer values/passwords never enter an error or log. */
@@ -57,23 +60,27 @@ export class RedisOpenproviderLoginCache implements OpenproviderLoginCache {
       if (!Array.isArray(result) || result.length !== 2) throw failure("registrar_shared_store_unavailable");
       const [state, token] = result;
       if (state === "token") {
-        if (typeof token !== "string" || !token || token.length > 16_384 || /[\x00-\x20\x7f]/.test(token)) throw failure("registrar_shared_store_unavailable");
+        if (!validToken(token)) throw failure("registrar_shared_store_unavailable");
         return token;
       }
       if (state === "auth") throw failure("openprovider_auth_cooldown");
       if (state === "retry" || state === "rate") throw failure("openprovider_login_backoff");
       if (state === "owner") {
         let token: string;
-        try { token = await login(); }
+        try {
+          token = await login();
+          // Validate before publication or first use: a malformed successful provider response cannot poison the shared cache.
+          if (!validToken(token)) throw failure("openprovider_login_invalid_response");
+        }
         catch (error) {
           const code = error instanceof RegistrarError ? error.code : undefined;
           const auth = code === "auth_failed";
           const rate = code === "http_429";
-          await this.command(["EVAL", FINISH_LOGIN, 4, ...keys, owner, auth ? "auth" : rate ? "rate" : "retry", "", auth ? AUTH_COOLDOWN_MS : rate ? 60_000 : LOGIN_RETRY_MS]);
+          await this.command(["EVAL", FINISH_LOGIN, 4, ...keys, owner, auth ? "auth" : rate ? "rate" : "retry", "", auth ? AUTH_COOLDOWN_MS : rate ? 60_000 : LOGIN_RETRY_MS, LOGIN_SPACING_MS]);
           throw error;
         }
         const ttl = Number.isSafeInteger(input.ttlMs) && input.ttlMs > 0 ? Math.min(input.ttlMs, TOKEN_TTL_MS) : TOKEN_TTL_MS;
-        if (await this.command(["EVAL", FINISH_LOGIN, 4, ...keys, owner, "token", token, ttl]) !== 1) throw failure("openprovider_login_busy");
+        if (await this.command(["EVAL", FINISH_LOGIN, 4, ...keys, owner, "token", token, ttl, LOGIN_SPACING_MS]) !== 1) throw failure("openprovider_login_busy");
         return token;
       }
       if (state !== "busy") throw failure("registrar_shared_store_unavailable");

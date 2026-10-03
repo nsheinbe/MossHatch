@@ -39,10 +39,10 @@ function fakeRedis(): typeof fetch & { data: Map<string, string>; down: boolean;
       data.set(lockKey!, cmd[7]!); data.set(spacingKey!, "1"); return reply(["owner", ""]);
     }
     if (op === "EVAL" && key === FINISH_LOGIN) {
-      const [tokenKey, lockKey, , cooldownKey] = cmd.slice(3, 7);
+      const [tokenKey, lockKey, spacingKey, cooldownKey] = cmd.slice(3, 7);
       if (data.get(lockKey!) !== cmd[7]) return reply(0);
       if (cmd[8] === "token") data.set(tokenKey!, cmd[9]!); else data.set(cooldownKey!, cmd[8]!);
-      data.delete(lockKey!); return reply(1);
+      data.set(spacingKey!, "1"); data.delete(lockKey!); return reply(1);
     }
     if (op === "EVAL" && key === INVALIDATE_LOGIN) { const tokenKey = cmd[3]!; if (data.get(tokenKey) !== cmd[4]) return reply(0); data.delete(tokenKey); return reply(1); }
     if (op === "EVAL") { const lockKey = cmd[3]!, token = cmd[4]!; if (data.get(lockKey) !== token) return reply(0); data.delete(lockKey); return reply(1); }
