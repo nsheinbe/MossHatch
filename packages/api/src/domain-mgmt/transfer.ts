@@ -1,5 +1,5 @@
 import { tx, withUser, type PoolClient } from "@mosshatch/db";
-import type { TransferAwayStatus } from "@mosshatch/registrar/port";
+import type { TransferAway, TransferAwayStatus } from "@mosshatch/registrar/port";
 import type { AppContext } from "../ports.ts";
 import { json } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
@@ -42,7 +42,14 @@ async function attentionNotice(ctx: AppContext, c: PoolClient, d: DomainRow, t: 
 export async function transferPoll(ctx: AppContext): Promise<{ seen: number; unrequested: number; closed: number }> {
   const port = registrarOf(ctx);
   const now = ctx.clock.now();
-  const list = await port.getTransfersAway({ statuses: PENDING_STATUSES, since: new Date(now.getTime() - TRANSFER_WINDOW_MS) });
+  let list: TransferAway[];
+  try { list = await port.getTransfersAway({ statuses: PENDING_STATUSES, since: new Date(now.getTime() - TRANSFER_WINDOW_MS) }); }
+  catch (e) {
+    if (!(e instanceof RegistrarError && e.kind === "rejected" && e.code === "transfers_away_unsupported" && !e.retryable && !e.outcomeUnknown)) throw e;
+    await raiseAlert(ctx, ctx.cron, { severity: "warn", kind: "transfer.poll_unsupported", subject: "transfer.poll", detail: { code: e.code } });
+    // No observations were made: do not treat an unsupported API as an empty authoritative list.
+    return { seen: 0, unrequested: 0, closed: 0 };
+  }
   let unrequested = 0, closed = 0;
   const live = new Set<string>();
   for (const t of list) {
