@@ -13,7 +13,7 @@ import { FROM_DEFAULT, homeLink, page, para, tokenForm } from "./text.ts";
  *   POST /api/waitlist/confirm         confirm once; shows the place in line
  *   GET  /api/waitlist/unsubscribe?t=  a page with a Leave button
  *   POST /api/waitlist/unsubscribe     leave (also RFC 8058 one-click: the token in the query, `List-Unsubscribe=One-Click` in the body)
- * Needs DATABASE_URL; RESEND_API_KEY is optional (without it nothing is sent and nothing is logged).
+ * Joining needs DATABASE_URL and RESEND_API_KEY. Existing confirmation and unsubscribe links remain usable without email delivery.
  */
 export const WAITLIST_PREFIX = "/api/waitlist";
 
@@ -31,13 +31,26 @@ export function depsFromEnv(env: Record<string, string | undefined>): WaitlistDe
   return { pool: connect(env.DATABASE_URL, { max: 3 }), clock: { now: () => new Date() }, email, secret, origin, warn: (l) => console.warn(l) };
 }
 
-let cached: { url: string; deps: WaitlistDeps | null } | undefined;
+let cached: { key: string; deps: WaitlistDeps | null } | undefined;
 
 /** api/index.ts: answer /api/waitlist* here, or return null to let the full API (or its 503) answer. */
 export async function handleWaitlist(request: Request, env: Record<string, string | undefined>): Promise<Response | null> {
   const path = new URL(request.url).pathname;
   if (path !== WAITLIST_PREFIX && !path.startsWith(WAITLIST_PREFIX + "/")) return null;
-  if (!cached || cached.url !== env.DATABASE_URL) cached = { url: env.DATABASE_URL ?? "", deps: depsFromEnv(env) };
+  if (path === WAITLIST_PREFIX + "/status") {
+    if (request.method !== "GET") return jsonRes(405, { error: { code: "method_not_allowed" } }, { allow: "GET" });
+    return jsonRes(200, { joiningAvailable: Boolean(env.DATABASE_URL && env.RESEND_API_KEY), deliveryConfigured: Boolean(env.RESEND_API_KEY) });
+  }
+  // Fail before opening a pool or writing an entry. Never claim a confirmation
+  // was delivered when the deployment has no sender configured.
+  if (path.replace(/\/$/, "") === WAITLIST_PREFIX && request.method === "POST" && !env.RESEND_API_KEY) {
+    if ((request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+      return htmlRes(503, page("The waitlist is taking a pause", para("We cannot deliver confirmation emails right now. No signup was saved. Please try again later.") + '<p><a href="/waitlist">Back to the form</a></p>'));
+    }
+    return jsonRes(503, { error: { code: "not_configured", reason: "email_not_configured" } });
+  }
+  const key = crypto.createHash("sha256").update(JSON.stringify([env.DATABASE_URL, env.RESEND_API_KEY, env.WAITLIST_FROM, env.WAITLIST_ORIGIN, env.MH_ORIGIN, env.WAITLIST_SECRET])).digest("hex");
+  if (!cached || cached.key !== key) cached = { key, deps: depsFromEnv(env) };
   if (!cached.deps) return jsonRes(503, { error: { code: "not_configured", reason: "database_not_configured" } });
   return waitlistFetch(cached.deps, request);
 }
@@ -113,6 +126,7 @@ const MESSAGES: Record<string, string> = {
   consent_required: "Tick the box to agree to the emails. We cannot add you without it.",
   rate_limited: "Too many sign-ups from this network. Try again in an hour.",
   busy: "Lots of people are joining right now. Try again in a few minutes.",
+  delivery_unavailable: "We could not deliver your confirmation email. Try again later. Your place is confirmed only after you use the confirmation link.",
   too_large: "That was too much text.",
   cross_site: "This form only works from mosshatch.com.",
   unsupported_media_type: "Send the form from the Mosshatch page.",

@@ -9,6 +9,7 @@ const ERRORS: Record<string, string> = {
   rate_limited: "Too many sign-ups from this network. Try again in an hour.",
   busy: "Lots of people are joining right now. Try again in a few minutes.",
   not_configured: "The waitlist is not taking sign-ups at the moment. Try again later.",
+  delivery_unavailable: "We could not deliver your confirmation email. Try again later. Your place is confirmed only after you use the confirmation link.",
   network: "We could not reach Mosshatch. Check your connection and try again.",
 };
 
@@ -41,7 +42,8 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
       <div className="body">
         {sent ? (
           <>
-            <p role="status">We sent a link to confirm your place. It works for 7 days. Once you confirm, we tell you your place in line.</p>
+            <p role="status">Your request was received. If this address needs confirmation, look for a link that works for 7 days. Your place is confirmed only after you use the link. If you already joined, look for a short note instead.</p>
+            <p>Check your inbox and spam folder. To limit unwanted email, repeated requests may not send another message. If no message arrives, try again later.</p>
             <p>Joining does not reserve or register a name. We let people in a few at a time and email an invite when it is your turn.</p>
             <div className="row-actions"><button type="button" className="btn primary" autoFocus onClick={close}>Done</button></div>
           </>
