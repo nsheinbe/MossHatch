@@ -937,7 +937,10 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
   const piId = o.cancelPiId ?? o.paymentIntentId ?? sessionPi;
   if (piId) {
     const pi = await m.svc.stripe.retrievePaymentIntent(piId);
-    if (pi.status === "succeeded") return startRefund(m, o, { from: ["canceling"], reason: "cancelled_after_capture", system: true, piId });
+    if (pi.status === "succeeded") {
+      await ltx(m, (c) => releaseUnusedRegistrationFunding(c, o.id));
+      return startRefund(m, o, { from: ["canceling"], reason: "cancelled_after_capture", system: true, piId });
+    }
     if (pi.status !== "canceled") {
       const own = piId === o.paymentIntentId;
       const res = await stripeOp(m, o, "cancel", own ? "cancel_pi" : `cancel_pi:${piId}`, { suffix: own ? "" : `:${piId}` }, (key) => m.svc.stripe.cancelPaymentIntent(piId, key));
@@ -945,14 +948,21 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
     }
   }
   const done = await ltx(m, async (c) => {
-    const unresolved = (await c.query("select 1 from order_operations where order_id = $1 and kind = 'register' and state = 'sent'", [o.id])).rowCount;
-    const row = await move(m, c, o.id, "canceling", "voided", unresolved ? {} : { funding_reserved_minor: 0 }, { cause: "job", detail: { reason: o.voidReason } });
+    await releaseUnusedRegistrationFunding(c, o.id);
+    const row = await move(m, c, o.id, "canceling", "voided", {}, { cause: "job", detail: { reason: o.voidReason } });
     if (!row) return null;
     await c.query("update payments set status = 'canceled' where order_id = $1 and status = 'requires_capture'", [o.id]);
     return row;
   });
   if (done) await notify(m, o, (c) => mailVoid(m.ctx, c, o, o.voidReason));
   return done ? "progressed" : "wait";
+}
+
+/** A canceled payment does not prove an unanswered vendor write is over. Fence both refund and void cleanup by the order. */
+async function releaseUnusedRegistrationFunding(c: PoolClient, orderId: string): Promise<void> {
+  const state = (await c.query("select state from orders where id = $1 for update", [orderId])).rows[0]?.state;
+  if (state !== "canceling") return;
+  await c.query("update orders set funding_reserved_minor = 0 where id = $1 and not exists (select 1 from order_operations where order_id = $1 and kind = 'register' and state = 'sent')", [orderId]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1071,7 +1081,7 @@ export async function scanLateWatches(m: M): Promise<number> {
     const dom = await m.svc.registrar.getDomain(o.fqdn);
     const ok = await ltx(m, async (c) => {
       const r = await move(m, c, o.id, ["voided", "canceling"], "capture_failed", {
-        registered_at: at, registrar_ref: claim.order.registrarOrderId, capture_failed_at: at, capture_deadline: new Date(claim.order.orderDate.getTime() + ADD_GRACE_DEADLINE_MS),
+        funding_reserved_minor: 0, registered_at: at, registrar_ref: claim.order.registrarOrderId, capture_failed_at: at, capture_deadline: new Date(claim.order.orderDate.getTime() + ADD_GRACE_DEADLINE_MS),
         late_watch_state: "claimed", failure_code: "late_registration", next_check_at: null,
       }, { cause: "system", detail: { late_registration: true } });
       if (!r) return false;

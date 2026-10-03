@@ -433,6 +433,9 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
     one(await c.query(
       "update transfers_in set state = 'completed', upstream_status = 'completed', completed_at = $2, next_check_at = null, auth_code_enc = null where id = $1 and state = $3 returning id",
       [t.id, at, now0.transfer]));
+    // Completion and ownership are confirmed above: the vendor debit is in its balance now,
+    // even when our domain insert conflicts or the payment finished before the transfer.
+    await c.query("update orders set funding_reserved_minor = 0 where id = $1", [o.id]);
     const ins = await c.query(
       `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
        values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,

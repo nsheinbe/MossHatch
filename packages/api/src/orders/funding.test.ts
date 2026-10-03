@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { tx } from "@mosshatch/db";
+import { readFileSync } from "node:fs";
+import { TRANSFER_REVIEW_MS } from "@mosshatch/registrar/mock-port";
 import { RegistrarError } from "@mosshatch/registrar/port";
 import { fundingAdmissionControl, withFundingAdmissionControl } from "../registrar-rpc/funding-control.ts";
 import { MemoryPaidOperationLock, serializePaidOperations } from "../registrar-rpc/paid-operation.ts";
-import { advance, machine } from "./machine.ts";
+import { advance, machine, scanLateWatches } from "./machine.ts";
 import { reserveFunding } from "./funding.ts";
-import { buyAndPay, makeBuyer, makeHarness, orderRow, type OrdersHarness } from "./testkit.ts";
+import { buyAndPay, makeBuyer, makeHarness, orderRow, REGISTRANT, type OrdersHarness } from "./testkit.ts";
+import { CODE, pass, rescueAndPay, transferRow } from "../transfers/testkit.ts";
 import { loadOrder } from "./support.ts";
 import { makeDomainsHarness, makeOwner, buyDomain, autoRenewOn, termRow, at, hygiene, renewOrders, type DomainsHarness } from "../domains/testkit.ts";
 import { runRenewalScheduler } from "../domains/renewals.ts";
@@ -22,8 +25,100 @@ async function harness() {
   return h;
 }
 const reserve = (h: OrdersHarness) => h.app.db.owner.query("select coalesce(sum(funding_reserved_minor),0)::text as total from orders").then((r) => BigInt(r.rows[0].total));
+function fund(h: OrdersHarness) {
+  const lock = new MemoryPaidOperationLock(h.app.clock);
+  h.svc.registrar = withFundingAdmissionControl(serializePaidOperations(h.registrar, lock), fundingAdmissionControl(h.registrar, lock, h.app.clock));
+  h.app.ctx.services.fundedAdmission = true;
+}
 
 describe("atomic funded admission in native PostgreSQL", () => {
+  it("migration preserves uncertain promises across payment states, while unpaid and completed orders remain unreserved", async () => {
+    const h = await harness();
+    const cases = [
+      { kind: "renew", state: "draft", op: "renew_charge", want: "1700" },
+      { kind: "register", state: "voided", op: "register", want: "1700" },
+      { kind: "transfer_in", state: "capturing", want: "1700" },
+      { kind: "register", state: "refunded", op: "register", want: "1700" },
+      { kind: "register", state: "capture_failed", op: "register", completed: true, want: "0" },
+      { kind: "renew", state: "renewed", want: "0" },
+      { kind: "register", state: "checkout_open", want: "0" },
+    ];
+    const ids: string[] = [];
+    for (const [i, x] of cases.entries()) {
+      const b = await makeBuyer(h, `funded-migration-${i}@example.test`);
+      const o = await buyAndPay(h, b, `free-funded-migration-${i}.dev`);
+      ids.push(o.id);
+      await h.app.db.owner.query("update orders set kind=$2,state=$3,registered_at=$4 where id=$1", [o.id, x.kind, x.state, x.completed ? h.app.clock.now() : null]);
+      if (x.op) await h.app.db.owner.query("insert into order_operations(order_id,kind,state,request_hash,sent_at) values($1,$2,'sent',decode('00','hex'),$3)", [o.id, x.op, h.app.clock.now()]);
+    }
+    // Apply the actual additive migration to populated pre-column tables, rather than copying its WHERE clause into a test.
+    await h.app.db.owner.query("alter table orders drop column funding_reserved_minor");
+    await h.app.db.owner.query(readFileSync(new URL("../../../db/migrations/1180_funded_admission.sql", import.meta.url), "utf8"));
+    for (const [i, x] of cases.entries()) expect((await orderRow(h, ids[i]!)).funding_reserved_minor).toBe(x.want);
+  });
+  for (const outcome of ["early captured", "late refunded", "domain conflict"] as const) {
+    it(`known transfer completion releases its promise after ${outcome}`, async () => {
+      const h = await makeDomainsHarness({ funding: 1_000_000n }); opened.push(h); fund(h);
+      const b = await makeOwner(h, `funded-transfer-${outcome.replaceAll(" ", "-")}@example.test`);
+      const name = `funded-transfer-${outcome.replaceAll(" ", "-")}.com`;
+      h.registrar.transferIn.seedForeign(name, { authCode: CODE });
+      const { id, orderId } = await rescueAndPay(h, b, name);
+      await pass(h, TRANSFER_REVIEW_MS);
+      for (let i = 0; i < 4; i++) await pass(h, 86_400_000);
+      await pass(h, 2 * 3_600_000);
+      expect((await orderRow(h, orderId)).state).toBe("captured");
+      expect(BigInt((await orderRow(h, orderId)).funding_reserved_minor)).toBeGreaterThan(0n);
+      if (outcome === "late refunded") {
+        await h.app.db.owner.query("update orders set state='refunded' where id=$1", [orderId]);
+        await h.app.db.owner.query("update transfers_in set state='failed',failure='unknown_deadline',late_watch_until=$2 where id=$1", [id, new Date(h.app.clock.now().getTime() + 86_400_000)]);
+      } else if (outcome === "domain conflict") {
+        await h.app.db.owner.query("insert into domains(user_id,fqdn_ascii,tld,registrar,livemode) values($1,$2,'com','opensrs',false)", [b.userId, name]);
+      }
+      h.registrar.transferIn.losingAck(name);
+      await pass(h);
+      expect((await transferRow(h, id)).state).toBe("completed");
+      expect((await orderRow(h, orderId)).funding_reserved_minor).toBe("0");
+      if (outcome === "early captured") expect((await orderRow(h, orderId)).registered_at).not.toBeNull();
+    });
+  }
+  for (const uncertainWrite of [false, true]) {
+    it(`captured cancellation refunds while ${uncertainWrite ? "retaining an unanswered vendor promise" : "releasing unused wholesale"}`, async () => {
+      const h = await harness();
+      const b = await makeBuyer(h, "funded-cancel@example.test");
+      const o = await buyAndPay(h, b, "free-funded-cancel.dev");
+      await advance(machine(h.app.ctx), o.id, { maxSteps: 1 });
+      const authorized = await orderRow(h, o.id);
+      expect(authorized.funding_reserved_minor).toBe("1700");
+      h.stripe.dashboardCapture(authorized.stripe_payment_intent_id);
+      await h.app.db.owner.query("update orders set state='canceling',void_reason='taken_by_other' where id=$1", [o.id]);
+      if (uncertainWrite) await h.app.db.owner.query("insert into order_operations(order_id,kind,state,request_hash,sent_at) values($1,'register','sent',decode('00','hex'),$2)", [o.id, h.app.clock.now()]);
+      await advance(machine(h.app.ctx), o.id);
+      const refunded = await orderRow(h, o.id);
+      expect(refunded.state).toBe("refunded");
+      expect(refunded.funding_reserved_minor).toBe(uncertainWrite ? "1700" : "0");
+      expect(h.registrar.calls.register).toBe(0);
+      expect(h.stripe.created.refunds).toBe(1);
+    });
+  }
+  it("a verified late registration releases its previously unanswered wholesale promise", async () => {
+    const h = await harness();
+    const b = await makeBuyer(h, "funded-late@example.test");
+    const name = "free-funded-late.dev";
+    const o = await buyAndPay(h, b, name);
+    await advance(machine(h.app.ctx), o.id, { maxSteps: 1 });
+    const register = h.registrar.register.bind(h.registrar);
+    h.registrar.register = async () => { throw new RegistrarError("unknown", "timeout", { retryable: false, outcomeUnknown: true, code: "timeout" }); };
+    await advance(machine(h.app.ctx), o.id);
+    const unknown = await orderRow(h, o.id);
+    h.app.clock.set(new Date(new Date(unknown.capture_before).getTime() - 24 * 3_600_000 + 1000));
+    await advance(machine(h.app.ctx), o.id);
+    expect((await orderRow(h, o.id)).state).toBe("voided");
+    expect((await orderRow(h, o.id)).funding_reserved_minor).toBe("1700");
+    h.app.clock.advance(3_600_000);
+    await register({ fqdn: name, years: 1, regUsername: unknown.reg_username, regPassword: "funded-late-password", registrant: { ...REGISTRANT, email: b.email } });
+    expect(await scanLateWatches(machine(h.app.ctx))).toBe(1);
+    expect((await orderRow(h, o.id)).funding_reserved_minor).toBe("0");
+  });
   it("a burst of verified card authorizations reserves only the available wholesale; unpaid Checkout reserves zero", async () => {
     const h = await harness();
     h.registrar.setBalance(28_400n); // USD250 cushion plus two USD17 wholesale orders.
