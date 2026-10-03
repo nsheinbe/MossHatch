@@ -278,8 +278,12 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
   try {
     const pi = await svc.stripe.createOffSessionPaymentIntent(offSessionInput(o, term, req), key);
     if (pi.status !== "succeeded") {
-      await ltx(m, (c) => resolveOp(c, claimed.op.id, "declined", { detail: { status: pi.status } }));
-      return failedCharge(m, o, term, "authentication_required");
+      // A processing or otherwise incomplete response is not proof that money cannot move.
+      if (!["requires_payment_method", "requires_action", "canceled"].includes(pi.status)) {
+        await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 60_000)]);
+        return "wait";
+      }
+      return failedCharge(m, o, term, "authentication_required", claimed.op.id, { status: pi.status });
     }
     return charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, claimed.op.id);
   } catch (e) {
@@ -289,9 +293,17 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
       await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 60_000)]);
       return "wait";
     }
-    await ltx(m, (c) => resolveOp(c, claimed.op.id, e.retryable ? "api_error" : "declined", { detail: { code: e.code ?? e.kind } }));
-    if (e.retryable) { await cron(m).query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 5 * 60_000)]); return "wait"; }
-    return failedCharge(m, o, term, e.code === "authentication_required" ? "authentication_required" : "declined");
+    if (e.retryable) {
+      await ltx(m, async (c) => {
+        const current = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state;
+        const last = await latestOp(c, o.id, "renew_charge");
+        if (current !== "draft" || last?.id !== claimed.op.id || last.state === "resolved") return;
+        await resolveOp(c, claimed.op.id, "api_error", { detail: { code: e.code ?? e.kind } });
+        await c.query("update orders set next_check_at = $2 where id = $1 and state = 'draft'", [o.id, new Date(now.getTime() + 5 * 60_000)]);
+      });
+      return "wait";
+    }
+    return failedCharge(m, o, term, e.code === "authentication_required" ? "authentication_required" : "declined", claimed.op.id, { code: e.code ?? e.kind });
   }
 }
 const cron = (m: M) => m.ctx.cron;
@@ -341,16 +353,21 @@ async function mailRenewalReceipt(ctx: AppContext, c: PoolClient, o: OrderRow, t
   }, { to, dedupeKey: `receipt:${o.id}`, userId: o.userId, origin: ctx.config.origin }));
 }
 
-/** A determined failure of the off-session charge: mail the person, and follow the ladder. */
-async function failedCharge(m: M, o: OrderRow, term: TermRow, kind: "declined" | "authentication_required"): Promise<Step> {
+/** Resolve a determined decline and release only that attempt's funding in the same locked transaction. */
+async function failedCharge(m: M, o: OrderRow, term: TermRow, kind: "declined" | "authentication_required", opId: string, detail: Record<string, unknown>): Promise<Step> {
   const ctx = m.ctx;
   const now = ctx.clock.now();
-  // The rung is the number of determined declines so far: 1 = the charge day, 2 = C+3, 3 = C+6.
-  const rung = (await cron(m).query("select count(*)::int as n from order_operations where order_id = $1 and kind = 'renew_charge' and response_code = 'declined'", [o.id])).rows[0].n as number;
-  const seq = rung;
-  const nextDay = DECLINE_LADDER_DAYS[rung];
-  const nextAt = kind === "declined" && nextDay !== undefined ? new Date(Math.max(term.chargeAt.getTime() + nextDay * DAY_MS, now.getTime() + 60_000)) : null;
   await ltx(m, async (c) => {
+    const current = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state;
+    const last = await latestOp(c, o.id, "renew_charge");
+    // A delayed answer cannot release the reservation of a newer try or rewrite a paid term.
+    if (current !== "draft" || last?.id !== opId || last.state === "resolved") return;
+    await resolveOp(c, opId, "declined", { detail });
+    // The rung is the number of determined declines so far: 1 = the charge day, 2 = C+3, 3 = C+6.
+    const rung = (await c.query("select count(*)::int as n from order_operations where order_id = $1 and kind = 'renew_charge' and response_code = 'declined'", [o.id])).rows[0].n as number;
+    const seq = rung;
+    const nextDay = DECLINE_LADDER_DAYS[rung];
+    const nextAt = kind === "declined" && nextDay !== undefined ? new Date(Math.max(term.chargeAt.getTime() + nextDay * DAY_MS, now.getTime() + 60_000)) : null;
     await c.query("update orders set funding_reserved_minor = 0, failure_code = $2, next_check_at = $3, check_count = check_count + 1 where id = $1 and state = 'draft'", [o.id, kind === "declined" ? "card_declined" : "authentication_required", nextAt]);
     await c.query("update renewal_terms set state = $2, held_reason = $3, try = $4, next_try_at = $5 where id = $1", [term.id, nextAt ? "charging" : "payment_failed", nextAt ? null : kind, rung, nextAt]);
     if (!nextAt) await raiseAlert(ctx, c, { severity: "warn", kind: "renewal_payment_failed", subject: o.id, detail: { order_id: o.id, kind } });
@@ -766,6 +783,7 @@ async function settleOffSessionTry(m: M, o: OrderRow, term: TermRow, op: Op): Pr
   try {
     const pi = await svcOf(m.ctx).stripe.createOffSessionPaymentIntent(offSessionInput(o, term, req), chargeKey(o.domainId, term.termEnd, op.seq));
     if (pi.status === "succeeded") { await charged(m, o, term, pi.id, BigInt(pi.amount_received || pi.amount), pi.currency, op.id); return "settled"; }
+    if (!["requires_payment_method", "requires_action", "canceled"].includes(pi.status)) return "in_flight";
     await ltx(m, (c) => resolveOp(c, op.id, "declined", { detail: { status: pi.status, settled_by: "checkout" } }));
     return "settled";
   } catch (e) {
