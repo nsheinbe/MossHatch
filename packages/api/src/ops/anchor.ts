@@ -211,6 +211,8 @@ function freshAnchor(at: string | Date | null, now: Date): boolean {
 /** audit.verify: recompute every chain, compare with the anchors, alert on any failure or a stale anchor. */
 export async function auditVerifyJob(ctx: AnchorCtx, sink: AnchorSink): Promise<{ chains: ChainVerification; anchors: AnchorVerification }> {
   const chains = await verifyAllChains(ctx);
+  // Only a new commit during this external read can explain an older sink snapshot.
+  const beforeRead = (await ctx.cron.query("select id from audit_anchors order by anchored_at desc, id desc limit 1")).rows[0]?.id as string | undefined;
   const anchors = await verifyAnchors(ctx, sink);
   for (const f of chains.failures) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "audit.chain_broken", subject: f.chainId, detail: { bad_seq: f.badSeq, reason: f.reason } });
   if (!anchors.ok) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "audit.anchor_mismatch", subject: "anchors", detail: { findings: anchors.tampered.length, first: anchors.tampered[0]?.kind } });
@@ -220,9 +222,9 @@ export async function auditVerifyJob(ctx: AnchorCtx, sink: AnchorSink): Promise<
       if (anchors.ok && anchors.anchorsChecked > 0 && chains.failures.length === 0) await closeAlerts(c, "audit.anchor_stale", "anchors");
       return;
     }
-    // The external read can predate a concurrent put. A committed anchor proves that put succeeded.
-    const latest = (await c.query("select anchored_at from audit_anchors order by anchored_at desc limit 1")).rows[0]?.anchored_at as Date | undefined;
-    if (latest && freshAnchor(latest, ctx.clock.now())) await closeAlerts(c, "audit.anchor_stale", "anchors");
+    // A preexisting DB row cannot explain a missing external anchor (for example, the wrong bucket).
+    const latest = (await c.query("select id, anchored_at from audit_anchors order by anchored_at desc, id desc limit 1")).rows[0] as { id: string; anchored_at: Date } | undefined;
+    if (latest && latest.id !== beforeRead && freshAnchor(latest.anchored_at, ctx.clock.now())) await closeAlerts(c, "audit.anchor_stale", "anchors");
     else await raiseAlert(ctx, c, { severity: "page", kind: "audit.anchor_stale", subject: "anchors", detail: { latest: anchors.latestAnchorAt } });
   });
   return { chains, anchors };

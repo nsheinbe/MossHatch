@@ -110,6 +110,18 @@ describe("audit anchor freshness recovery", () => {
     expect(await openStale()).toHaveLength(1);
     expect(await q("select id from alerts where kind='audit.anchor_mismatch' and state='open'")).toHaveLength(1);
   });
+
+  it("a preexisting fresh database anchor cannot hide an empty different external sink", async () => {
+    await anchorAudit(app.ctx, new MemoryAnchorSink());
+    await staleAlert();
+    const emptySink = new MemoryAnchorSink();
+    const result = await auditVerifyJob(app.ctx, emptySink);
+    expect(result.anchors.latestAnchorAt).toBeNull();
+    expect(await openStale()).toHaveLength(1);
+    await q("delete from alerts where kind='audit.anchor_stale'");
+    await auditVerifyJob(app.ctx, emptySink);
+    expect(await openStale()).toHaveLength(1);
+  });
 });
 
 describe("definitely unsupported outbound transfer poll", () => {
