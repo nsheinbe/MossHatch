@@ -1,5 +1,6 @@
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import { registrarSpendLimitFromEnv } from "../golive/registration-policy.ts";
+import { MemoryPaidOperationLock, RedisPaidOperationLock, serializePaidOperations } from "./paid-operation.ts";
 import { MemoryKillSwitch, type SwitchState } from "@mosshatch/registrar/opensrs";
 import { openproviderFromEnv, parseRegistrarRouting, type OpHttpTransport } from "@mosshatch/registrar/openprovider";
 import { modeFromEnv } from "../config/modeguard.ts";
@@ -128,7 +129,9 @@ export function registrarRpcFromEnv(env: Record<string, string | undefined>, dep
       });
       const cap = registrarSpendLimitFromEnv(env, live);
       const counter = deps.spendCounter ?? (redis ? new RedisDailyCounter(redis) : new MemoryDailyCounter());
-      port = cap === null ? adapter : spendCapped(adapter, cap, clock, () => log({ event: "registrar_alert", kind: "daily_spend_cap", detail: String(cap) }), counter);
+      const counted = cap === null ? adapter : spendCapped(adapter, cap, clock, () => log({ event: "registrar_alert", kind: "daily_spend_cap", detail: String(cap) }), counter);
+      const paidLock = redis ? new RedisPaidOperationLock(redis, env.OPENPROVIDER_USERNAME ?? "") : new MemoryPaidOperationLock(clock);
+      port = serializePaidOperations(counted, paidLock, () => log({ event: "registrar_alert", kind: "paid_lock_release_failed" }));
     } catch {
       port = refusingPort("registrar_config_invalid");
       log({ event: "registrar_not_configured", reasons: ["registrar_config_invalid"] });

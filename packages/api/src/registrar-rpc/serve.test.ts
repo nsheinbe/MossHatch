@@ -30,6 +30,7 @@ function fakeRedis(): typeof fetch & { data: Map<string, string>; down: boolean;
     const [op, key] = [cmd[0]!.toUpperCase(), cmd[1]!];
     if (op === "SET") { if (cmd.includes("NX") && data.has(key)) return reply(null); data.set(key, cmd[2]!); return reply("OK"); }
     if (op === "INCR") { const n = Number(data.get(key) ?? "0") + 1; data.set(key, String(n)); return reply(n); }
+    if (op === "EVAL") { const lockKey = cmd[3]!, token = cmd[4]!; if (data.get(lockKey) !== token) return reply(0); data.delete(lockKey); return reply(1); }
     if (op === "PEXPIRE") return reply(data.has(key) ? 1 : 0);
     return new Response(JSON.stringify({ error: "ERR unknown command" }), { status: 400 });
   }) as typeof fetch & { data: Map<string, string>; down: boolean; seen: { auth: string | null; cmd: string[] }[] };
