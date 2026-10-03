@@ -30,9 +30,9 @@ describe("serverless worker lifecycle", () => {
     expect(tickConcurrency({ MH_TICK_CONCURRENCY: "128" })).toBe(128);
     expect(tickConcurrency({ MH_TICK_CONCURRENCY: "999" })).toBe(256);
     expect(tickConcurrency({ MH_TICK_CONCURRENCY: "NaN" })).toBe(32);
-    expect(tickBudget({})).toBe(450_000);
+    expect(tickBudget({})).toBe(50_000);
     expect(tickBudget({ MH_TICK_BUDGET_MS: "999999999" })).toBe(450_000);
-    expect(tickBudget({ MH_TICK_BUDGET_MS: "-1" })).toBe(450_000);
+    expect(tickBudget({ MH_TICK_BUDGET_MS: "-1" })).toBe(50_000);
     expect(tickBudget({}) + 300_000).toBeLessThan(800_000);
   });
 });

@@ -6,7 +6,7 @@ Production main `dbcea91afea2d494b055af89cf66459696924a96` had durable jobs but 
 
 The API now registers its wake-up promise with Vercel's request context, and a protected cron runs every minute. Claims, leases, retries, priority ordering, and payment idempotency stay in Postgres. Duplicated/overlapping ticks can claim independent jobs without double-claiming. The health endpoint returns 503 when no tick has completed or its heartbeat is over 180 seconds old.
 
-The API has an explicit 800-second duration. A cron claims work for up to 450 seconds, leaving 350 seconds for the final wave: registered handlers currently run at most 300 seconds. `MH_TICK_BUDGET_MS` may reduce this budget; larger values clamp to 450,000. `MH_TICK_CONCURRENCY` defaults to 32 jobs per wave and supports 1–256. Database pool capacity and provider limits must be checked when raising it; this is tunability, not a throughput certification. Existing per-kind shared caps for `domain.sync` and `dns.verify` remain.
+The API has an explicit 800-second duration. A cron normally claims work for 50 seconds and can be configured up to 450 seconds, leaving 350 seconds for the final wave: registered handlers currently run at most 300 seconds. `MH_TICK_BUDGET_MS` selects this budget; larger values clamp to 450,000. `MH_TICK_CONCURRENCY` defaults to 32 jobs per wave and supports 1–256. Database pool capacity and provider limits must be checked when raising it; this is tunability, not a throughput certification. Existing per-kind shared caps for `domain.sync` and `dns.verify` remain.
 
 ## Other release gates
 

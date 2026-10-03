@@ -13,5 +13,5 @@ export function tickConcurrency(env: Record<string, string | undefined>): number
 /** Leave 350 seconds for the last wave (the longest registered handler is 300 seconds) and bookkeeping. */
 export function tickBudget(env: Record<string, string | undefined>): number {
   const value = env.MH_TICK_BUDGET_MS?.trim();
-  return value && /^\d+$/.test(value) ? Math.max(1, Math.min(450_000, Number(value))) : 450_000;
+  return value && /^\d+$/.test(value) ? Math.max(1, Math.min(450_000, Number(value))) : 50_000;
 }
