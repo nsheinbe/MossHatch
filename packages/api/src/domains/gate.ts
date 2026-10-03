@@ -18,13 +18,13 @@ export const RENEWAL_LOOKAHEAD_MS = 14 * DAY_MS;
 export async function floorMinor(q: Q): Promise<bigint> { return flagNumber(q, "sell_gate.min_funds_minor", SELL_GATE_MIN_FUNDS_MINOR); }
 
 /** Wholesale reserved for renewals: charged and waiting on the registrar, plus terms whose charge falls within 14 days. */
-export async function reservedRenewalsMinor(q: Q, now: Date, opts: { excludeTermId?: string } = {}): Promise<bigint> {
+export async function reservedRenewalsMinor(q: Q, now: Date, opts: { excludeTermId?: string; excludeFunded?: boolean } = {}): Promise<bigint> {
   const charged = (await q.query(
-    "select coalesce(sum((quote->>'wholesale_minor')::bigint),0)::text as s from orders where kind = 'renew' and state = 'renewing_upstream'")).rows[0].s as string;
+    "select coalesce(sum((quote->>'wholesale_minor')::bigint),0)::text as s from orders where kind = 'renew' and state = 'renewing_upstream' and (not $1::boolean or funding_reserved_minor = 0)", [opts.excludeFunded ?? false])).rows[0].s as string;
   const due = (await q.query(
     `select coalesce(sum(current_wholesale_minor),0)::text as s from renewal_terms
-      where state in ('scheduled','held','charging','payment_failed') and charge_at <= $1 and ($2::uuid is null or id <> $2::uuid) and order_id is null`,
-    [new Date(now.getTime() + RENEWAL_LOOKAHEAD_MS), opts.excludeTermId ?? null])).rows[0].s as string;
+      where state in ('scheduled','held','charging','payment_failed') and charge_at <= $1 and ($2::uuid is null or id <> $2::uuid) and (order_id is null or ($3::boolean and exists (select 1 from orders o where o.id = renewal_terms.order_id and o.kind = 'renew' and o.state = 'draft' and o.funding_reserved_minor = 0)))`,
+    [new Date(now.getTime() + RENEWAL_LOOKAHEAD_MS), opts.excludeTermId ?? null, opts.excludeFunded ?? false])).rows[0].s as string;
   return BigInt(charged) + BigInt(due);
 }
 export async function reservedRegistrationsMinor(q: Q): Promise<bigint> {
