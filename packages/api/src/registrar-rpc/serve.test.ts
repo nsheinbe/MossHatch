@@ -150,6 +150,22 @@ describe("the registrar project's daily spend cap", () => {
     const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
     await expect(port!.renew("moonfern.com", 1, 2027)).rejects.toMatchObject({ code: "registrar_daily_spend_cap" });
   });
+  it("commercial policy reaches the provider beyond the old five-operation cap and still uses shared anti-replay nonces", async () => {
+    const transport = fakeOpenprovider(), redis = fakeRedis();
+    const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRATION_POLICY: "commercial" }, { transport, redisFetch: redis, log: () => undefined });
+    expect(reg.reasons).toEqual([]);
+    const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
+    // The fake does not implement renew. Every call must reach that provider refusal, never a hidden count fuse.
+    for (let i = 0; i < 7; i++) await expect(port!.renew("moonfern.com", 1, 2027)).rejects.not.toMatchObject({ code: "registrar_daily_spend_cap" });
+    expect(transport.sent.filter((r) => r.method === "GET" && new URL(r.url).pathname.endsWith("/domains/7"))).toHaveLength(7);
+    expect(redis.seen.some((r) => r.cmd[0] === "SET")).toBe(true);
+    expect(redis.seen.some((r) => r.cmd[0] === "INCR")).toBe(false);
+  });
+  it("commercial policy preserves an explicit registrar zero stop", async () => {
+    const reg = registrarRpcFromEnv({ ...LIVE, MH_REGISTRATION_POLICY: "commercial", MH_REGISTRAR_DAILY_SPEND_OPS: "0" }, { transport: fakeOpenprovider(), redisFetch: fakeRedis(), log: () => undefined });
+    const port = await registrarFromEnv(WEB, { registrarMode: "live" }, fetchTo(reg.handler));
+    await expect(port!.renew("moonfern.com", 1, 2027)).rejects.toMatchObject({ code: "registrar_daily_spend_cap" });
+  });
 });
 
 describe("the registrar project's shared store (Upstash Redis REST)", () => {
