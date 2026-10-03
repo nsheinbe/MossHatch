@@ -120,6 +120,20 @@ describe("the dogfood spend fuse", () => {
     expect(await decide({ daily: 5, total: 5 })).toMatchObject({ allowed: false, reasons: ["global_total_cap"] });
     await app.db.owner.query("update flags set value = '10' where name = 'limits.total_live_registrations'");
   });
+  it("commercial policy replaces seeded global count flags while retaining explicit operator stops", async () => {
+    const user = (await app.db.owner.query("insert into users (email, status, email_verified_at, created_at) values ('commercial@example.test','active',now(), now() - interval '90 days') returning id")).rows[0].id as string;
+    const saved = (await app.db.owner.query("select name, value from flags where name = any($1)", [["limits.daily_registrations", "limits.total_live_registrations"]])).rows;
+    await app.db.owner.query("update flags set value = '0' where name = any($1)", [["limits.daily_registrations", "limits.total_live_registrations"]]);
+    const decide = (env: Record<string, string | undefined>) => withUser(app.ctx.runtime, user, (c) => checkNewAccountLimits(c, user, { wholesaleMinor: 1198n }, app.clock.now(), spendFuseFromEnv(env, true)));
+    try {
+      expect((await decide({})).allowed).toBe(false);
+      expect((await decide({ MH_REGISTRATION_POLICY: "commercial" })).allowed).toBe(true);
+      expect(await decide({ MH_REGISTRATION_POLICY: "commercial", MH_LIVE_DAILY_REGISTRATIONS: "0" })).toMatchObject({ allowed: false, reasons: ["global_daily_cap"] });
+      expect(await decide({ MH_REGISTRATION_POLICY: "commercial", MH_LIVE_TOTAL_REGISTRATIONS: "0" })).toMatchObject({ allowed: false, reasons: ["global_total_cap"] });
+    } finally {
+      for (const row of saved) await app.db.owner.query("update flags set value = $2::jsonb where name = $1", [row.name, JSON.stringify(row.value)]);
+    }
+  });
 });
 
 describe("the invite-only live gate", () => {

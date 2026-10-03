@@ -5,19 +5,45 @@
   "buildCommand": "cd ../.. && node scripts/build-registrar.mjs",
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/rpc/v1/:command", "destination": "/api/index" }
+    {
+      "source": "/rpc/v1/:command",
+      "destination": "/api/index"
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Content-Security-Policy", "value": "default-src 'none'; frame-ancestors 'none'" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "no-referrer" },
-        { "key": "Cache-Control", "value": "no-store" },
-        { "key": "X-Robots-Tag", "value": "noindex" },
-        { "key": "Strict-Transport-Security", "value": "max-age=63072000" }
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'none'; frame-ancestors 'none'"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000"
+        }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 800
+    }
+  }
 }

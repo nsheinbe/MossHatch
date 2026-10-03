@@ -1,5 +1,6 @@
 import type { PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
+import { commercialRegistrationPolicy, commercialCountLimit } from "../golive/registration-policy.ts";
 
 /**
  * New-account velocity and exposure limits (PLAN.md 4.6 row 37; own targets, all tunable through `flags`).
@@ -21,12 +22,15 @@ export type VelocityDecision = { allowed: true; newAccount: boolean } | { allowe
 /**
  * The dogfood spend fuse (docs/GO-LIVE.md): a live process caps registrations below the flags so a bug cannot drain the registrar
  * balance. `daily` lowers `limits.daily_registrations` (trailing 24 hours, all accounts); `total` caps every registration ever
- * taken (with `limits.total_live_registrations`). Null means no extra cap. Read from the environment once at boot (`spendFuseFromEnv`).
+ * taken (with `limits.total_live_registrations`). Null means no extra cap. Read from the environment once at boot (`spendFuseFromEnv`). Commercial policy explicitly replaces only the global count flags with operator-selected environment limits; funding and account controls are independent.
  */
-export interface SpendFuse { daily: number | null; total: number | null }
+export interface SpendFuse { daily: number | null; total: number | null; ignoreGlobalFlags?: true }
 export const LIVE_DEFAULT_FUSE: SpendFuse = { daily: 3, total: 10 };
 /** MH_LIVE_DAILY_REGISTRATIONS / MH_LIVE_TOTAL_REGISTRATIONS (whole numbers; 0 stops registrations). Live processes default to 3 a day and 10 in total. */
 export function spendFuseFromEnv(env: Record<string, string | undefined>, livemode: boolean): SpendFuse {
+  if (commercialRegistrationPolicy(env)) return {
+    daily: commercialCountLimit(env.MH_LIVE_DAILY_REGISTRATIONS), total: commercialCountLimit(env.MH_LIVE_TOTAL_REGISTRATIONS), ignoreGlobalFlags: true,
+  };
   const num = (v: string | undefined, dflt: number | null) => (v !== undefined && /^\d{1,6}$/.test(v.trim()) ? Number(v.trim()) : dflt);
   return { daily: num(env.MH_LIVE_DAILY_REGISTRATIONS, livemode ? LIVE_DEFAULT_FUSE.daily : null), total: num(env.MH_LIVE_TOTAL_REGISTRATIONS, livemode ? LIVE_DEFAULT_FUSE.total : null) };
 }
@@ -47,13 +51,16 @@ export async function checkNewAccountLimits(c: PoolClient, userId: string, order
   const reasons: VelocityReason[] = [];
   const isRegistration = (order.kind ?? "register") === "register";
 
-  const flagCap = await flagNumber(c, "limits.daily_registrations", 200);
-  const cap = fuse?.daily != null ? Math.min(flagCap, fuse.daily) : flagCap;
+  const cap = fuse?.ignoreGlobalFlags
+    ? fuse.daily
+    : Math.min(await flagNumber(c, "limits.daily_registrations", 200), fuse?.daily ?? Infinity);
   if (isRegistration) {
-    const global = (await c.query("select velocity_global_registrations($1) as n", [since])).rows[0].n as number;
-    if (global + 1 > cap) reasons.push("global_daily_cap");
+    if (cap !== null) {
+      const global = (await c.query("select velocity_global_registrations($1) as n", [since])).rows[0].n as number;
+      if (global + 1 > cap) reasons.push("global_daily_cap");
+    }
     if (fuse?.total != null) {
-      const totalCap = Math.min(fuse.total, await flagNumber(c, "limits.total_live_registrations", fuse.total));
+      const totalCap = fuse.ignoreGlobalFlags ? fuse.total : Math.min(fuse.total, await flagNumber(c, "limits.total_live_registrations", fuse.total));
       const total = (await c.query("select velocity_global_registrations($1) as n", [new Date(0)])).rows[0].n as number;
       if (total + 1 > totalCap) reasons.push("global_total_cap");
     }
