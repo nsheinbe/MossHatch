@@ -203,7 +203,7 @@ describe("waitlist", () => {
     try {
       const saved = d;
       d = failing;
-      try { expect((await post(good(), { ip: "203.0.113.77" })).status).toBe(202); } finally { d = saved; }
+      try { const failed = await post(good(), { ip: "203.0.113.77" }); expect(failed.status).toBe(503); expect(failed.json.error.code).toBe("delivery_unavailable"); } finally { d = saved; }
       await post(good({ email: "canary-7Qx@example.com", name: "canaryname.dev" }), { ip: "203.0.113.78" });
       const printed = [...spy.mock.calls, ...spyI.mock.calls, ...spyW.mock.calls, ...spyE.mock.calls, warnings].flat().map(String).join("\n");
       expect(printed).not.toMatch(/@|canary|moonfern|203\.0\.113/);

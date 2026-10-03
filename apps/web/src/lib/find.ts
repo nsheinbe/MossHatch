@@ -1,5 +1,5 @@
-import { formatUsd, feePerYear, usd, splitDomain } from "@mosshatch/core";
-import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
+import { formatUsd, usd, splitDomain } from "@mosshatch/core";
+import { EXTENSIONS } from "@mosshatch/registrar";
 import type { LookupStatus, Result } from "../store";
 import { api } from "./api";
 
@@ -51,12 +51,8 @@ export async function search(raw: string): Promise<{ results: Result[]; alternat
   return { results, alternatives: [] };
 }
 
-export function staticPrices(): { tld: string; price: string; years: number }[] {
-  return EXTENSIONS.map((tld) => {
-    const w = SAMPLE_WHOLESALE_CENTS[tld]!;
-    const years = tld === "ai" ? 2 : 1;
-    return { tld, years, price: formatUsd(usd((w + feePerYear(usd(w)).cents) * years)) };
-  });
+export function staticPrices(): { tld: string; price: string; years: number; renewal: string }[] {
+  return __MH_PREVIEW_PRICES__.map(p => ({...p}));
 }
 
 interface ServerSearch { results: { fqdn: string; tld: string; kind: string; source: string; unconfirmed?: boolean; price: { years: number; subtotal_minor: string } | null }[] }

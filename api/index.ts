@@ -19,7 +19,7 @@ function boot(): Promise<Boot | { error: string }> {
 }
 
 async function handle(request: Request): Promise<Response> {
-  // The waitlist needs only DATABASE_URL (and optionally RESEND_API_KEY), so it answers even while the full API refuses to boot.
+  // The waitlist needs DATABASE_URL, RESEND_API_KEY and valid WAITLIST_FROM for new joins (existing links still work without a sender), so it answers even while the full API refuses to boot.
   const w = await handleWaitlist(request, process.env);
   if (w) return w;
   // The preview's registered-or-not check (public RDAP, no database) answers the same way.

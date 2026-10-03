@@ -69,9 +69,14 @@ async function mintToken(c: PoolClient, id: string, purpose: "confirm" | "unsubs
 
 const link = (d: WaitlistDeps, path: string, token: string) => `${d.origin}${path}?t=${token}`;
 
-async function send(d: WaitlistDeps, to: string, kind: string, dedupe: Buffer, m: Mail): Promise<void> {
+async function send(d: WaitlistDeps, to: string, kind: string, dedupe: Buffer, m: Mail, required = false): Promise<void> {
   try { await d.email.send({ dedupeKey: `waitlist:${kind}:${dedupe.toString("hex").slice(0, 32)}`, kind: `waitlist.${kind}`, to: [to], subject: m.subject, text: m.text, klass: "A" }); }
-  catch (e) { d.warn?.(`waitlist.mail_failed kind=${kind} code=${(e as { code?: string }).code ?? (e as Error).name}`); }
+  catch (e) {
+    const rawCode = (e as { code?: unknown }).code;
+    const code = typeof rawCode === "string" && /^[a-z0-9_]{1,80}$/i.test(rawCode) ? rawCode : "delivery_failed";
+    d.warn?.(`waitlist.mail_failed kind=${kind} code=${code}`);
+    if (required) throw new WaitlistError(503, "delivery_unavailable");
+  }
 }
 
 /**
@@ -96,7 +101,7 @@ export async function join(d: WaitlistDeps, input: JoinInput): Promise<void> {
     const confirm = await mintToken(c, row.id, "confirm", now);
     return { kind: "confirm", dedupe: confirm.hash, mail: confirmMail(link(d, "/api/waitlist/confirm", confirm.token), link(d, "/api/waitlist/unsubscribe", unsub.token)) };
   });
-  if (out) await send(d, input.email, out.kind, out.dedupe, out.mail);
+  if (out) await send(d, input.email, out.kind, out.dedupe, out.mail, true);
 }
 
 export async function tokenLive(d: WaitlistDeps, token: string, purpose: "confirm" | "unsubscribe"): Promise<boolean> {
