@@ -37,6 +37,26 @@ describe("shared paid registrar operation boundary", () => {
     finish!(); await second;
     expect(shared.rows.size).toBe(0);
   });
+  it("accepted transfers keep the shared lease across instances while status reads remain available", async () => {
+    for (const status of ["pending_registry", "pending_owner"] as const) {
+      const shared = redisFake();
+      let paidCalls = 0;
+      const adapter = {
+        startTransferIn: async () => { paidCalls++; return { status, registrarOrderId: "123", ownerEmailSent: false }; },
+        register: async () => { paidCalls++; return { status: "registered" }; },
+        renew: async () => { paidCalls++; return { status: "renewed" }; },
+        getTransferInStatus: async () => ({ status }),
+      } as unknown as RegistrarPort;
+      const one = serializePaidOperations(adapter, new RedisPaidOperationLock(shared.command, "reseller"));
+      const two = serializePaidOperations(adapter, new RedisPaidOperationLock(shared.command, "reseller"));
+      expect((await one.startTransferIn({} as never)).status).toBe(status);
+      await expect(two.register({} as never)).rejects.toMatchObject({ code: "registrar_paid_operation_busy" });
+      await expect(two.renew("moonfern.com", 1, 2027)).rejects.toMatchObject({ code: "registrar_paid_operation_busy" });
+      expect(await two.getTransferInStatus("moonfern.com")).toEqual({ status });
+      expect(paidCalls).toBe(1);
+      expect(shared.rows.size).toBe(1);
+    }
+  });
   it("a late owner cannot release a replacement owner's lease", async () => {
     const shared = redisFake(), lock = new RedisPaidOperationLock(shared.command, "reseller");
     const old = await lock.acquire();

@@ -49,7 +49,8 @@ export function serializePaidOperations(port: RegistrarPort, lock: PaidOperation
         let uncertain = false;
         try {
           const result = await (value as (...args: unknown[]) => Promise<unknown>).apply(target, args);
-          uncertain = (result as { status?: string } | null)?.status === "accepted_pending";
+          const status = (result as { status?: string } | null)?.status;
+          uncertain = status === "accepted_pending" || (prop === "startTransferIn" && (status === "pending_registry" || status === "pending_owner"));
           return result;
         } catch (error) {
           uncertain = !(error instanceof RegistrarError) || error.outcomeUnknown;
