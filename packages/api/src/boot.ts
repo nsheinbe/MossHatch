@@ -13,6 +13,7 @@ import { installOrders } from "./orders/wiring.ts";
 import { registerOrderJobs } from "./orders/jobs.ts";
 import { registerOpsJobs } from "./ops/jobs.ts";
 import { opportunisticTick } from "./jobs/engine.ts";
+import { requestWaitUntil, tickConcurrency } from "./jobs/lifecycle.ts";
 import { buildRouter } from "./routes.ts";
 import type { Router } from "./http/router.ts";
 import { FakeStripe } from "./stripe/fake.ts";
@@ -142,7 +143,7 @@ export async function bootFromEnv(env: Record<string, string | undefined>, deps:
   registerOpsJobs();
   if (env.STRIPE_SECRET_KEY) {
     const stripe = new StripeReal({ apiKey: env.STRIPE_SECRET_KEY, mode: config.mode, registrarMode: config.registrarMode, vercelEnv: env.VERCEL_ENV as never });
-    installOrders(ctx, { stripe, registrar, registrarId: defaultPriceTable(), tick: (c) => { opportunisticTick(c, () => undefined); } });
+    installOrders(ctx, { stripe, registrar, registrarId: defaultPriceTable(), tick: (c) => { opportunisticTick(c, requestWaitUntil(), { concurrency: tickConcurrency(env) }); } });
   } else if (config.mode === "local" && env.MH_FAKE_STRIPE === "1") {
     installOrders(ctx, { stripe: new FakeStripe(ctx.clock, { livemode: false, taxBps: 0 }), registrar });
   }
