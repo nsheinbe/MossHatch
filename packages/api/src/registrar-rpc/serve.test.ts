@@ -3,6 +3,7 @@ import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import { PRODUCTION_URL, type OpHttpRequest, type OpHttpTransport } from "@mosshatch/registrar/openprovider";
 import { registrarRpcFromEnv, registrarServeReasons, spendCapped } from "./serve.ts";
 import { RedisDailyCounter, redisRest } from "./shared-store.ts";
+import { ACQUIRE_LOGIN, FINISH_LOGIN, INVALIDATE_LOGIN } from "./openprovider-login.ts";
 import { RPC_HEADERS } from "./sign.ts";
 import { registrarFromEnv, registrarRpcBootReason } from "../domains/boot-wiring.ts";
 import { NotConfigured } from "../boot.ts";
@@ -30,6 +31,20 @@ function fakeRedis(): typeof fetch & { data: Map<string, string>; down: boolean;
     const [op, key] = [cmd[0]!.toUpperCase(), cmd[1]!];
     if (op === "SET") { if (cmd.includes("NX") && data.has(key)) return reply(null); data.set(key, cmd[2]!); return reply("OK"); }
     if (op === "INCR") { const n = Number(data.get(key) ?? "0") + 1; data.set(key, String(n)); return reply(n); }
+    if (op === "EVAL" && key === ACQUIRE_LOGIN) {
+      const [tokenKey, lockKey, spacingKey, cooldownKey] = cmd.slice(3, 7);
+      if (data.has(cooldownKey!)) return reply([data.get(cooldownKey!), ""]);
+      if (data.has(tokenKey!)) return reply(["token", data.get(tokenKey!)]);
+      if (data.has(lockKey!) || data.has(spacingKey!)) return reply(["busy", ""]);
+      data.set(lockKey!, cmd[7]!); data.set(spacingKey!, "1"); return reply(["owner", ""]);
+    }
+    if (op === "EVAL" && key === FINISH_LOGIN) {
+      const [tokenKey, lockKey, , cooldownKey] = cmd.slice(3, 7);
+      if (data.get(lockKey!) !== cmd[7]) return reply(0);
+      if (cmd[8] === "token") data.set(tokenKey!, cmd[9]!); else data.set(cooldownKey!, cmd[8]!);
+      data.delete(lockKey!); return reply(1);
+    }
+    if (op === "EVAL" && key === INVALIDATE_LOGIN) { const tokenKey = cmd[3]!; if (data.get(tokenKey) !== cmd[4]) return reply(0); data.delete(tokenKey); return reply(1); }
     if (op === "EVAL") { const lockKey = cmd[3]!, token = cmd[4]!; if (data.get(lockKey) !== token) return reply(0); data.delete(lockKey); return reply(1); }
     if (op === "PEXPIRE") return reply(data.has(key) ? 1 : 0);
     return new Response(JSON.stringify({ error: "ERR unknown command" }), { status: 400 });

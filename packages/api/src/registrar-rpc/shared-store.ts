@@ -3,7 +3,8 @@ import type { NonceStore } from "./server.ts";
 /**
  * The registrar project's shared state: the RPC nonces and the daily count of paid operations, kept in Redis so every function instance
  * sees the same values (an in-memory store bounds one instance only). The project still has no database, Stripe key or vault; Redis
- * holds only nonce markers and a counter, never a domain, a person or a secret.
+ * holds nonce markers, counters, leases and a short-lived Openprovider bearer cache. It must remain private to the registrar project:
+ * provider bearer values are secrets, never logged or exposed through RPC. No domain/contact records or passwords are stored.
  *
  * Reached over the Upstash Redis REST API with fetch (no client library): one POST per command, the command as a JSON array, the token as
  * a Bearer header. Environment (Production scope, Sensitive, in the `registrar` project only): UPSTASH_REDIS_REST_URL and
