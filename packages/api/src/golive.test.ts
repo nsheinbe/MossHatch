@@ -150,6 +150,7 @@ describe("the invite-only live gate", () => {
     ["GET", "/api/v1/search?name=moonfern&tlds=com"], ["GET", "/api/v1/quote?domain=moonfern.com"], ["POST", "/api/v1/orders"],
     ["POST", "/api/v1/orders/00000000-0000-0000-0000-000000000000/pay-link"], ["POST", "/api/v1/transfers"],
     ["POST", "/api/v1/transfers/00000000-0000-0000-0000-000000000000/confirm"], ["POST", "/api/v1/domains/00000000-0000-0000-0000-000000000000/renew"],
+    ["POST", "/api/v1/approvals/00000000-0000-0000-0000-000000000000/decide"],
     ["POST", "/api/v1/approvals/00000000-0000-0000-0000-000000000000/checkout"],
   ];
 

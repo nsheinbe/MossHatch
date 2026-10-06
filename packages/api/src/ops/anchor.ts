@@ -4,7 +4,7 @@ import { tx } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { appendAudit, SYSTEM_CHAIN, verifyChain } from "../audit.ts";
 import { canonicalJson } from "../util/bytes.ts";
-import { raiseAlert } from "./alerts.ts";
+import { closeAlerts, raiseAlert } from "./alerts.ts";
 
 export interface AnchorHead { chain_id: string; seq: number; head_mac: string /* hex */ }
 export interface AnchorRecord {
@@ -107,8 +107,11 @@ export async function anchorAudit(ctx: AnchorCtx, sink: AnchorSink): Promise<Anc
   const rec: AnchorRecord = { v: 1, ...body, anchorMac };
   const { ref } = await sink.put(rec);
   await tx(ctx.cron, async (c) => {
+    // Serialize freshness recovery with a verifier that may have read the sink before this put.
+    await lockAnchorFreshness(c);
     await c.query("insert into audit_anchors (id, anchored_at, heads, anchor_mac, external_ref) values ($1,$2,$3,$4,$5)", [id, body.anchoredAt, JSON.stringify(heads), Buffer.from(anchorMac, "hex"), ref]);
     await appendAudit(ctx, c, { chainId: SYSTEM_CHAIN, actorKind: "system", action: "audit.anchor", resourceKind: "audit_anchor", resourceId: id, detail: { chains: heads.length } });
+    if (freshAnchor(body.anchoredAt, ctx.clock.now())) await closeAlerts(c, "audit.anchor_stale", "anchors");
   });
   return rec;
 }
@@ -197,13 +200,32 @@ export async function verifyAllChains(ctx: Pick<AppContext, "cron" | "kms">): Pr
 
 export const ANCHOR_MAX_AGE_HOURS = 25;
 
+const lockAnchorFreshness = (c: { query: AppContext["cron"]["query"] }) =>
+  c.query("select pg_advisory_xact_lock(hashtextextended('mh.audit.anchor_freshness', 0))");
+
+function freshAnchor(at: string | Date | null, now: Date): boolean {
+  const age = at ? now.getTime() - new Date(at).getTime() : Infinity;
+  return Number.isFinite(age) && age >= 0 && age <= ANCHOR_MAX_AGE_HOURS * 3_600_000;
+}
+
 /** audit.verify: recompute every chain, compare with the anchors, alert on any failure or a stale anchor. */
 export async function auditVerifyJob(ctx: AnchorCtx, sink: AnchorSink): Promise<{ chains: ChainVerification; anchors: AnchorVerification }> {
   const chains = await verifyAllChains(ctx);
+  // Only a new commit during this external read can explain an older sink snapshot.
+  const beforeRead = (await ctx.cron.query("select id from audit_anchors order by anchored_at desc, id desc limit 1")).rows[0]?.id as string | undefined;
   const anchors = await verifyAnchors(ctx, sink);
   for (const f of chains.failures) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "audit.chain_broken", subject: f.chainId, detail: { bad_seq: f.badSeq, reason: f.reason } });
   if (!anchors.ok) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "audit.anchor_mismatch", subject: "anchors", detail: { findings: anchors.tampered.length, first: anchors.tampered[0]?.kind } });
-  const ageMs = anchors.latestAnchorAt ? ctx.clock.now().getTime() - Date.parse(anchors.latestAnchorAt) : Infinity;
-  if (ageMs > ANCHOR_MAX_AGE_HOURS * 3_600_000) await raiseAlert(ctx, ctx.cron, { severity: "page", kind: "audit.anchor_stale", subject: "anchors", detail: { latest: anchors.latestAnchorAt } });
+  await tx(ctx.cron, async (c) => {
+    await lockAnchorFreshness(c);
+    if (freshAnchor(anchors.latestAnchorAt, ctx.clock.now())) {
+      if (anchors.ok && anchors.anchorsChecked > 0 && chains.failures.length === 0) await closeAlerts(c, "audit.anchor_stale", "anchors");
+      return;
+    }
+    // A preexisting DB row cannot explain a missing external anchor (for example, the wrong bucket).
+    const latest = (await c.query("select id, anchored_at from audit_anchors order by anchored_at desc, id desc limit 1")).rows[0] as { id: string; anchored_at: Date } | undefined;
+    if (latest && latest.id !== beforeRead && freshAnchor(latest.anchored_at, ctx.clock.now())) await closeAlerts(c, "audit.anchor_stale", "anchors");
+    else await raiseAlert(ctx, c, { severity: "page", kind: "audit.anchor_stale", subject: "anchors", detail: { latest: anchors.latestAnchorAt } });
+  });
   return { chains, anchors };
 }

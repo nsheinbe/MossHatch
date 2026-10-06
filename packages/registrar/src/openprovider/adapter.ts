@@ -29,6 +29,11 @@ import { arr, bool, encodeJson, minorFromText, num, obj, parseAmsterdam, parseJs
  */
 export type Deployment = "local" | "preview" | "staging" | "production";
 export interface OpenproviderCredentials { read(): { username: string; password: string } }
+/** Server-only coordination. Implementations must never include credentials or bearer values in errors/logs. */
+export interface OpenproviderLoginCache {
+  get(input: { host: string; username: string; password: string; ttlMs: number }, login: () => Promise<string>): Promise<string>;
+  invalidate(input: { host: string; username: string; password: string }, rejectedToken: string): Promise<void>;
+}
 export class MemoryOpenproviderCredentials implements OpenproviderCredentials {
   constructor(private c: { username: string; password: string }) {}
   read() { return { ...this.c }; }
@@ -49,6 +54,8 @@ export interface OpenproviderConfig {
   timeoutMs?: number;
   /** How long a login token is reused before a fresh login. UNVERIFIED lifetime (the token is opaque, 32 characters); a 401 also forces a re-login. */
   tokenTtlMs?: number;
+  /** Live registrar instances share a trusted store; without it sandbox/standalone adapters retain their local cache. */
+  loginCache?: OpenproviderLoginCache;
 }
 
 const LAUNCH_TLDS = ["com", "ai", "dev", "io", "app", "studio"];
@@ -105,25 +112,33 @@ export class OpenproviderAdapter implements RegistrarPort {
       let cred: { username: string; password: string };
       try { cred = this.cfg.credentials.read(); } catch { cred = { username: "", password: "" }; }
       if (!cred.username || !cred.password) throw err("unavailable", "no_credentials", { retryable: true }, "registrar credentials are not set");
-      const body = { username: cred.username, password: cred.password, ip: "0.0.0.0" };
-      const { path } = checkOperation("LOGIN", { body });
-      const log = (e: Omit<OpenproviderLogEvent, "event" | "op" | "write">) => this.cfg.log?.({ event: "openprovider_call", op: "LOGIN", write: false, ...e });
-      let res;
-      try { res = await this.cfg.transport.request({ method: "POST", url: this.base + path, headers: { "Content-Type": "application/json" }, body: encodeJson(body), timeoutMs: this.cfg.timeoutMs ?? 30_000 }); }
-      catch { log({ outcome: "transport_error" }); throw err("unavailable", "transport", { retryable: true }, "registrar request did not complete"); }
-      let j: JObj | undefined; try { j = obj(parseJson(res.body)); } catch { j = undefined; }
-      const code = num(j?.code);
-      const token = str(obj(j?.data)?.token);
-      log({ httpStatus: res.status, ...(code !== undefined ? { providerCode: code } : {}), outcome: res.status === 200 && code === 0 && token ? "ok" : "error" });
-      if (res.status === 401 || code === 196) { this.alert({ kind: "auth_failed", detail: "login" }); throw rejected("auth_failed"); }
-      if (res.status >= 500) throw err("unavailable", `http_${res.status}`, { retryable: true });
-      if (res.status !== 200 || code !== 0 || !token) throw err("unavailable", "login_failed", { retryable: true });
-      this.token = { value: token, at: this.clock.now().getTime() };
-      return token;
+      const requestToken = async () => {
+        const body = { username: cred.username, password: cred.password, ip: "0.0.0.0" };
+        const { path } = checkOperation("LOGIN", { body });
+        const log = (e: Omit<OpenproviderLogEvent, "event" | "op" | "write">) => this.cfg.log?.({ event: "openprovider_call", op: "LOGIN", write: false, ...e });
+        let res;
+        try { res = await this.cfg.transport.request({ method: "POST", url: this.base + path, headers: { "Content-Type": "application/json" }, body: encodeJson(body), timeoutMs: this.cfg.timeoutMs ?? 30_000 }); }
+        catch { log({ outcome: "transport_error" }); throw err("unavailable", "transport", { retryable: true }, "registrar request did not complete"); }
+        let j: JObj | undefined; try { j = obj(parseJson(res.body)); } catch { j = undefined; }
+        const code = num(j?.code);
+        const token = str(obj(j?.data)?.token);
+        log({ httpStatus: res.status, ...(code !== undefined ? { providerCode: code } : {}), outcome: res.status === 200 && code === 0 && token ? "ok" : "error" });
+        if (res.status === 401 || code === 196) { this.alert({ kind: "auth_failed", detail: "login" }); throw rejected("auth_failed"); }
+        if (res.status === 429) throw err("rate_limited", "http_429", { retryable: true });
+        if (res.status >= 500) throw err("unavailable", `http_${res.status}`, { retryable: true });
+        if (res.status !== 200 || code !== 0 || !token) throw err("unavailable", "login_failed", { retryable: true });
+        this.token = { value: token, at: this.clock.now().getTime() };
+        return token;
+      };
+      return this.cfg.loginCache
+        ? this.cfg.loginCache.get({ host: this.base, ...cred, ttlMs: this.cfg.tokenTtlMs ?? 12 * 3_600_000 }, requestToken)
+        : requestToken();
     })();
     try { return await this.loggingIn; } finally { this.loggingIn = null; }
   }
   private async bearer(): Promise<string> {
+    // Shared cache TTL is measured at provider login, never extended by another instance reading the token.
+    if (this.cfg.loginCache) return this.login();
     const ttl = this.cfg.tokenTtlMs ?? 12 * 3_600_000;
     if (this.token && this.clock.now().getTime() - this.token.at < ttl) return this.token.value;
     this.token = null;
@@ -166,6 +181,11 @@ export class OpenproviderAdapter implements RegistrarPort {
       if (res.status === 401 || code === 196) {
         log({ ...base, outcome: "error" });
         this.token = null;
+        if (this.cfg.loginCache) {
+          let cred: { username: string; password: string };
+          try { cred = this.cfg.credentials.read(); } catch { throw err("unavailable", "no_credentials", { retryable: true }); }
+          await this.cfg.loginCache.invalidate({ host: this.base, ...cred }, token);
+        }
         if (attempt === 0) continue;
         this.alert({ kind: "auth_failed", detail: "http_401" });
         throw rejected("auth_failed");
