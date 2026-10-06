@@ -1,3 +1,4 @@
+import { requireFundingAdmission } from "./funding-control.ts";
 import { z } from "zod";
 import { RegistrarError, type DnsRecord, type RegistrarPort, type TransferAwayStatus } from "@mosshatch/registrar/port";
 import { decodeJson, encodeJson, RPC_HEADERS, RPC_PATH_PREFIX, verifySignature } from "./sign.ts";
@@ -46,6 +47,8 @@ export const RPC_COMMANDS = {
   getDomain: cmd(z.tuple([fqdn]), (p, a) => p.getDomain(a[0])),
   getOrdersByDomain: cmd(z.tuple([fqdn]), (p, a) => p.getOrdersByDomain(a[0])),
   cancelPendingOrder: cmd(z.tuple([z.string().regex(/^[A-Za-z0-9_-]{1,40}$/)]), (p, a) => p.cancelPendingOrder(a[0])),
+  beginFundingAdmission: cmd(z.tuple([]), (p) => requireFundingAdmission(p).beginFundingAdmission()),
+  endFundingAdmission: cmd(z.tuple([z.string().uuid()]), (p, a) => requireFundingAdmission(p).endFundingAdmission(a[0])),
   getFundingStatus: cmd(z.tuple([]), (p) => p.getFundingStatus()),
   getBalance: cmd(z.tuple([]), (p) => p.getBalance()),
   setLock: cmd(z.tuple([fqdn, z.boolean()]), (p, a) => p.setLock(a[0], a[1])),

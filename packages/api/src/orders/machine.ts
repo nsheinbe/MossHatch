@@ -1,3 +1,4 @@
+import { readFundingLease, releaseFundingLease, reserveFunding } from "./funding.ts";
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError } from "@mosshatch/registrar/port";
@@ -273,7 +274,15 @@ async function evaluateAuthorization(m: M, o: OrderRow, pi: PaymentIntent, billi
     // Only a Checkout that carried setup_future_usage=off_session leaves a card that may be charged later (C-31).
     card_reusable: o.saveCard && !!pi.customer && !!pi.payment_method,
   };
-  const result = await ltx(m, async (c) => {
+  const fundingLease = await readFundingLease(m.ctx, m.svc.registrar);
+  let result;
+  try { result = await ltx(m, async (c) => {
+    const state = (await c.query("select state from orders where id = $1 for update", [o.id])).rows[0]?.state;
+    if (!["checkout_open", "payment_failed"].includes(state)) return "gone" as const;
+    if (!(await reserveFunding(m.ctx, c, o, fundingLease))) {
+      await move(m, c, o.id, ["checkout_open", "payment_failed"], "canceling", { void_reason: "registrar_unavailable", cancel_pi_id: pi.id }, { cause: "job", detail: { funding: "below_floor" } });
+      return "funds" as const;
+    }
     await c.query("savepoint authorize");
     let row: OrderRow | null;
     try { row = await move(m, c, o.id, ["checkout_open", "payment_failed"], to, patch, { cause: "job", detail: to === "paid_before_registration" ? { unexpected_capture: true } : undefined }); await c.query("release savepoint authorize"); }
@@ -294,7 +303,7 @@ async function evaluateAuthorization(m: M, o: OrderRow, pi: PaymentIntent, billi
       [o.id, o.userId, pi.id, amount, amount - o.subtotalMinor, pi.currency, pi.status, o.livemode, region, billing?.country?.toUpperCase() ?? null, pi.card_brand ?? null],
     );
     return "ok" as const;
-  });
+  }); } finally { await releaseFundingLease(m.svc.registrar, fundingLease); }
   return result === "gone" ? "wait" : "progressed";
 }
 
@@ -490,7 +499,7 @@ async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string
   const at = now(m);
   const expires = r.expiresAt ?? dom?.expiresAt ?? null;
   const moved = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, ["registering", "paid_before_registration", "outcome_unknown"], "registered", { registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0 }, { cause: "job" });
+    const row = await move(m, c, o.id, ["registering", "paid_before_registration", "outcome_unknown"], "registered", { funding_reserved_minor: 0, registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0 }, { cause: "job" });
     if (!row) return null;
     if (r.op) await resolveOp(c, r.op.id, "registered", { registrarOrderId: r.registrarOrderId });
     await createDomainRow(m, c, o, { registrarRef: r.registrarOrderId, at, dom });
@@ -928,7 +937,10 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
   const piId = o.cancelPiId ?? o.paymentIntentId ?? sessionPi;
   if (piId) {
     const pi = await m.svc.stripe.retrievePaymentIntent(piId);
-    if (pi.status === "succeeded") return startRefund(m, o, { from: ["canceling"], reason: "cancelled_after_capture", system: true, piId });
+    if (pi.status === "succeeded") {
+      await ltx(m, (c) => releaseUnusedRegistrationFunding(c, o.id));
+      return startRefund(m, o, { from: ["canceling"], reason: "cancelled_after_capture", system: true, piId });
+    }
     if (pi.status !== "canceled") {
       const own = piId === o.paymentIntentId;
       const res = await stripeOp(m, o, "cancel", own ? "cancel_pi" : `cancel_pi:${piId}`, { suffix: own ? "" : `:${piId}` }, (key) => m.svc.stripe.cancelPaymentIntent(piId, key));
@@ -936,6 +948,7 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
     }
   }
   const done = await ltx(m, async (c) => {
+    await releaseUnusedRegistrationFunding(c, o.id);
     const row = await move(m, c, o.id, "canceling", "voided", {}, { cause: "job", detail: { reason: o.voidReason } });
     if (!row) return null;
     await c.query("update payments set status = 'canceled' where order_id = $1 and status = 'requires_capture'", [o.id]);
@@ -943,6 +956,13 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
   });
   if (done) await notify(m, o, (c) => mailVoid(m.ctx, c, o, o.voidReason));
   return done ? "progressed" : "wait";
+}
+
+/** A canceled payment does not prove an unanswered vendor write is over. Fence both refund and void cleanup by the order. */
+async function releaseUnusedRegistrationFunding(c: PoolClient, orderId: string): Promise<void> {
+  const state = (await c.query("select state from orders where id = $1 for update", [orderId])).rows[0]?.state;
+  if (state !== "canceling") return;
+  await c.query("update orders set funding_reserved_minor = 0 where id = $1 and not exists (select 1 from order_operations where order_id = $1 and kind = 'register' and state = 'sent')", [orderId]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1061,7 +1081,7 @@ export async function scanLateWatches(m: M): Promise<number> {
     const dom = await m.svc.registrar.getDomain(o.fqdn);
     const ok = await ltx(m, async (c) => {
       const r = await move(m, c, o.id, ["voided", "canceling"], "capture_failed", {
-        registered_at: at, registrar_ref: claim.order.registrarOrderId, capture_failed_at: at, capture_deadline: new Date(claim.order.orderDate.getTime() + ADD_GRACE_DEADLINE_MS),
+        funding_reserved_minor: 0, registered_at: at, registrar_ref: claim.order.registrarOrderId, capture_failed_at: at, capture_deadline: new Date(claim.order.orderDate.getTime() + ADD_GRACE_DEADLINE_MS),
         late_watch_state: "claimed", failure_code: "late_registration", next_check_at: null,
       }, { cause: "system", detail: { late_registration: true } });
       if (!r) return false;

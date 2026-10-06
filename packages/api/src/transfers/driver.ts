@@ -433,6 +433,9 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
     one(await c.query(
       "update transfers_in set state = 'completed', upstream_status = 'completed', completed_at = $2, next_check_at = null, auth_code_enc = null where id = $1 and state = $3 returning id",
       [t.id, at, now0.transfer]));
+    // Completion and ownership are confirmed above: the vendor debit is in its balance now,
+    // even when our domain insert conflicts or the payment finished before the transfer.
+    await c.query("update orders set funding_reserved_minor = 0 where id = $1", [o.id]);
     const ins = await c.query(
       `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
        values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
@@ -452,7 +455,7 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
     const pending = await c.query("select id from order_operations where order_id = $1 and kind = 'transfer' and state = 'sent'", [o.id]);
     for (const p of pending.rows) await resolveOp(c, p.id, "accepted", st.registrarOrderId ?? null);
     if ((["registering", "outcome_unknown", "paid_before_registration", "registrar_unavailable", "canceling"] as OrderState[]).includes(now0.order)) {
-      (await move(m, c, o.id, [now0.order], "registered", { registered_at: at, next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: "completed" } })) ?? lose();
+      (await move(m, c, o.id, [now0.order], "registered", { funding_reserved_minor: 0, registered_at: at, next_check_at: null, check_count: 0 }, { cause: "job", detail: { transfer: "completed" } })) ?? lose();
     } else if (now0.order === "captured" || now0.order === "capturing" || now0.order === "capture_failed") {
       one(await c.query("update orders set registered_at = coalesce(registered_at, $2) where id = $1 and state = $3", [o.id, at, now0.order]));
     } else {
@@ -533,6 +536,7 @@ async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
   const sessionPi = await closeOrderSession(m, o);
   await closePayLinks(m, o);
   // 1. A request that is out with the registrar is cancelled and confirmed before the money moves.
+  let vendorKnownInactive = !t?.sentAt;
   if (t && t.sentAt) {
     let st = ours(t, await svc.registrar.getTransferInStatus(o.fqdn));
     if (st && (st.status === "pending_owner" || st.status === "pending_registry")) {
@@ -540,6 +544,7 @@ async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
       st = ours(t, await svc.registrar.getTransferInStatus(o.fqdn));
       if (st && (st.status === "pending_owner" || st.status === "pending_registry")) throw new Error("upstream_cancel_unconfirmed");
     }
+    vendorKnownInactive = st?.status === "cancelled";
     // It completed while we were stopping it: the name is the customer's and the hold is still there, so capture instead.
     if (st?.status === "completed") return completeTransfer(m, o, { ...t, state: t.state === "completed" ? "completed" : "pending_registry" }, st);
   }
@@ -549,7 +554,7 @@ async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
     const pi = await svc.stripe.retrievePaymentIntent(piId);
     if (pi.status === "succeeded") {
       const r = await ltx(m, async (c) => {
-        const row = await move(m, c, o.id, "canceling", "refund_pending", { cancel_pi_id: piId }, { cause: "system", detail: { reason: "cancelled_after_capture" } });
+        const row = await move(m, c, o.id, "canceling", "refund_pending", { cancel_pi_id: piId, ...(vendorKnownInactive ? { funding_reserved_minor: 0 } : {}) }, { cause: "system", detail: { reason: "cancelled_after_capture" } });
         if (row && t) await mailUser(m.ctx, c, o.userId, "transfer_failed", { fqdn: o.fqdn, reason: failureOf(o, t), ...(t.nackReason ? { nackReason: t.nackReason as TransferDenialReason } : {}), money: "refunding" }, `transfer.failed:${t.id}`);
         return row;
       });
@@ -562,7 +567,7 @@ async function cancelOrder(m: M, o: OrderRow): Promise<OrderStep> {
     }
   }
   const done = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, "canceling", "voided", {}, { cause: "job", detail: { reason: o.voidReason } });
+    const row = await move(m, c, o.id, "canceling", "voided", vendorKnownInactive ? { funding_reserved_minor: 0 } : {}, { cause: "job", detail: { reason: o.voidReason } });
     if (!row) return null;
     await c.query("update payments set status = 'canceled' where order_id = $1 and status = 'requires_capture'", [o.id]);
     if (t) {

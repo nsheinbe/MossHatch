@@ -1,3 +1,4 @@
+import { commercialRegistrationPolicy } from "./golive/registration-policy.ts";
 import { connect } from "@mosshatch/db";
 import { MockRegistrarPort } from "@mosshatch/registrar/mock-port";
 import { loadConfig, modeFromEnv } from "./config/modeguard.ts";
@@ -159,5 +160,6 @@ export async function bootFromEnv(env: Record<string, string | undefined>, deps:
   (ctx.services as Record<string, unknown>).liveGate = liveGateFromEnv(env, config.mode);
   // The dogfood spend fuse: a live process takes at most 3 registrations a day and 10 in all unless MH_LIVE_* says fewer or more.
   (ctx.services as Record<string, unknown>).spendFuse = spendFuseFromEnv(env, config.livemode);
+  ctx.services.fundedAdmission = commercialRegistrationPolicy(env);
   return { router, ctx };
 }
