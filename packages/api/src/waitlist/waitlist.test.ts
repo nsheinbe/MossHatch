@@ -260,3 +260,16 @@ describe("waitlist", () => {
     await expect(db.runtime.query("select email from waitlist")).rejects.toThrow(/permission denied/);
   });
 });
+
+describe("campaign attribution", () => {
+  it("keeps first-touch labels and discards personal data and click IDs", async () => {
+    expect((await post(good({ attribution: { utm_source: "Google", utm_medium: "cpc", utm_campaign: "launch_01", gclid: "secret", url: "https://example.com/person" } }))).status).toBe(202);
+    expect((await row()).attribution).toEqual({ utm_source: "google", utm_medium: "cpc", utm_campaign: "launch_01" });
+    await post(good({ attribution: { utm_source: "other" } }));
+    expect((await row()).attribution.utm_source).toBe("google");
+  });
+  it("ignores malformed attribution without blocking signup", async () => {
+    expect((await post(good({ attribution: { utm_source: "person@example.com", utm_medium: ["cpc"], utm_campaign: "x".repeat(65) } }))).status).toBe(202);
+    expect((await row()).attribution).toEqual({});
+  });
+});

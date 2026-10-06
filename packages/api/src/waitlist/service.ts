@@ -37,7 +37,7 @@ const keyed = (d: Pick<WaitlistDeps, "secret">, label: string, v: string) => cry
 
 export type Answer = "yes" | "no" | "maybe";
 export type Source = "app" | "fallback" | "page" | "signup";
-export interface JoinInput { email: string; name: string | null; answer: Answer | null; source: Source; network: string }
+export interface JoinInput { email: string; name: string | null; answer: Answer | null; source: Source; network: string; attribution?: Record<string, string> }
 
 export class WaitlistError extends Error {
   constructor(public status: number, public code: string, public retryAfter?: number) { super(code); this.name = "WaitlistError"; }
@@ -90,7 +90,7 @@ export async function join(d: WaitlistDeps, input: JoinInput): Promise<void> {
     const global = await hitLimit(d, c, "all", GLOBAL_LIMIT);
     if (!global.allowed) throw new WaitlistError(429, "busy", global.retryAfter);
     const perEmail = await hitLimit(d, c, "email:" + input.email.toLowerCase(), EMAIL_LIMIT);
-    const row = (await c.query("select id, state from waitlist_join($1,$2,$3,$4,$5,$6,$7)", [input.email, input.name, input.answer, consentHash(), input.source, keyed(d, "net", input.network), now])).rows[0] as { id: string; state: "new" | "pending" | "confirmed" };
+    const row = (await c.query("select id, state from waitlist_join($1,$2,$3,$4,$5,$6,$7,$8)", [input.email, input.name, input.answer, consentHash(), input.source, keyed(d, "net", input.network), now, JSON.stringify(input.attribution ?? {})])).rows[0] as { id: string; state: "new" | "pending" | "confirmed" };
     await c.query("select waitlist_sweep($1)", [now]);
     if (!perEmail.allowed) return null;
     const unsub = await mintToken(c, row.id, "unsubscribe", now);

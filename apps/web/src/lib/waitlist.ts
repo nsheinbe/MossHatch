@@ -1,3 +1,12 @@
+// In-memory first-touch labels. No cookies, localStorage, click IDs or full URLs.
+const campaign: Record<string, string> = {};
+if (typeof location !== "undefined") {
+  const query = new URLSearchParams(location.search);
+  for (const key of ["utm_source", "utm_medium", "utm_campaign"]) {
+    const value = query.get(key);
+    if (value && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value)) campaign[key] = value.toLowerCase();
+  }
+}
 /** Opening the waitlist form from anywhere (the banner, the hatch card, the sign-up screen). The form itself is a lazy chunk. */
 export interface WaitlistOpen { name?: string; email?: string; source?: "app" | "fallback" | "signup" }
 const EVT = "mh:waitlist";
@@ -11,7 +20,7 @@ export const onOpenWaitlist = (fn: (o: WaitlistOpen) => void) => {
 /** POST /api/waitlist. The same answer whether or not the address is already on the list. */
 export async function joinWaitlist(body: { email: string; name?: string; answer?: string; consent: boolean; website: string; source: string }): Promise<void> {
   let res: Response;
-  try { res = await fetch("/api/waitlist", { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) }); }
+  try { res = await fetch("/api/waitlist", { method: "POST", credentials: "omit", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ ...body, attribution: campaign }) }); }
   catch { throw new Error("network"); }
   if (res.status === 202) return;
   let code = "error";

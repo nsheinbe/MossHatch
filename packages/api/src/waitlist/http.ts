@@ -161,7 +161,7 @@ export async function waitlistFetch(d: WaitlistDeps, r: Request): Promise<Respon
       else { try { const v = JSON.parse(raw); obj = v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch { throw new WaitlistError(400, "bad_json"); } }
       const f = fields(obj, form);
       // The honeypot (a field people never see) answers exactly like a real sign-up and stores nothing.
-      if (!f.honeypot) await join(d, { email: f.email, name: f.name, answer: f.answer, source: f.source, network: network(r) });
+      if (!f.honeypot) await join(d, { email: f.email, name: f.name, answer: f.answer, source: f.source, network: network(r), attribution: campaignLabels(obj.attribution) });
       return form ? seeOther("/waitlist-sent") : jsonRes(202, { ok: true });
     }
     if (path === WAITLIST_PREFIX + "/confirm" || path === WAITLIST_PREFIX + "/unsubscribe") {
@@ -203,4 +203,15 @@ function deadLink(purpose: "confirm" | "unsubscribe"): string {
   return purpose === "confirm"
     ? page("This link has expired", para("Confirm links work once, for 7 days. Join again from the waitlist page and we will send a fresh one.") + `<p><a href="/waitlist">Join the waitlist</a></p>`)
     : page("This link does not work", para("Use the leave link from the most recent waitlist email, or write to support@mosshatch.com.") + homeLink);
+}
+
+/** Accept campaign slugs only, never arbitrary URLs, emails or advertising click IDs. */
+function campaignLabels(value: unknown): Record<string, string> {
+  const clean: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return clean;
+  for (const key of ["utm_source", "utm_medium", "utm_campaign"]) {
+    const raw = (value as Record<string, unknown>)[key];
+    if (typeof raw === "string" && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(raw)) clean[key] = raw.toLowerCase();
+  }
+  return clean;
 }
