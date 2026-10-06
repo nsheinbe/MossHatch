@@ -1,3 +1,4 @@
+import { GettingStarted } from "./GettingStarted";
 import { useEffect, useRef, useState } from "react";
 import { joinWaitlist, type WaitlistOpen } from "../lib/waitlist";
 import { CONSENT_TEXT, QUESTION_TEXT } from "./waitlistText";
@@ -45,6 +46,11 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
             <p role="status">Your request was received. If this address needs confirmation, look for a link that works for 7 days. Your place is confirmed only after you use the link. If you already joined, look for a short note instead.</p>
             <p>Check your inbox and spam folder. To limit unwanted email, repeated requests may not send another message. If no message arrives, try again later.</p>
             <p>Joining does not reserve or register a name. We let people in a few at a time and email an invite when it is your turn.</p>
+            <GettingStarted storageKey="mosshatch:waitlist-preparation" title="Getting ready" description="A little preparation while you wait for your invitation. This checklist does not reserve a domain." steps={[
+              {id:'request',title:'Send your early-access request',description:'Your request was received.',complete:true},
+              {id:'email',title:'Check your confirmation email',description:'Use the link in your email if confirmation is requested. This checkmark is only your reminder.',manual:true},
+              {id:'name',title:'Keep a shortlist of names',description:'Jot down a favorite and a backup. Availability and registration happen separately.',manual:true,onAction:close,actionLabel:'Return to exploring'},
+            ]} />
             <div className="row-actions"><button type="button" className="btn primary" autoFocus onClick={close}>Done</button></div>
           </>
         ) : (
@@ -86,3 +92,4 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
     </dialog>
   );
 }
+
