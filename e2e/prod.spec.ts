@@ -95,8 +95,8 @@ test("no WebGL2: in-brand fallback with a working plain search, CSP clean", asyn
   const page = await ctx.newPage();
   const bad = watch(page);
   await page.goto("/");
-  await expect(page.getByText("This browser can't light the lanterns.")).toBeVisible();
-  await page.fill("#fb-name", "moonfern");
+  await expect(page.getByText("You're using the lightweight view. Search and checkout work without the animated grove.")).toBeVisible();
+  await page.fill("#name-input", "moonfern");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("moonfern.com")).toBeVisible();
   const r = await axe(page).analyze();
@@ -134,7 +134,7 @@ test("C-53 canary: a search sends one same-origin GET to /api/lookup with the na
   expect(after.every((u) => u.origin === "http://127.0.0.1:4173")).toBe(true);
   expect(how.every((m) => m === "GET")).toBe(true);
   expect(after.some((u) => /canary/i.test(u.pathname))).toBe(false);
-  await expect(page.getByRole("link", { name: "commitments" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Our commitments" })).toBeVisible();
 });
 
 // Phase 3 (C-13, C-26 to C-29, C-53, C-59, C-60, C-62): the fee page and the .ai/.io addenda are static pages under the strict CSP, axe clean.

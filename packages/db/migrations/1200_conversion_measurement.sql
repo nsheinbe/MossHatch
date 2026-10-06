@@ -20,6 +20,7 @@ create table conversion_orders (
  campaign text not null check (campaign ~ '^[a-z0-9][a-z0-9_-]{0,63}$')
 );
 alter table conversion_orders enable row level security;
+alter table conversion_orders force row level security;
 create policy conversion_orders_owner on conversion_orders using (user_id = app_user_id()) with check (user_id = app_user_id());
 grant select,insert on conversion_orders to mh_runtime;
 grant select,insert,update,delete on conversion_orders to mh_cron;

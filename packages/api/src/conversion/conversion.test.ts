@@ -25,3 +25,24 @@ describe('conversion measurement',()=>{
   expect((await app.call('POST','/api/v1/conversion/events',{body:event})).status).toBe(429);
  });
 });
+
+describe('verified order attribution',()=>{
+ it('only the buyer can attribute an order, first write wins and cross-origin writes fail',async()=>{
+  const {makeHarness,makeBuyer,postOrder}=await import('../orders/testkit.ts');
+  const h=await makeHarness();
+  registerConversionRoutes(h.app.router!);
+  try{
+   const owner=await makeBuyer(h,'conversion-owner@example.org');
+   const other=await makeBuyer(h,'conversion-other@example.org');
+   const placed=await postOrder(h,owner,{fqdn:'free-conversion.com',years:1});
+   expect(placed.status).toBe(201);
+   const body={order_id:placed.json.order_id,device:'desktop',campaign:{utm_source:'launch'}};
+   expect((await h.app.call('POST','/api/v1/conversion/orders',{cookie:other.cookie,body})).status).toBe(404);
+   expect((await h.app.call('POST','/api/v1/conversion/orders',{cookie:owner.cookie,body,headers:{origin:'https://evil.test'}})).status).toBe(403);
+   expect((await h.app.call('POST','/api/v1/conversion/orders',{cookie:owner.cookie,body})).status).toBe(202);
+   expect((await h.app.call('POST','/api/v1/conversion/orders',{cookie:owner.cookie,body:{...body,campaign:{utm_source:'changed'}}})).status).toBe(202);
+   const rows=(await h.app.db.owner.query('select user_id,source from conversion_orders')).rows;
+   expect(rows).toEqual([{user_id:owner.userId,source:'launch'}]);
+  }finally{await h.app.drop();}
+ },60000);
+});

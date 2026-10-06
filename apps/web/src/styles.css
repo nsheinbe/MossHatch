@@ -343,3 +343,13 @@ dialog.waitlist a { color: var(--lantern); }
   .shop-find .search-note { line-height: 1.7; }
 }
 @media (max-width: 360px) { .shop-results { grid-template-columns: 1fr; } .find.shop-find { padding: 14px; } }
+
+/* Keep purchase information readable over the scene and the mobile search beneath it. */
+.checkout-sheet { background: #14232a; }
+.checkout-sheet .head { background: #14232a; }
+.checkout-sheet .body { scroll-padding-bottom: 110px; }
+@media (max-width: 720px) {
+ .checkout-sheet .preview-world { display: grid; grid-template-columns: 85px 1fr; align-items: center; padding: 10px; }
+ .checkout-sheet .preview-world svg { width: 85px; height: 80px; grid-row: 1 / 3; }
+ .checkout-sheet .preview-world .preview-title { font-size: 1.05rem; margin: 0 0 6px; }
+}

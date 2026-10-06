@@ -34,10 +34,11 @@ async function buy(page: Page, request: import("@playwright/test").APIRequestCon
   await chip.click();
   for (const [l, value] of [["Full name", "Ada Moss"], ["Phone, like +1.5555550100", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(l).fill(value);
   await page.getByRole("button", { name: "Save contact" }).click();
-  const pay = page.getByRole("button", { name: /Pay .* and hatch/ });
+  const pay = page.getByRole("button", { name: /Buy domain & hatch/ });
   const shown = (await pay.textContent())!.match(/\$([\d.]+)/)![1]!;
   // C-31: the auto-renew box is unticked by default and separate from the terms box.
-  const save = page.getByLabel("Save my card for auto-renew. This is separate from the terms.");
+  await page.getByText("Auto-renew (optional)", { exact: true }).click();
+  const save = page.getByLabel("Save my card for auto-renew.", { exact: true });
   await expect(save).not.toBeChecked();
   if (o.autoRenew) await save.check();
   await page.getByLabel(/I accept the/).check();

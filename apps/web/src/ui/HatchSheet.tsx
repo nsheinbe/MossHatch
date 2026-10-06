@@ -80,7 +80,6 @@ function CheckoutSheet({ r }: { r: Result }) {
   return <aside className="panel side checkout-sheet" role="region" aria-label={`Hatch ${r.domain}`} hidden={accountOpen}>
     <div className="head"><h2 ref={head} tabIndex={-1}>{r.domain}</h2></div>
     <div className="body">
-      <OwnershipPreview domain={r.domain} />
       <PracticeHatchNotice domain={r.domain} />
       <p className="notice">{live ? 'Review your domain, then continue to secure payment on Stripe. Registration is confirmed before your creature hatches.' : 'Preview only. A practice hatch does not purchase or reserve this name.'}</p>
       <dl className="rows">
@@ -99,6 +98,7 @@ function CheckoutSheet({ r }: { r: Result }) {
       {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
       {live && account && hasContact && authorisation && <details><summary>Auto-renew (optional)</summary><p className="fineprint">Save your payment method to renew at the renewal price in effect. Confirm with your passkey after registration; turn it off from your account. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorization</a>.</p><label className="check"><input type="checkbox" checked={autoRenew} disabled={busy} onChange={e => setAutoRenew(e.target.checked)} />Save my card for auto-renew.</label></details>}
       {live && account && hasContact && docsReady && <label className="check"><input type="checkbox" checked={accepted} disabled={busy} onChange={e => setAccepted(e.target.checked)} /><span>I accept the <a href={doc('terms')!.url} target="_blank" rel="noreferrer">terms of service</a>, <a href={doc('registration_agreement')!.url} target="_blank" rel="noreferrer">registration agreement</a>{addendum && <> and <a href={addendum.url} target="_blank" rel="noreferrer">.{tld} registry terms</a></>}.</span></label>}
+      <OwnershipPreview domain={r.domain} />
       <details><summary>Your domain, your control</summary><p className="fineprint">Manage DNS, renewals and eligible transfers from your account. Registration is handled through our registrar partner. No extras are preselected. <a href="/how-it-works" target="_blank" rel="noreferrer">How ownership works</a> · <a href="/report.html" target="_blank" rel="noreferrer">Get help</a></p></details>
       {error && <p role="alert" className="notice">{error} Retrying the same request will reuse your checkout attempt.</p>}
       <div className="checkout-actions">
