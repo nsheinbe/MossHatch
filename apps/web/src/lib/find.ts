@@ -38,7 +38,7 @@ async function lookup(label: string): Promise<Map<string, LookupStatus>> {
   return statuses;
 }
 
-/** The preview's search: real registered-or-not answers from the public registries, and no price (prices are set at launch). */
+/** The preview's search: real registered-or-not answers from the public registries, with clearly labelled published test prices. */
 export async function search(raw: string): Promise<{ results: Result[]; alternatives: string[] } | null> {
   const q = parseQuery(raw);
   if (!q) return null;

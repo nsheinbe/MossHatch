@@ -1,7 +1,7 @@
 # Go live: invite-only dogfood on mosshatch.com
 
 What this gets you: you (and only accounts you invite) can buy a real domain on mosshatch.com, registered through **Openprovider live**
-and paid with **Stripe live**. Everyone else keeps seeing today's demo (banner, practice hatch from the public registry lookup, no prices,
+and paid with **Stripe live**. Everyone else keeps seeing today's demo (banner, practice hatch from the public registry lookup, clearly labelled published test prices,
 waitlist). Do the steps in order; each ends with a check. Nothing here needs a code change.
 
 Read first: what has and has not been verified (end of this page). **No call to the live Openprovider API has ever been made**; your first
@@ -194,7 +194,7 @@ Any 503 names what is still missing, as codes only:
 3. Open the invite link from the email (valid 14 days, works once), create your passkey, save the recovery codes.
 
 Check: signed in, the "Mosshatch isn't open yet" banner is gone and searches show prices. In a private window (not signed in) the banner,
-the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show no prices: the demo still asks the
+the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show published test prices that may change at launch: the demo still asks the
 public registries (RDAP) and never the shop routes, which answer `403 invite_required` to anyone without an invite.
 
 ## 8a. Preflight (read-only, nothing is bought or charged)
