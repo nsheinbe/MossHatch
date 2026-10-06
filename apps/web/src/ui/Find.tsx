@@ -72,6 +72,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
     setSuggestions(found); setSuggesting(false);
     setSuggestionNote(found.length ? "Each suggestion was checked. Availability can change before checkout." : unknown ? "Some checks are unavailable. Try again shortly or search another name." : "Those variations are taken too. Try describing your idea for a fresh direction.");
   };
+  const rescuable = results.find(r => r.status === "registered");
   const takenCom = results.find(r => r.tld === "com" && r.status === "registered");
   return (
     <main className={`find shop-find${results.length ? " has-results" : ""}${simple ? " simple-find" : ""}`}>
@@ -104,10 +105,10 @@ export function Find({ simple = false }: { simple?: boolean }) {
       {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
       {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(r => <Chip key={r.domain} r={r} list row={0} onPick={pick} />)}</div>}
       {takenCom && <section className="shop-alternatives" aria-label="Alternative .com names"><p><strong>Your .com taken?</strong> Let's find another way in.</p><button className="btn secondary" type="button" disabled={suggesting} onClick={() => void suggest()}>{suggesting ? "Checking alternatives…" : "Find similar .com names"}</button><div className="shop-results">{suggestions.map(r => <Chip key={r.domain} r={r} list row={0} onPick={pick} />)}</div>{suggestionNote && <p role="status" className="fineprint">{suggestionNote}</p>}</section>}
-      {apiReady && takenCom && <div className="rescue-offer"><span>Already own {takenCom.domain}?</span><button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: takenCom.domain, transferId: null } })}>Transfer it here</button></div>}
+      {apiReady && rescuable && <div className="rescue-offer" role="group" aria-label="Bring a name you own"><span>Already own {rescuable.domain}?</span><button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button></div>}
       <div className="shop-links"><button type="button" className="text-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button><a href="/how-it-works">How it works</a><a href="/fees.html">Prices & renewals</a></div>
       {dealOpen && <section className="shop-deal" aria-label="The deal"><h2>A clear price. A name that's yours.</h2><p>See the registration term and renewal price before checkout. Taxes, if applicable, are shown by Stripe before you confirm.</p><p>Privacy protection is included where the registry supports it. .ai registrant details are public. No add-ons are preselected.</p><p>{preview ? "These are published invite-only test prices. A practice hatch never registers or reserves a domain." : "Availability is checked again before purchase. Your creature hatches after registration is confirmed."}</p><button className="link-btn" type="button" onClick={() => set({ dealOpen: false })}>Got it</button></section>}
-      <p className="search-note">We don't sell your searches. <a href="/commitments.html">Our commitments</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Support & reports</a></p>
+      <p className="search-note">We don't sell your searches. <a href="/commitments.html">Our commitments</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
     </main>
   );
 }

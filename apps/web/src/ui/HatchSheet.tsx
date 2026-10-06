@@ -92,7 +92,7 @@ function CheckoutSheet({ r }: { r: Result }) {
       {live && quote && <details><summary>How the price is made</summary><dl className="rows"><dt>Registrar pricing</dt><dd>{quote.wholesale}</dd><dt>MossHatch fee</dt><dd>{quote.fee}</dd></dl>{quote.heldAtRenewal && <p className="fineprint">The first term uses the current renewal pricing level, so a first-year discount doesn't hide a higher renewal.</p>}</details>}
       {tld === 'ai' && <p className="notice">.ai is sold in 2-year terms. Registrant contact details are public and registrations cannot be refunded.</p>}
       {tld === 'io' && <p className="notice">.io follows its registry's rules, requires at least two nameservers, and registrations cannot be refunded. Read the registry addendum before buying.</p>}
-      {(tld === 'dev' || tld === 'app') && <p className="notice">.{tld} requires HTTPS. Your website needs a TLS certificate before browsers can open it.</p>}
+      {(tld === 'dev' || tld === 'app') && <p className="notice">.{tld} names work only over HTTPS. Your website needs a TLS certificate before browsers can open it.</p>}
       {loading && <p className="checkout-status" role="status">Checking price and checkout details…</p>}
       {(loadError || expired || (live && account && !loading && !docsReady)) && <div className="checkout-status" role="alert"><p>{loadError ?? (expired ? 'This quote expired. Refresh it to see the current price.' : 'The required terms could not be loaded. Checkout is paused until they are available.')}</p><button className="link-btn" type="button" onClick={() => setRevision(v => v + 1)}>Refresh checkout</button></div>}
       {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
