@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useUi } from "../store";
 import { handle } from "../world/handle";
+import { listDomains } from "../lib/domains";
+import { isDemo } from "../lib/site";
 import { PracticeHatchNotice } from "./DemoNotice";
 
 export function CardPanel() {
-  const { card, hatchPhase, set } = useUi();
+  const { card, hatchPhase, apiReady, set } = useUi();
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (hatchPhase === "card") head.current?.focus(); }, [hatchPhase]);
   if (hatchPhase !== "card" || !card) return null;
@@ -25,8 +27,9 @@ export function CardPanel() {
         {card.bio && <p>{card.bio}</p>}
         <ul className="traits">{card.traits.map((t) => <li key={t}>{t}</li>)}</ul>
         <p>{card.moss}</p>
-        <p className="notice">Keep a picture of your creature. Downloading the portrait does not register or reserve the domain.</p>
+        <p className="notice">{isDemo(apiReady) ? "Keep a picture of your creature. Downloading the portrait does not register or reserve the domain." : "Your domain is registered. Open its Overview to connect a website, manage renewals or publish your creature’s page."}</p>
         <div className="row-actions">
+          {!isDemo(apiReady) && <button type="button" className="btn primary" onClick={() => { void listDomains().then(all => { const d = all.domains.find(d => d.fqdn === card.domain); if (d) set({ hatchPhase: "none", card: null, orderId: null, orderSession: null, domainPanel: { id: d.id, fqdn: d.fqdn } }); }).catch(() => set({ view: "ledger", hatchPhase: "none", card: null })); }}>Set up my domain</button>}
           <button type="button" className="btn primary" onClick={again}>Hatch another</button>
           <a className="btn secondary" href={card.image} download={`${card.domain}-mosshatch.png`}>Download portrait</a>
         </div>
@@ -34,3 +37,4 @@ export function CardPanel() {
     </aside>
   );
 }
+

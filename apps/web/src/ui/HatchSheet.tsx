@@ -1,127 +1,112 @@
 import { useEffect, useRef, useState } from "react";
-import { useUi } from "../store";
+import { useUi, type Result } from "../store";
 import { getContact, getDocuments, startCheckout, type LegalDoc } from "../lib/orders";
 import { liveQuote, type LiveQuote } from "../lib/find";
 import { ContactForm } from "./ContactForm";
 import { explain } from "../lib/account";
 import { runHatch } from "./hatchFlow";
 import { PracticeHatchNotice } from "./DemoNotice";
+import { OwnershipPreview } from "./OwnershipPreview";
+import { handle } from "../world/handle";
+import { trackConversion, attribution } from "../lib/conversion";
 
-/**
- * Checkout panel. With accounts connected and a signed-in person, the primary button pays on Stripe (the price is the server's).
- * Without a connected deployment it stays the practice hatch from Phase 1: nothing is bought.
- */
 export function HatchSheet() {
-  const { selected, hatchPhase, apiReady, account, set } = useUi();
+  const { selected, hatchPhase, account } = useUi();
+  if (hatchPhase !== "sheet" || !selected) return null;
+  // A selection/account change starts a clean quote and consent state. Late responses cannot price another domain.
+  return <CheckoutSheet key={`${selected.domain}:${account?.user.id ?? 'guest'}`} r={selected} />;
+}
+function CheckoutSheet({ r }: { r: Result }) {
+  const { apiReady, account, accountOpen, set } = useUi();
+  const live = apiReady === true;
   const head = useRef<HTMLHeadingElement>(null);
+  const inFlight = useRef(false);
+  const attempt = useRef<{ signature: string; key: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [docs, setDocs] = useState<LegalDoc[]>([]);
   const [accepted, setAccepted] = useState(false);
   const [autoRenew, setAutoRenew] = useState(false);
   const [hasContact, setHasContact] = useState<boolean | null>(null);
   const [quote, setQuote] = useState<LiveQuote | null>(null);
-  useEffect(() => { if (hatchPhase === "sheet") head.current?.focus(); }, [hatchPhase]);
-  useEffect(() => {
-    if (hatchPhase !== "sheet") return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") set({ hatchPhase: "none", selected: null }); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [hatchPhase, set]);
-  const wantsPay = hatchPhase === "sheet" && apiReady === true && !!account;
-  const quoteFor = hatchPhase === "sheet" && apiReady === true ? selected?.domain : undefined;
-  useEffect(() => {
-    if (!quoteFor) { setQuote(null); return; }
-    void liveQuote(quoteFor, selected?.years ?? 1).then(setQuote).catch(() => setQuote(null));
-  }, [quoteFor, selected?.years]);
-  useEffect(() => {
-    if (!wantsPay) return;
-    void getDocuments(selected?.domain.split(".").pop()).then(setDocs).catch(() => setDocs([]));
-    void getContact().then((c) => setHasContact(c.present)).catch(() => setHasContact(false));
-  }, [wantsPay, selected?.domain]);
-  useEffect(() => { setAccepted(false); setAutoRenew(false); }, [selected?.domain]);
-  if (hatchPhase !== "sheet" || !selected) return null;
-  const r = selected;
+  const [loading, setLoading] = useState(live);
+  const [revision, setRevision] = useState(0);
+  const [expired, setExpired] = useState(false);
+  const tld = r.tld;
   const years = r.years ?? 1;
-  const live = apiReady === true;
-  // The preview has no prices: a name the public registry does not list says "set at launch" instead of a made-up figure.
-  const priced = live || !!r.price;
-  const tld = r.domain.split(".").pop() ?? "";
-  const doc = (kind: string) => docs.find((d) => d.kind === kind);
+  useEffect(() => { head.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !inFlight.current) set({ hatchPhase: "none", selected: null }); }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [set]);
+  useEffect(() => {
+    if (!live) return;
+    let active = true;
+    setQuote(null); setDocs([]); setLoading(true); setLoadError(null); setExpired(false); setAccepted(false);
+    void Promise.all([liveQuote(r.domain, years), account ? getDocuments(tld) : Promise.resolve([]), account ? getContact() : Promise.resolve(null)]).then(([q, documents, contact]) => {
+      if (!active) return;
+      if (!q) setLoadError("We couldn't confirm this name and price. Refresh the quote before continuing.");
+      setQuote(q); setDocs(documents); setHasContact(contact?.present ?? null); setLoading(false);
+    }).catch(() => { if (active) { setLoading(false); setLoadError("We couldn't load checkout. Your domain hasn't been purchased. Please retry."); } });
+    return () => { active = false; };
+  }, [live, r.domain, years, tld, account, revision]);
+  useEffect(() => {
+    if (!quote) return;
+    const remaining = Date.parse(quote.expiresAt) - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) { setExpired(true); return; }
+    const timer = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [quote]);
+  const doc = (kind: string) => docs.find(d => d.kind === kind);
   const addendum = tld === "ai" || tld === "io" ? doc(`tld_addendum_${tld}`) : undefined;
   const authorisation = doc("auto_renew_authorisation");
-  const docsReady = !!doc("terms") && !!doc("registration_agreement") && (tld !== "ai" && tld !== "io" ? true : !!addendum);
-
+  const docsReady = !!doc("terms") && !!doc("registration_agreement") && (!(tld === "ai" || tld === "io") || !!addendum);
+  const quoteReady = !!quote && quote.domain === r.domain && !expired && Date.parse(quote.expiresAt) > Date.now();
+  const total = live ? quote?.subtotal : r.price;
   const pay = async () => {
-    setBusy(true); setError(null);
+    if (inFlight.current || !quoteReady || !accepted || !docsReady || !hasContact) return;
+    inFlight.current = true; setBusy(true); setError(null);
     try {
-      // The acceptance is built from what this sheet showed. The auto-renew text is sent only when its own box is ticked (C-31).
-      const accept: Record<string, string> = { terms: doc("terms")!.version, registration_agreement: doc("registration_agreement")!.version };
+      const accept: Record<string,string> = { terms: doc('terms')!.version, registration_agreement: doc('registration_agreement')!.version };
       if (addendum) accept[addendum.kind] = addendum.version;
       if (autoRenew && authorisation) accept.auto_renew_authorisation = authorisation.version;
-      const o = await startCheckout(r.domain, years, accept, autoRenew && !!authorisation);
-      sessionStorage.setItem("mh.order", o.order_id);
+      const signature = JSON.stringify([r.domain, years, accept, autoRenew]);
+      if (attempt.current?.signature !== signature) attempt.current = { signature, key: crypto.randomUUID() };
+      trackConversion('checkout', false);
+      const o = await startCheckout(r.domain, years, accept, autoRenew && !!authorisation, attempt.current.key);
+      // Attribution cannot block or duplicate checkout. Only coarse campaign/device labels are sent.
+      void attribution(o.order_id);
+      try { sessionStorage.setItem('mh.order', o.order_id); } catch { /* private browsing can disable storage */ }
       window.location.assign(o.checkout_url);
-    } catch (e) { setError(explain(e)); setBusy(false); }
+    } catch (e) { setError(explain(e)); setBusy(false); inFlight.current = false; }
   };
-
-  return (
-    <aside className="panel side" role="region" aria-label={`Hatch ${r.domain}`}>
-      <div className="head"><h2 ref={head} tabIndex={-1}>{r.domain}</h2></div>
-      <div className="body">
-        {live
-          ? <p className="notice">You pay on Stripe next. Nothing is charged until the name is registered.</p>
-          : <p className="notice"><span className="sample-tag">Preview.</span> Nothing is bought or charged.{priced ? " Prices are sample prices." : ""}</p>}
-        <PracticeHatchNotice domain={r.domain} />
-        {priced ? <>
-        <dl className="rows">
-          <dt>{years === 2 ? "First 2 years" : "First year"}</dt><dd>{quote?.subtotal ?? r.price}</dd>
-          <dt>Renews at</dt><dd>{years === 2 ? `${quote?.subtotal ?? r.price} per 2 years` : (quote?.subtotal ?? r.price)} (same)</dd>
-          <dt>WHOIS privacy</dt><dd>Free</dd>
-          <dt className="total">{live ? "Total before tax" : "Total today"}</dt><dd className="total">{quote?.subtotal ?? r.price}</dd>
-        </dl>
-        <details>
-          <summary>How the price is made</summary>
-          <dl className="rows" style={{ marginTop: 8 }}>
-            <dt>Registry cost</dt><dd>{quote?.wholesale ?? r.wholesale}</dd>
-            <dt>Flat fee</dt><dd>{quote?.fee ?? r.fee}</dd>
-          </dl>
-          {quote?.heldAtRenewal && <p className="fineprint">Our registrar charges less for the first year than for a renewal. We charge its renewal price from the start, so the price you pay now is the price you pay every year.</p>}
-        </details>
-        </> : (
-          <dl className="rows">
-            <dt>Price</dt><dd>Set at launch</dd>
-            <dt>WHOIS privacy</dt><dd>Free</dd>
-          </dl>
-        )}
-        {tld === "ai" && <p className="notice">.ai is sold for 2 years at a time{priced ? ", so the price is the total for 2 years" : ""}. Its contact details show in public lookups, and it cannot be refunded.</p>}
-        {tld === "io" && <p className="notice">.io follows its registry's own rules, needs at least two nameservers, and cannot be refunded. Its future depends on a treaty about the Chagos Archipelago that is not in force.</p>}
-        {/* C-58: .dev and .app are HSTS-preloaded; the same words come with the quote from the server (closure/tld-https.ts). */}
-        {(tld === "dev" || tld === "app") && <p className="notice">.{tld} names work only over HTTPS: browsers refuse plain HTTP for every site and subdomain on .{tld}, so each one needs a TLS certificate before it serves anything.</p>}
-        {live && account && hasContact && authorisation && (
-          <div className="consent" role="group" aria-labelledby="ar-h">
-            <h3 id="ar-h">Auto-renew (optional)</h3>
-            <p>If you tick this, Stripe keeps your card so we can renew this name each year, ten days before it expires, at the renewal price shown above. You confirm it with your passkey after the name hatches, we email you before every charge, and you can turn it off with one click. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorisation</a>.</p>
-            <label className="check"><input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} /> Save my card for auto-renew. This is separate from the terms.</label>
-          </div>
-        )}
-        <p className="fineprint">What hatches is a surprise. The extension paints the shell; the name decides the creature, and short, clean names hatch rarer ones.</p>
-        <p>No add-ons. Nothing is pre-checked. <a href="/fees.html" target="_blank" rel="noreferrer">Fees, renewals and refunds</a>.</p>
-        {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
-        {live && account && hasContact && (
-          <p>
-            <input id="accept" type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} style={{ width: 24, height: 24, verticalAlign: "middle", marginRight: 8 }} />
-            <label htmlFor="accept">I accept the <a href={doc("terms")?.url ?? "/legal/terms.html"} target="_blank" rel="noreferrer">terms of service</a>{addendum ? ", " : " and "}the <a href={doc("registration_agreement")?.url ?? "/legal/registration-agreement.html"} target="_blank" rel="noreferrer">registration agreement</a>{addendum && <> and the <a href={addendum.url} target="_blank" rel="noreferrer">.{tld} registry terms</a></>}.</label>
-          </p>
-        )}
-        {error && <p role="alert" className="notice" style={{ color: "var(--st-attention)" }}>{error}</p>}
-        <div className="row-actions">
-          {!live && <button type="button" className="btn primary" onClick={() => void runHatch(r.domain)}>Hatch</button>}
-          {live && account && hasContact && <button type="button" className="btn primary" disabled={busy || !accepted || !docsReady || !quote} onClick={pay}>{busy ? "Opening Stripe" : `Pay ${quote?.subtotal ?? r.price} and hatch`}</button>}
-          {live && !account && <button type="button" className="btn primary" onClick={() => set({ accountOpen: true })}>Sign in to hatch</button>}
-          <button type="button" className="btn secondary" onClick={() => set({ hatchPhase: "none", selected: null })}>Not yet</button>
-        </div>
+  return <aside className="panel side checkout-sheet" role="region" aria-label={`Hatch ${r.domain}`} hidden={accountOpen}>
+    <div className="head"><h2 ref={head} tabIndex={-1}>{r.domain}</h2></div>
+    <div className="body">
+      <OwnershipPreview domain={r.domain} />
+      <PracticeHatchNotice domain={r.domain} />
+      <p className="notice">{live ? 'Review your domain, then continue to secure payment on Stripe. Registration is confirmed before your creature hatches.' : 'Preview only. A practice hatch does not purchase or reserve this name.'}</p>
+      <dl className="rows">
+        <dt>{years === 2 ? 'First 2 years' : 'First year'}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
+        <dt>Current renewal</dt><dd>{live ? quote?.subtotal ?? 'Checking…' : r.renewal ?? r.price ?? 'At launch'} / {years === 2 ? '2 years' : 'year'}</dd>
+        <dt>Registrant privacy</dt><dd>{tld === 'ai' ? 'Public registry details' : 'Included where supported'}</dd>
+        <dt className="total">{live ? 'Subtotal before tax' : 'Published test price'}</dt><dd className="total">{total ?? 'Unavailable'}</dd>
+      </dl>
+      <p className="fineprint">{live ? 'Any applicable tax and the final total are shown on Stripe before you confirm. Future registry price changes may affect renewal; review the fees policy.' : 'Invite-only test pricing. Public launch prices may change.'}</p>
+      {live && quote && <details><summary>How the price is made</summary><dl className="rows"><dt>Registrar pricing</dt><dd>{quote.wholesale}</dd><dt>MossHatch fee</dt><dd>{quote.fee}</dd></dl>{quote.heldAtRenewal && <p className="fineprint">The first term uses the current renewal pricing level, so a first-year discount doesn't hide a higher renewal.</p>}</details>}
+      {tld === 'ai' && <p className="notice">.ai is sold in 2-year terms. Registrant contact details are public and registrations cannot be refunded.</p>}
+      {tld === 'io' && <p className="notice">.io follows its registry's rules, requires at least two nameservers, and registrations cannot be refunded. Read the registry addendum before buying.</p>}
+      {(tld === 'dev' || tld === 'app') && <p className="notice">.{tld} requires HTTPS. Your website needs a TLS certificate before browsers can open it.</p>}
+      {loading && <p className="checkout-status" role="status">Checking price and checkout details…</p>}
+      {(loadError || expired || (live && account && !loading && !docsReady)) && <div className="checkout-status" role="alert"><p>{loadError ?? (expired ? 'This quote expired. Refresh it to see the current price.' : 'The required terms could not be loaded. Checkout is paused until they are available.')}</p><button className="link-btn" type="button" onClick={() => setRevision(v => v + 1)}>Refresh checkout</button></div>}
+      {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
+      {live && account && hasContact && authorisation && <details><summary>Auto-renew (optional)</summary><p className="fineprint">Save your payment method to renew at the renewal price in effect. Confirm with your passkey after registration; turn it off from your account. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorization</a>.</p><label className="check"><input type="checkbox" checked={autoRenew} disabled={busy} onChange={e => setAutoRenew(e.target.checked)} />Save my card for auto-renew.</label></details>}
+      {live && account && hasContact && docsReady && <label className="check"><input type="checkbox" checked={accepted} disabled={busy} onChange={e => setAccepted(e.target.checked)} /><span>I accept the <a href={doc('terms')!.url} target="_blank" rel="noreferrer">terms of service</a>, <a href={doc('registration_agreement')!.url} target="_blank" rel="noreferrer">registration agreement</a>{addendum && <> and <a href={addendum.url} target="_blank" rel="noreferrer">.{tld} registry terms</a></>}.</span></label>}
+      <details><summary>Your domain, your control</summary><p className="fineprint">Manage DNS, renewals and eligible transfers from your account. Registration is handled through our registrar partner. No extras are preselected. <a href="/how-it-works" target="_blank" rel="noreferrer">How ownership works</a> · <a href="/report.html" target="_blank" rel="noreferrer">Get help</a></p></details>
+      {error && <p role="alert" className="notice">{error} Retrying the same request will reuse your checkout attempt.</p>}
+      <div className="checkout-actions">
+        {!live && <button type="button" className="btn primary" onClick={() => { if (handle.world) void runHatch(r.domain); else setError('Your domain preview is shown above. The animated hatch needs a browser with WebGL; purchasing does not.'); }}>Preview creature</button>}
+        {live && account && <button type="button" className="btn primary" disabled={busy || !accepted || !docsReady || !quoteReady || !hasContact} onClick={() => void pay()}>{busy ? 'Opening secure checkout…' : `Buy domain & hatch${total ? ` · ${total}` : ''}`}</button>}
+        {live && !account && <button type="button" className="btn primary" onClick={() => set({ accountOpen: true })}>Continue with this domain</button>}
+        <button type="button" className="text-btn" disabled={busy} onClick={() => set({ hatchPhase: 'none', selected: null })}>Keep exploring</button>
       </div>
-    </aside>
-  );
+    </div>
+  </aside>;
 }

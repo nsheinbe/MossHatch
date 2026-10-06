@@ -6,8 +6,8 @@ export interface OrderView {
 }
 
 /** Start a checkout. The client sends the name and term only; the server owns the price. */
-export async function startCheckout(fqdn: string, years: number, accept: Record<string, string>, autoRenew = false): Promise<{ order_id: string; checkout_url: string }> {
-  return api("POST", "/api/v1/orders", { fqdn, years, accept, ...(autoRenew ? { auto_renew: true } : {}) }, { "Idempotency-Key": crypto.randomUUID() });
+export async function startCheckout(fqdn: string, years: number, accept: Record<string, string>, autoRenew = false, idempotencyKey: string = crypto.randomUUID()): Promise<{ order_id: string; checkout_url: string }> {
+  return api("POST", "/api/v1/orders", { fqdn, years, accept, ...(autoRenew ? { auto_renew: true } : {}) }, { "Idempotency-Key": idempotencyKey });
 }
 
 export interface LegalDoc { kind: string; version: string; url: string }
@@ -41,3 +41,4 @@ export function orderStory(state: string): string {
     default: return "Working on it.";
   }
 }
+

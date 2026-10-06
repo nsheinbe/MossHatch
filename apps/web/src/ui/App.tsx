@@ -6,7 +6,6 @@ import { Find } from "./Find";
 import { HatchSheet } from "./HatchSheet";
 import { CardPanel } from "./CardPanel";
 import { Grove, dropRealGrove } from "./Grove";
-import { Fallback } from "./Fallback";
 import { handle } from "../world/handle";
 import { sound } from "../audio/synth";
 import { AccountPanel } from "./AccountPanel";
@@ -86,12 +85,12 @@ export function App() {
     })();
   }, [set]);
 
-  if (!gl || failed) return <><Fallback /><WaitlistHost source="fallback" /></>;
+  const simple = !gl || failed;
   return (
     <>
-      <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />
+      {!simple && <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />}
       <Header />
-      {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
+      {view === "find" ? <Find simple={simple} /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
       {rescue && <Suspense fallback={null}><Rescue /></Suspense>}
       {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
@@ -106,3 +105,4 @@ export function App() {
     </>
   );
 }
+
