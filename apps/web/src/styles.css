@@ -268,3 +268,8 @@ dialog.waitlist label.check, dialog.waitlist label.wl-radio { display: flex; }
 .wl-radio input { width: 20px; height: 20px; accent-color: var(--lantern); }
 .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 dialog.waitlist a { color: var(--lantern); }
+
+/* Keep the explainer reachable without taking over the interactive grove. */
+.hero-guide { display: inline-block; pointer-events: auto; margin-top: 8px; padding: 10px 14px; min-height: 44px; color: var(--shell); text-underline-offset: 4px; }
+.wl-optional summary { cursor: pointer; padding: 12px 0; min-height: 44px; }
+.row-actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }

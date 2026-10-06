@@ -9,7 +9,7 @@ export function PracticeHatchNotice({ domain }: { domain: string }) {
   return (
     <div className="practice-note" role="note">
       <p><strong>Practice hatch — this name isn't registered.</strong> When we checked, the public registry didn't list it. We don't hold it, so anyone could register it first. Nothing is reserved or charged.</p>
-      <button type="button" className="btn secondary" onClick={() => openWaitlist({ name: domain })}>Want it for real? Join the waitlist</button>
+      <button type="button" className="btn primary" onClick={() => openWaitlist({ name: domain })}>Want it for real? Join the waitlist</button>
     </div>
   );
 }

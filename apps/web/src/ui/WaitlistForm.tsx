@@ -49,7 +49,7 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
           </>
         ) : (
           <form onSubmit={submit} noValidate={false}>
-            <p>Mosshatch isn't open yet. Join and we will email you an invite when it is your turn. <strong>Joining does not reserve or register a name.</strong></p>
+            <p>A domain with a creature of its own. Join for an early-access invite when it is your turn. No payment details needed. <strong>Joining does not reserve or register a name.</strong></p>
             <div className="form-grid">
               <div>
                 <label htmlFor="wl-email">Email</label>
@@ -59,12 +59,15 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
                 <label htmlFor="wl-name">The name you hatched (optional)</label>
                 <input id="wl-name" className="text-input" type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={80} placeholder="moonfern.com" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
               </div>
+              <details className="wl-optional">
+                <summary>One optional question</summary>
               <fieldset className="wl-question">
                 <legend>{QUESTION_TEXT} (optional)</legend>
                 {(["yes", "no", "maybe"] as const).map((a) => (
                   <label key={a} className="wl-radio"><input type="radio" name="wl-answer" value={a} checked={f.answer === a} onChange={() => setF({ ...f, answer: a })} /> {a[0]!.toUpperCase() + a.slice(1)}</label>
                 ))}
               </fieldset>
+              </details>
               <div className="hp" aria-hidden="true">
                 <label htmlFor="wl-website">Leave this empty</label>
                 <input id="wl-website" type="text" tabIndex={-1} autoComplete="off" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />

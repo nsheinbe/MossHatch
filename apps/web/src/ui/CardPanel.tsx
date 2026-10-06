@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useUi } from "../store";
 import { handle } from "../world/handle";
 import { PracticeHatchNotice } from "./DemoNotice";
@@ -6,16 +6,12 @@ import { PracticeHatchNotice } from "./DemoNotice";
 export function CardPanel() {
   const { card, hatchPhase, set } = useUi();
   const head = useRef<HTMLHeadingElement>(null);
-  const [copied, setCopied] = useState(false);
   useEffect(() => { if (hatchPhase === "card") head.current?.focus(); }, [hatchPhase]);
   if (hatchPhase !== "card" || !card) return null;
   const again = () => {
     set({ hatchPhase: "none", selected: null, card: null, query: "", results: [], alternatives: [] });
     handle.world?.clearResults();
     handle.world?.setView("find");
-  };
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(`https://${card.address}`); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { setCopied(false); }
   };
   return (
     <aside className="panel side" role="region" aria-label={`${card.domain} has hatched`}>
@@ -29,10 +25,10 @@ export function CardPanel() {
         {card.bio && <p>{card.bio}</p>}
         <ul className="traits">{card.traits.map((t) => <li key={t}>{t}</li>)}</ul>
         <p>{card.moss}</p>
-        <p className="notice">Its card address will be <span style={{ fontWeight: 700 }}>{card.address}</span>. Cards are not live yet.</p>
+        <p className="notice">Keep a picture of your creature. Downloading the portrait does not register or reserve the domain.</p>
         <div className="row-actions">
           <button type="button" className="btn primary" onClick={again}>Hatch another</button>
-          <button type="button" className="btn secondary" onClick={copy}>{copied ? "Copied" : "Copy card link"}</button>
+          <a className="btn secondary" href={card.image} download={`${card.domain}-mosshatch.png`}>Download portrait</a>
         </div>
       </div>
     </aside>

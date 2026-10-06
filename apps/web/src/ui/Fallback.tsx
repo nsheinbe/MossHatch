@@ -15,7 +15,8 @@ export function Fallback() {
   return (
     <main className="static-find" tabIndex={0}>
       <h1>Every name hatches.</h1>
-      <p className="lede">Type a name and see what is open.</p>
+      <p className="lede">Find a domain. Hatch its creature. Give your next idea a little life.</p>
+      <p><a href="/how-it-works">How Mosshatch works</a></p>
       <div id="boot-panel" className="boot-panel" role="status">
         <p className="boot-title">This browser can't light the lanterns.</p>
         <p className="boot-msg">Mosshatch draws its grove with WebGL 2. The search below works without it.</p>
