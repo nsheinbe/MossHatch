@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError, type TransferDenialReason, type TransferInState } from "@mosshatch/registrar/port";
+import { isProviderDns } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { appendAudit } from "../audit.ts";
 import { LeaseLostError } from "../jobs/engine.ts";
@@ -440,7 +441,7 @@ async function completeTransfer(m: M, o: OrderRow, t: TransferRow, st: TransferI
       `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
        values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
       [o.userId, o.fqdn, t.tld, m.svc.registrarId, st.registrarOrderId ?? t.registrarOrderId, at, dom.createdAt ?? null, expires, dom.locked, dom.privacyStatus, dom.nameservers, dom.registryStatuses, dom.dsPresent,
-        dom.nameservers.length > 0 && dom.nameservers.every((n) => n.endsWith(".systemdns.com")), o.livemode]);
+        isProviderDns(dom.nameservers), o.livemode]);
     const domainId = ins.rows[0]?.id as string | undefined;
     if (!domainId) { await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "domain_row_conflict" }); return null; }
     await c.query("update transfers_in set domain_id = $2 where id = $1", [t.id, domainId]);

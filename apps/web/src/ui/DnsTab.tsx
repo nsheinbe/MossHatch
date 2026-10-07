@@ -128,7 +128,7 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
 
       <div className="section" role="group" aria-labelledby="ns-h">
         <h3 id="ns-h">Nameservers</h3>
-        <p>{d.dns_hosted_here ? "This name uses our nameservers, so you edit its records here." : "This name uses other nameservers, so its records live there."}</p>
+        <p>{(dns?.hosted ?? d.dns_hosted_here) ? "This name uses our nameservers, so you edit its records here." : "This name uses other nameservers, so its records live there."}</p>
         <form onSubmit={(e) => { e.preventDefault(); setMsg(null); setReq({ type: "domain.nameservers.change", target: f, input: { kind: "nameservers", nameservers: ns.split(/[\s,]+/).filter(Boolean), target_signed: signed }, run: async (id) => { await changeNameservers(f, id); setMsg("Nameservers changed. We emailed you."); reloadAll(); } }); }}>
           <label htmlFor="ns-box">Nameservers, one per line</label>
           <textarea id="ns-box" className="text-input area" rows={3} value={ns} onChange={(e) => setNs(e.target.value)} />

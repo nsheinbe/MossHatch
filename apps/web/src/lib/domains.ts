@@ -12,6 +12,8 @@ export interface DomainDetail extends DomainSummary {
   mandate: { accepted_at: string | null; price_ceiling_minor: string; term_years: number; charge_days_before_expiry: number } | null;
   /** The accredited registrar that holds the registration. */
   registrar?: { name: string; short: string; iana_id: number };
+  /** When the owner first changed this name's DNS records or nameservers here, or null. */
+  connected_at?: string | null;
 }
 export interface Security {
   domain: string; state: string; attention: { kind: string; message: string } | null; locked: boolean;

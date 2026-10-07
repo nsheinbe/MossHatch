@@ -16,10 +16,13 @@ describe("domain.sync: adapter truth into domains", () => {
     const h = await per.make();
     const o = await makeOwner(h, "sync1@example.com");
     const d = await buyDomain(h, o, "free-sync1.dev");
+    // AUD-O8: a new registration on the provider's own nameservers is marked as DNS hosted here; sync keeps the flag true to the nameservers.
+    expect((await domainRow(h, d.id)).dns_hosted_here).toBe(true);
     h.registrar.oob.setNameservers(d.fqdn, ["ns1.hosted.example", "ns2.hosted.example"]);
     h.app.clock.advance(120_000);
     expect(await syncDomain(h.app.ctx, d.id)).toBe("synced");
     const row = await domainRow(h, d.id);
+    expect(row.dns_hosted_here).toBe(false);
     const st = (await h.registrar.getDomain(d.fqdn))!;
     expect(row.state).toBe("active");
     expect(row.nameservers).toEqual(["ns1.hosted.example", "ns2.hosted.example"]);

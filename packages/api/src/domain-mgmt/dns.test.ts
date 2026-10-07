@@ -74,6 +74,11 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
       expect(s[0].zone_hash).toBe(zoneHash(before)); expect(s[0].after_hash).toBe(zoneHash(after)); expect(s[0].records).toHaveLength(before.length);
       expect(new Date(s[0].expires_at).getTime() - new Date(s[0].taken_at).getTime()).toBe(30 * 86_400_000);
       expect(k.app.email.sent.filter((m) => m.kind === "dns.sensitive_changed")).toHaveLength(0);
+      // AUD-O1: the Overview's getting-started checklist ticks "connect" from the owner's first DNS write, and only the owner sees it.
+      const { domainOverview } = await import("../domains/views.ts");
+      expect((await domainOverview(k.app.ctx, alice.user.userId, d.id)).connected_at).toEqual(expect.any(String));
+      const other = await makeDomain(k, alice, `st128-${mode.replace("_", "")}-untouched-${n}.com`);
+      expect((await domainOverview(k.app.ctx, alice.user.userId, other.id)).connected_at).toBeNull();
     });
 
     it("a human-session change to a sensitive record is allowed, emails every address with a freeze link, and can be rolled back from the snapshot", async () => {

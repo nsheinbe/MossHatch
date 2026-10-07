@@ -2,6 +2,7 @@ import { readFundingLease, releaseFundingLease, reserveFunding } from "./funding
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError } from "@mosshatch/registrar/port";
+import { isProviderDns } from "@mosshatch/registrar/dns";
 import { claimRegistration, registrantFingerprint } from "@mosshatch/registrar/mock-port";
 import { PricingError } from "../pricing/index.ts";
 import type { AppContext } from "../ports.ts";
@@ -533,10 +534,10 @@ async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string
 async function createDomainRow(m: M, c: PoolClient, o: OrderRow, i: { registrarRef: string; at: Date; dom: Awaited<ReturnType<OrdersServices["registrar"]["getDomain"]>> }): Promise<void> {
   const tld = o.fqdn.slice(o.fqdn.indexOf(".") + 1);
   const ins = await c.query(
-    `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, livemode, synced_at)
-     values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
+    `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
+     values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
     [o.userId, o.fqdn, tld, m.svc.registrarId, i.registrarRef, i.at, i.dom?.createdAt ?? i.at, i.dom?.expiresAt ?? null, i.dom?.locked ?? true, i.dom?.privacyStatus ?? "redacted_default",
-      i.dom?.nameservers ?? [], i.dom?.registryStatuses ?? [], i.dom?.dsPresent ?? false, o.livemode],
+      i.dom?.nameservers ?? [], i.dom?.registryStatuses ?? [], i.dom?.dsPresent ?? false, isProviderDns(i.dom?.nameservers ?? []), o.livemode],
   );
   const id = ins.rows[0]?.id as string | undefined;
   if (!id) { await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "domain_row_conflict" }); return; }

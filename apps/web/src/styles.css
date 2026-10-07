@@ -307,6 +307,8 @@ dialog.waitlist a { color: var(--lantern); }
 .shop-results .chip { position: relative; left: auto; top: auto; transform: none !important; will-change: auto; min-width: 0; width: 100%; padding: 14px; gap: 5px; border-radius: 14px; background: rgba(255,255,255,.035); }
 .shop-results .chip::after { display: none; }
 .shop-results .chip .name, .shop-results .chip .ext { overflow-wrap: anywhere; }
+/* A long extension moves to its own line whole (".studio"), instead of breaking mid-word on a phone. */
+.shop-results .chip .ext { overflow-wrap: normal; white-space: nowrap; }
 .shop-results .chip .dot { background: #b5cd8e; }
 .shop-results .chip.taken .dot { background: #8fa3c8; }
 .shop-results .chip.unknown .dot { background: var(--lantern); }

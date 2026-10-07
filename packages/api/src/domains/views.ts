@@ -96,6 +96,11 @@ export async function domainOverview(ctx: AppContext, userId: string, id: string
         const base = await domainView(c, d, now);
         const mandate = await activeMandate(c, d.id);
         const orders = (await c.query("select id, kind, state, years, subtotal_minor, created_at from orders where domain_id = $1 and user_id = $2 order by created_at desc limit 20", [d.id, userId])).rows;
+        // The owner's first DNS change or nameserver move, from their own audit chain: the getting-started checklist's "connect" step
+        // (docs/AUDIT-2026-10-07.md O1) is ticked from this, the same record the funnel report counts as a first setup action (V3).
+        const connected = (await c.query(
+          "select min(at) as at from audit_log where chain_id = $1 and resource_kind = 'domain' and resource_id = $2 and action in ('dns.write','domain.nameservers_changed')",
+          [userId, d.id])).rows[0]?.at;
         return {
           ...base,
           nameservers: d.nameservers, registry_statuses: d.registryStatuses, ds_present: d.dsPresent, privacy_status: d.privacyStatus, dns_hosted_here: d.dnsHostedHere,
@@ -103,6 +108,7 @@ export async function domainOverview(ctx: AppContext, userId: string, id: string
           mandate: mandate ? { accepted_at: iso(mandate.acceptedAt), price_ceiling_minor: mandate.priceCeilingMinor.toString(), term_years: mandate.termYears, charge_days_before_expiry: mandate.chargeDaysBeforeExpiry } : null,
           released: d.releasedAt ? { at: iso(d.releasedAt), reason: d.releaseReason, hold_until: iso(d.releaseHoldUntil), export_available: exportOpen(d, now) } : null,
           orders: orders.map((o) => ({ id: o.id, kind: o.kind, state: o.state, years: o.years, subtotal_minor: String(o.subtotal_minor), created_at: iso(new Date(o.created_at)) })),
+          connected_at: connected ? iso(new Date(connected)) : null,
         };
       })
     : null;

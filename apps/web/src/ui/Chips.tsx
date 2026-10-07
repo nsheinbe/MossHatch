@@ -10,7 +10,7 @@ export function useAnchor(id: string, list: boolean) {
 export function Chip({ r, list, row, onPick }: { r: Result; list: boolean; row: number; onPick: (r: Result) => void }) {
   const ref = useAnchor(r.domain, list);
   const demo = isDemo(useUi(s => s.apiReady));
-  const name = <span className="domain-name"><span className="dot" aria-hidden="true" /><span className="name">{r.domain.slice(0, r.domain.indexOf('.'))}</span><span className="ext">.{r.tld}</span></span>;
+  const name = <span className="domain-name"><span className="dot" aria-hidden="true" /><span className="name">{r.domain.slice(0, r.domain.indexOf('.'))}</span><wbr /><span className="ext">.{r.tld}</span></span>;
   const style = { "--gap": row } as React.CSSProperties;
   if (!r.available) {
     // Each state says what it is (docs/AUDIT-2026-10-07.md P7): a premium name is not "couldn't check", and none of these can be bought here.

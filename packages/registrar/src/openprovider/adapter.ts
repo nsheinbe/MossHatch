@@ -6,7 +6,7 @@ import {
   type TransferAway, type UpstreamOrder, type TransferInCheck, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
-import { canonicalZone, validateZone, zoneHash } from "../dns.ts";
+import { canonicalZone, OPENPROVIDER_NAMESERVERS, validateZone, zoneHash } from "../dns.ts";
 import { readSwitch, VelocityFuse, type AdapterAlert, type FuseClass, type KillSwitch } from "../opensrs/guards.ts";
 import { checkOperation, type OpName, type OpRequest } from "./allowlist.ts";
 import { dsFromDnskey, dsMatchesKey, type Dnskey } from "./dnssec.ts";
@@ -65,7 +65,7 @@ const MAX_TERM = 10;
 /** Observed: `POST /domains/{id}/restore` restored a deleted .io in soft quarantine at no charge. The others are UNVERIFIED (the API offers it for all). */
 const RESTORE_TLDS: Record<string, boolean> = { com: true, dev: true, studio: true, ai: true, io: true, app: true };
 /** Openprovider DNS. Observed: registering with these three names put the domain in ns_group `dns-openprovider` and created a signed master zone. */
-export const OP_NAMESERVERS = ["ns1.openprovider.nl", "ns2.openprovider.be", "ns3.openprovider.eu"];
+export const OP_NAMESERVERS = OPENPROVIDER_NAMESERVERS;
 const DNS_TTL = 900;
 /** A fallback expiry (the create's own answer and the domain read both missing): the term from now, corrected by the next sync. */
 const addYearsUtc = (d: Date, years: number): Date => new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()));

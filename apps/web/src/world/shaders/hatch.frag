@@ -134,7 +134,7 @@ void main() {
 
   // Creatures and eggs take a lighter ink than the grove, so a small creature on a phone reads as itself, not through a screen.
 #if defined(CREATURE) || defined(EGG)
-  col = mix(col, uInk, ink * 0.6);
+  col = mix(col, uInk, ink * 0.5);
 #else
   col = mix(col, uInk, ink * 0.88);
 #endif

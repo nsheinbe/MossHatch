@@ -9,18 +9,20 @@ type Go = (tab: "overview" | "dns" | "gate") => void;
  * the registry enforces) is still unconfirmed.
  */
 export function DomainChecklist({ d, sec, go }: { d: DomainDetail; sec: Security | null; go: Go }) {
-  const [records, setRecords] = useState<number | null>(null);
+  // Whether the name's DNS is ours comes from the registrar's own answer (the DNS tab's read), not from a stored flag.
+  const [hosted, setHosted] = useState<boolean | null>(null);
   const [open, setOpen] = useState(true);
   useEffect(() => {
     let active = true;
-    void getDns(d.fqdn).then((v) => { if (active) setRecords(v.records.length); }).catch(() => { if (active) setRecords(null); });
+    void getDns(d.fqdn).then((v) => { if (active) setHosted(v.hosted); }).catch(() => { if (active) setHosted(null); });
     return () => { active = false; };
   }, [d.fqdn]);
   const verification = sec?.registrant_verification ?? null;
   const verified = !verification || verification.state === "verified";
   const deadline = verification?.deadline_at ? new Date(verification.deadline_at).toLocaleDateString(undefined, { month: "long", day: "numeric" }) : null;
-  const elsewhere = !d.dns_hosted_here;
-  const connected = elsewhere || (records ?? 0) > 0;
+  // Done once the owner changed records or nameservers here (the server's record of it), or when the name already uses other nameservers.
+  const elsewhere = hosted === false;
+  const connected = !!d.connected_at || elsewhere;
   const renewalChosen = d.auto_renew;
   const steps = [
     {
@@ -31,7 +33,7 @@ export function DomainChecklist({ d, sec, go }: { d: DomainDetail; sec: Security
     {
       id: "connect", done: connected, title: "Connect a website or email",
       body: connected
-        ? (elsewhere ? "The name points to nameservers you chose." : "The name has DNS records pointing somewhere.")
+        ? (elsewhere ? "The name uses other nameservers, so its website and email are set up with that DNS provider." : "You've added DNS records for it.")
         : "Your domain is the name. A website and email are separate services the name points to: add the DNS records your website host or email provider gives you.",
       action: connected ? null : { label: "Open DNS", run: () => go("dns") },
     },
