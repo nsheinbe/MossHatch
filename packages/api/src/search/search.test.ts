@@ -11,6 +11,7 @@ import { budgetUsed, poolLimits } from "./budget.ts";
 let app: TestApp; let mock: MockRegistrarPort;
 const ip = (n: number) => ({ "x-forwarded-for": `10.${(n >> 8) & 255}.${n & 255}.7` });
 const get = (path: string, headers: Record<string, string> = ip(1), cookie?: string) => app.call("GET", path, { headers, cookie });
+const post = (path: string, body: unknown, headers: Record<string, string> = ip(1)) => app.call("POST", path, { body, headers });
 
 beforeAll(async () => {
   mock = new MockRegistrarPort();
@@ -174,6 +175,8 @@ describe("search: no durable text (front-running commitment)", () => {
     await get(`/api/v1/search?name=${needle}&tlds=com,io`);
     await get(`/api/v1/quote?domain=${needle}.com`);
     await get(`/api/v1/search?name=${needle}${"x".repeat(70)}`); // rejected
+    await post("/api/v1/search", { name: needle, tlds: "com" });
+    await post("/api/v1/quote", { domain: `${needle}.com` });
     const logged = spies.flatMap((s) => s.mock.calls).map((c) => c.map(String).join(" ")).join("\n");
     spies.forEach((s) => s.mockRestore());
     expect(logged.toLowerCase()).not.toContain(needle);
@@ -187,6 +190,29 @@ describe("search: no durable text (front-running commitment)", () => {
   });
 });
 
+describe("AUD-V1: the web app's POST form keeps the searched name out of every URL", () => {
+  it("search and quote answer exactly as the GET form does, with the name only in the body", async () => {
+    const g = await get("/api/v1/search?name=moonfern&tlds=com,io");
+    const p = await post("/api/v1/search", { name: "moonfern", tlds: "com,io" }, ip(3));
+    expect(p.status).toBe(200); expect(p.json.results).toEqual(g.json.results);
+    const q = await post("/api/v1/quote", { domain: "moonfern.com", years: 1 }, ip(3));
+    expect(q.status).toBe(200);
+    expect(q.json.quote).toMatchObject({ fqdn: "moonfern.com", years: 1, subtotal_minor: "1850" });
+    expect((await post("/api/v1/quote", { domain: "free-y.ai" }, ip(3))).json.quote).toMatchObject({ years: 2 });
+  });
+  it("refuses unknown fields, non-string values, query parameters and a missing name, and keeps the CSRF guard", async () => {
+    expect((await post("/api/v1/quote", { domain: "moonfern.com", price: "1" })).json.error.code).toBe("unexpected_param");
+    expect((await post("/api/v1/search", { name: ["moonfern"] })).status).toBe(400);
+    expect((await post("/api/v1/search", "moonfern")).status).toBe(400);
+    expect((await post("/api/v1/search", {})).json.error.code).toBe("bad_name");
+    for (const years of [1.5, "0", "abc", true]) expect((await post("/api/v1/quote", { domain: "moonfern.com", years })).status, String(years)).toBe(400);
+    expect((await app.call("POST", "/api/v1/search?name=moonfern", { body: { name: "moonfern" }, headers: ip(4) })).json.error.code).toBe("unexpected_param");
+    expect((await app.call("POST", "/api/v1/search", { body: { name: "moonfern" }, headers: { ...ip(5), "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    expect((await app.call("POST", "/api/v1/search", { body: { name: "moonfern" }, headers: ip(6), browser: false })).status).toBe(403);
+    expect(mock.calls.checkAvailability).toBe(0);
+  });
+});
+
 describe("quote route", () => {
   it("returns a priced, hashed, expiring quote and defaults .ai to two years", async () => {
     const r = await get("/api/v1/quote?domain=moonfern.com");
@@ -196,6 +222,17 @@ describe("quote route", () => {
     expect(r.json.quote.quote_hash).toMatch(/^[0-9a-f]{64}$/);
     const ai = await get("/api/v1/quote?domain=free-y.ai");
     expect(ai.json.quote).toMatchObject({ years: 2, subtotal_minor: "24200" });
+  });
+  it("AUD-P5/F3: carries the checkout facts from the server: whether sales are open, the registrar of record and the refund window", async () => {
+    const r = await get("/api/v1/quote?domain=moonfern.com");
+    expect(r.json.sales_open).toBe(true);
+    expect(r.json.registrar).toMatchObject({ iana_id: 69 });                     // the sample table: OpenSRS (Tucows)
+    expect(r.json.refund).toEqual({ refundable: true, window_days: 5 });
+    const ai = await get("/api/v1/quote?domain=free-y.ai");
+    expect(ai.json.refund).toEqual({ refundable: false, window_days: 0 });
+    await app.db.owner.query("update flags set value = 'true' where name = 'registrar_writes_paused'");
+    try { expect((await get("/api/v1/quote?domain=moonfern.com", ip(2))).json.sales_open).toBe(false); }
+    finally { await app.db.owner.query("update flags set value = 'false' where name = 'registrar_writes_paused'"); }
   });
   it("refuses a one-year .ai, an unsupported extension, and any client-supplied price or unknown parameter", async () => {
     expect((await get("/api/v1/quote?domain=free-y.ai&years=1")).json.error.code).toBe("invalid_term");

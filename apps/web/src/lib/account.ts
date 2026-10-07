@@ -93,12 +93,32 @@ export function explain(e: unknown): string {
     case "invalid_code": case "bad_code": return "That code did not work. Check it or ask for a new one.";
     case "not_configured": return "Accounts are not connected in this preview.";
     case "terms_not_accepted": return "Accept the terms and the registration agreement to continue.";
+    case "tld_terms_not_accepted": return "Accept the registry terms for this extension to continue.";
+    case "auto_renew_consent_required": return "Tick the auto-renew authorisation, or leave auto-renew off.";
     case "invalid_contact": return "Check the contact details. The phone number looks like +1.5555550100.";
     case "email_not_verified": return "Use one of your verified email addresses for the registrant contact.";
+    case "email_unverified": return "Confirm your email address first, then try again.";
     case "contact_required": return "Add your registrant contact first.";
     case "name_unavailable": return "Someone else just took that name. Nothing was charged.";
     case "recovery_not_open": return "This recovery was cancelled or has already finished. Start again if you still need it.";
     case "network": return "The connection failed. Check your network.";
-    default: return e.status === 503 ? "Accounts are not connected in this preview." : "That did not work. Try again.";
+    // Checkout refusals (docs/AUDIT-2026-10-07.md F9): each says what happened to the money and what to do next.
+    case "orders_paused": case "sell_gate": case "global_daily_cap": case "global_total_cap":
+      return "New registrations are paused for a little while. Nothing was charged and the name is not held. Try again later.";
+    case "registrar_unavailable": return "Our registrar isn't taking registrations right now. Nothing was charged. Try again in a little while.";
+    case "price_not_standard": return "This name has a premium or non-standard price, which we don't sell. Nothing was charged.";
+    case "documents_unavailable": return "The terms for this purchase couldn't be loaded, so checkout is paused. Nothing was charged.";
+    case "payment_unavailable": return "Secure checkout couldn't open just now. Nothing was charged. Try again.";
+    case "mode_inconsistent": case "sample_price_in_live": return "Checkout is unavailable right now. Nothing was charged.";
+    case "unsupported_tld": return "We don't sell that extension yet.";
+    case "invalid_term": return "That registration period isn't available for this extension.";
+    case "invite_required": return "Buying is open to invited accounts for now. Join the waitlist to get an invite.";
+    case "new_account_daily_registrations": case "new_account_exposure":
+      return "New accounts have a daily limit on registrations. Nothing was charged. Try again tomorrow, or write to support@mosshatch.com.";
+    case "review_hold": case "screening_hold": return "We need to check this order before it can go ahead. Nothing was charged. Write to support@mosshatch.com.";
+    case "account_frozen": case "account_inactive": return "This account can't buy right now. Write to support@mosshatch.com.";
+    case "idempotency_key_reuse": case "request_in_progress": return "That checkout is already being opened. Wait a moment, then try again.";
+    case "not_payable": return "This order can no longer be paid here. Write to support@mosshatch.com and we will sort it out.";
+    default: return e.status === 503 ? "This isn't available right now. Nothing was charged. Try again in a little while." : "That did not work. Try again.";
   }
 }

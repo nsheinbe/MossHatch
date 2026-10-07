@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { withNoUser, type PoolClient } from "@mosshatch/db";
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
+import { isProviderDns } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import type { HandlerReq } from "../http/types.ts";
@@ -114,7 +115,7 @@ export const sha256hex = (s: string): string => crypto.createHash("sha256").upda
 export const emailHash = (email: string): string => sha256hex(email.trim().toLowerCase());
 
 /** Whether these nameservers are the ones that serve the zone we can edit (SystemDNS). */
-export const isHostedNs = (ns: readonly string[]): boolean => ns.length > 0 && ns.every((n) => n.toLowerCase().endsWith(".systemdns.com"));
+export const isHostedNs = (ns: readonly string[]): boolean => isProviderDns(ns);
 
 /** Add whole business days (Monday to Friday). Holidays are not modelled. C-23 gives two. */
 export function addBusinessDays(from: Date, days: number): Date {

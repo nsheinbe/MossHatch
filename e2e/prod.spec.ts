@@ -117,10 +117,9 @@ test("persisted state is limited to calm, sound and rehideSeconds", async ({ pag
   expect(await page.evaluate(() => Object.keys(localStorage).length)).toBeLessThanOrEqual(1);
 });
 
-test("C-53 canary: a search sends one same-origin GET to /api/lookup with the name in the query, and nothing else anywhere", async ({ page }) => {
-  const reqs: URL[] = [];
-  const methods: string[] = [];
-  page.on("request", (r) => { reqs.push(new URL(r.url())); methods.push(r.method()); });
+test("C-53 canary: a search sends one same-origin POST to /api/lookup with the name in its body, never in any URL, and nothing else anywhere", async ({ page }) => {
+  const reqs: { url: URL; method: string; body: string | null }[] = [];
+  page.on("request", (r) => { reqs.push({ url: new URL(r.url()), method: r.method(), body: r.postData() }); });
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await cancelDemo(page);
@@ -128,12 +127,13 @@ test("C-53 canary: a search sends one same-origin GET to /api/lookup with the na
   const before = reqs.length;
   await page.fill("#name-input", "secretcanaryname");
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
-  const after = reqs.slice(before), how = methods.slice(before);
-  const named = after.filter((u) => /canary/i.test(u.href));
-  expect(named.map((u) => u.pathname + u.search)).toEqual(["/api/lookup?name=secretcanaryname"]);
-  expect(after.every((u) => u.origin === "http://127.0.0.1:4173")).toBe(true);
-  expect(how.every((m) => m === "GET")).toBe(true);
-  expect(after.some((u) => /canary/i.test(u.pathname))).toBe(false);
+  const after = reqs.slice(before);
+  // AUD-V1: the name is in no URL (so in no request log), only in the one lookup's body.
+  expect(after.filter((r) => /canary/i.test(r.url.href))).toEqual([]);
+  const named = after.filter((r) => /canary/i.test(r.body ?? ""));
+  expect(named.map((r) => [r.method, r.url.pathname + r.url.search, JSON.parse(r.body!)])).toEqual([["POST", "/api/lookup", { name: "secretcanaryname" }]]);
+  expect(after.every((r) => r.url.origin === "http://127.0.0.1:4173")).toBe(true);
+  expect(after.every((r) => r.method === "GET" || r.url.pathname === "/api/lookup")).toBe(true);
   await expect(page.getByRole("link", { name: "Our commitments" })).toBeVisible();
 });
 

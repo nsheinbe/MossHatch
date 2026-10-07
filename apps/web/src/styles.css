@@ -129,7 +129,9 @@ details summary { cursor: pointer; min-height: 32px; }
 @media (max-width: 720px) {
   .nav { margin-left: 4px; }
   .nav button { padding: 0 10px; }
-  .tools button .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* Phones show short visible labels (docs/AUDIT-2026-10-07.md C5); the on/off word is still read out, and the dot shows it. */
+  .tools button { padding: 0 10px; font-size: .82rem; }
+  .tools button .state { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .find.has-results .hero p { display: none; }
   .hero { top: 64px; }
   .side { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 62vh; border-radius: 16px 16px 0 0; }
@@ -305,6 +307,8 @@ dialog.waitlist a { color: var(--lantern); }
 .shop-results .chip { position: relative; left: auto; top: auto; transform: none !important; will-change: auto; min-width: 0; width: 100%; padding: 14px; gap: 5px; border-radius: 14px; background: rgba(255,255,255,.035); }
 .shop-results .chip::after { display: none; }
 .shop-results .chip .name, .shop-results .chip .ext { overflow-wrap: anywhere; }
+/* A long extension moves to its own line whole (".studio"), instead of breaking mid-word on a phone. */
+.shop-results .chip .ext { overflow-wrap: normal; white-space: nowrap; }
 .shop-results .chip .dot { background: #b5cd8e; }
 .shop-results .chip.taken .dot { background: #8fa3c8; }
 .shop-results .chip.unknown .dot { background: var(--lantern); }
@@ -353,3 +357,76 @@ dialog.waitlist a { color: var(--lantern); }
  .checkout-sheet .preview-world svg { width: 85px; height: 80px; grid-row: 1 / 3; }
  .checkout-sheet .preview-world .preview-title { font-size: 1.05rem; margin: 0 0 6px; }
 }
+
+/* Purchase progress (docs/AUDIT-2026-10-07.md C3): one sequence from choosing a name to owning it. Never shown for a practice hatch. */
+.journey { list-style: none; display: flex; gap: 6px; padding: 0; margin: 0 0 14px; counter-reset: step; }
+.journey-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: .78rem; color: rgba(241,234,216,.7); text-align: center; position: relative; }
+.journey-step::before { content: ""; position: absolute; top: 6px; left: calc(-50% + 9px); right: calc(50% + 9px); height: 2px; background: rgba(241,234,216,.22); }
+.journey-step:first-child::before { display: none; }
+.journey-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(241,234,216,.45); background: transparent; position: relative; z-index: 1; }
+.journey-step.done { color: var(--shell); }
+.journey-step.done .journey-dot { background: #9dbb55; border-color: #9dbb55; }
+.journey-step.done + .journey-step::before, .journey-step.done::before { background: #9dbb55; }
+.journey-step.current { color: var(--shell); font-weight: 700; }
+.journey-step.current .journey-dot { border-color: var(--lantern); background: rgba(255,178,87,.35); box-shadow: 0 0 0 4px rgba(255,178,87,.16); }
+.journey-step.stopped { color: var(--shell); font-weight: 700; }
+.journey-step.stopped .journey-dot { border-color: #ff9a7e; background: rgba(255,154,126,.35); }
+@media (prefers-reduced-motion: no-preference) { .journey-step.current .journey-dot { animation: journey-glow 2.4s ease-in-out infinite; } }
+@keyframes journey-glow { 50% { box-shadow: 0 0 0 7px rgba(255,178,87,.08); } }
+
+/* While a creature hatches and its card is up, the search steps aside and the order docks on the other side as a short receipt,
+   so the card, the creature and the order never cover each other (docs/AUDIT-2026-10-07.md C1). */
+.order-panel { z-index: 31; }
+.find.stepping-aside { visibility: hidden; opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) { .find.shop-find { transition: opacity .35s ease, visibility .35s; } }
+.order-panel.docked { right: auto; left: 16px; width: min(340px, calc(100vw - 32px)); }
+/* On a phone the card fills the screen and already says the name is registered; the receipt waits until the card is closed, and the
+   charge is in the receipt email and the Ledger. */
+@media (max-width: 720px) { .order-panel.docked { display: none; } }
+.checkout-sheet dl.rows-small { margin-top: 12px; grid-template-columns: auto 1fr; font-size: .86rem; }
+.checkout-sheet dl.rows-small dd { font-weight: 400; text-align: left; }
+.checkout-sheet dl.rows dd { overflow-wrap: anywhere; }
+.auto-renew-choice { margin: 14px 0 6px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 12px; background: rgba(11,18,33,.35); }
+.auto-renew-choice .fineprint { margin-top: 6px; }
+
+/* Discovery (docs/AUDIT-2026-10-07.md D1–D3, P7): checked ideas, a shortlist kept in this tab, and result states that say what they are. */
+.shop-results .chip.premium { grid-column: 1 / -1; border-style: dotted; }
+.shop-results .chip.premium .dot { background: #d6b3ff; }
+.result-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.keep-btn { align-self: flex-end; min-height: 32px; padding: 2px 10px; border: 1px solid transparent; border-radius: 10px; background: none; color: #e3d8b2; font: 600 .78rem var(--body); cursor: pointer; }
+.keep-btn:hover, .keep-btn:focus-visible { border-color: rgba(227,216,178,.35); }
+.keep-btn[aria-pressed="true"] { color: #f4dfae; border-color: rgba(244,223,174,.4); background: rgba(244,223,174,.06); }
+.idea-results { margin-top: 10px; }
+.idea-results .idea-names { align-items: center; }
+.shortlist { border-top: 1px solid var(--glass-border); margin-top: 18px; padding-top: 14px; }
+.shortlist h2 { font-size: 1.05rem; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin: 0; }
+.shortlist ul { list-style: none; padding: 0; margin: 10px 0 6px; display: grid; gap: 6px; }
+.shortlist li { display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; gap: 4px 12px; align-items: center; padding: 8px 12px; border-radius: 12px; background: rgba(255,255,255,.035); font-size: .86rem; }
+.shortlist .sl-name { font-weight: 700; overflow-wrap: anywhere; }
+.shortlist .sl-price { color: #f4dfae; font-size: .82rem; }
+.shortlist .sl-price small { color: #c2cec3; }
+.shortlist li .link-btn, .shortlist li .text-btn { min-height: 32px; }
+@media (max-width: 460px) { .shortlist li { grid-template-columns: minmax(0,1fr) auto; } .shortlist .sl-price { grid-column: 1 / -1; grid-row: 2; } }
+
+/* After a search on a phone the welcome shrinks to one line, so results start near the top (C2). */
+@media (max-width: 720px) {
+  .find.shop-find.has-results .shop-intro .eyebrow, .find.shop-find.has-results .shop-intro > p, .find.shop-find.has-results .shop-promises { display: none; }
+  .find.shop-find.has-results .shop-intro h1 { font-size: 1.3rem; margin-bottom: 10px; }
+  .find.shop-find.has-results .shop-intro h1 br, .find.shop-find.has-results .shop-intro h1 em { display: none; }
+}
+
+/* Getting started with a new domain (O1–O3): server-ticked steps and a plain explainer of domain, website and email. */
+.checklist { margin-bottom: 16px; padding: 14px; border: 1px solid var(--glass-border); border-radius: 14px; background: rgba(157,187,85,.06); }
+.checklist-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.checklist-head h3 { margin: 0; font-size: 1.05rem; }
+.checklist-head .text-btn { margin-left: auto; }
+.checklist-steps { list-style: none; padding: 0; margin: 12px 0 8px; display: grid; gap: 10px; }
+.checklist-steps li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; }
+.checklist-steps .fineprint { margin-top: 2px; font-size: .84rem; }
+.checklist-steps .link-btn { margin-top: 6px; min-height: 36px; }
+.checklist-mark { width: 20px; height: 20px; border-radius: 50%; border: 2px solid rgba(241,234,216,.5); display: inline-flex; align-items: center; justify-content: center; font-size: .75rem; margin-top: 2px; }
+.checklist-steps li.done .checklist-mark { background: #9dbb55; border-color: #9dbb55; color: #10201a; }
+.checklist .explainer { margin: 8px 0; }
+.checklist .explainer summary { cursor: pointer; font-weight: 700; font-size: .88rem; min-height: 32px; display: flex; align-items: center; }
+.checklist .explainer ul { padding-left: 18px; }
+.checklist .explainer li { margin-top: 6px; }

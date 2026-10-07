@@ -1,5 +1,6 @@
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError, type DomainStatus } from "@mosshatch/registrar/port";
+import { isProviderDns } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { enqueue, type JobRow } from "../jobs/registry.ts";
 import { withLease } from "../jobs/engine.ts";
@@ -50,10 +51,10 @@ export async function syncDomain(ctx: AppContext, domainId: string, o: { job?: P
     await c.query(
       `update domains set state = $2, expires_at = $3, locked = $4, nameservers = $5, registry_statuses = $6, ds_present = $7, privacy_status = $8, transfer_away = $9,
               owner_email_hash = coalesce($10, owner_email_hash), let_expire = $11, privacy_service = $12, synced_at = $13, sync_error = null, sync_error_since = null,
-              registry_created_at = coalesce($14, registry_created_at), registrar_ref = coalesce(registrar_ref, $15)
+              registry_created_at = coalesce($14, registry_created_at), registrar_ref = coalesce(registrar_ref, $15), dns_hosted_here = $16
         where id = $1 and released_at is null`,
       [cur.id, up.state, up.expiresAt ?? cur.expiresAt, up.locked, up.nameservers, up.registryStatuses, up.dsPresent, up.privacyStatus, !!up.transferAwayInProgress,
-        up.ownerEmailHash ?? null, !!up.letExpire, !!up.privacyServiceEnabled, now, up.createdAt ?? null, up.registrarOrderId ?? null]);
+        up.ownerEmailHash ?? null, !!up.letExpire, !!up.privacyServiceEnabled, now, up.createdAt ?? null, up.registrarOrderId ?? null, isProviderDns(up.nameservers ?? [])]);
     await closeAlerts(c, "domain_sync_error", cur.id);
     const fresh = rowToDomain((await c.query("select * from domains where id = $1", [cur.id])).rows[0]);
     await ensureTerm(c, fresh, now);

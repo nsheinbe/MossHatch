@@ -6,7 +6,7 @@ import {
   type TransferAway, type UpstreamOrder, type TransferInCheck, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
-import { canonicalZone, validateZone, zoneHash } from "../dns.ts";
+import { canonicalZone, OPENPROVIDER_NAMESERVERS, validateZone, zoneHash } from "../dns.ts";
 import { readSwitch, VelocityFuse, type AdapterAlert, type FuseClass, type KillSwitch } from "../opensrs/guards.ts";
 import { checkOperation, type OpName, type OpRequest } from "./allowlist.ts";
 import { dsFromDnskey, dsMatchesKey, type Dnskey } from "./dnssec.ts";
@@ -65,8 +65,10 @@ const MAX_TERM = 10;
 /** Observed: `POST /domains/{id}/restore` restored a deleted .io in soft quarantine at no charge. The others are UNVERIFIED (the API offers it for all). */
 const RESTORE_TLDS: Record<string, boolean> = { com: true, dev: true, studio: true, ai: true, io: true, app: true };
 /** Openprovider DNS. Observed: registering with these three names put the domain in ns_group `dns-openprovider` and created a signed master zone. */
-export const OP_NAMESERVERS = ["ns1.openprovider.nl", "ns2.openprovider.be", "ns3.openprovider.eu"];
+export const OP_NAMESERVERS = OPENPROVIDER_NAMESERVERS;
 const DNS_TTL = 900;
+/** A fallback expiry (the create's own answer and the domain read both missing): the term from now, corrected by the next sync. */
+const addYearsUtc = (d: Date, years: number): Date => new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()));
 const PENDING = new Set(["REQ", "PEN", "SCH", "RRQ"]);
 
 const err = (kind: RegistrarError["kind"], code: string, o: { retryable?: boolean; outcomeUnknown?: boolean } = {}, message = "registrar request failed") =>
@@ -345,6 +347,11 @@ export class OpenproviderAdapter implements RegistrarPort {
     return { balance: this.money(balance), held: this.money(held), available: this.money(balance - held) };
   }
   async getFundingStatus(): Promise<Money> { return (await this.getBalance()).available; }
+  /** The debit check after a write that took effect: a balance read that fails is an alert, never an error for the caller. */
+  private async settleAfterWrite(tld: string, quoted: bigint, before: bigint): Promise<void> {
+    try { await this.debitCheck(tld, quoted, before); }
+    catch { this.alert({ kind: "debit_unverified", detail: `.${tld}` }); }
+  }
   private async debitCheck(tld: string, quoted: bigint, before: bigint) {
     const after = (await this.getBalance()).available.minor;
     const diff = before - after - quoted;
@@ -371,9 +378,11 @@ export class OpenproviderAdapter implements RegistrarPort {
     const status = str(r.data.status) ?? "";
     // Observed: .com and .io answer ACT at once; .ai answered 504 and then sat in REQ with the price held in reserved_balance.
     if (status !== "ACT") return { status: "accepted_pending", registrarOrderId: orderId, reason: "async" };
-    await this.debitCheck(tld, q.wholesale.minor, before);
-    const dom = await this.getDomain(d);
-    return { status: "registered", registrarOrderId: orderId, expiresAt: dom?.expiresAt ?? parseUtc(str(r.data.expiration_date)) ?? new Date(0) };
+    // The name is registered from here on. Nothing below may throw: a failed read after the create would reach the order machine as
+    // "refused before any effect", which retries, meets the duplicate refusal and voids a name that is ours (docs/AUDIT-2026-10-07.md F1).
+    await this.settleAfterWrite(tld, q.wholesale.minor, before);
+    const dom = await this.getDomain(d).catch(() => null);
+    return { status: "registered", registrarOrderId: orderId, expiresAt: dom?.expiresAt ?? parseUtc(str(r.data.expiration_date)) ?? addYearsUtc(this.clock.now(), req.years) };
   }
 
   async renew(fqdn: string, years: number, currentExpiryYear: number) {
@@ -388,8 +397,9 @@ export class OpenproviderAdapter implements RegistrarPort {
     const id = await this.idOf(d);
     const r = await this.call("RENEW_DOMAIN", { params: { id }, body: { period: years } });
     if ((str(r.data.status) ?? "") !== "ACT") return { status: "accepted_pending" as const, registrarOrderId: String(id) };
-    await this.debitCheck(tld, q.wholesale.minor, before);
-    const dom = await this.getDomain(d);
+    // Renewed from here on: as for register, a failed read after the write never turns into an error.
+    await this.settleAfterWrite(tld, q.wholesale.minor, before);
+    const dom = await this.getDomain(d).catch(() => null);
     return { status: "renewed" as const, registrarOrderId: String(id), ...(dom?.expiresAt ? { expiresAt: dom.expiresAt } : {}) };
   }
 

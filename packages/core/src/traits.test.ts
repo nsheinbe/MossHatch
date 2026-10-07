@@ -72,6 +72,8 @@ describe("deriveCreatureState", () => {
   it("prioritises", () => {
     expect(deriveCreatureState({ ...base, registering: true }).state).toBe("egg");
     expect(deriveCreatureState({ ...base, daysToExpiry: 12 }).text).toBe("Renews in 12 days");
+    expect(deriveCreatureState({ ...base, daysToExpiry: 12, autoRenew: true }).text).toBe("Renews in 12 days");
+    expect(deriveCreatureState({ ...base, daysToExpiry: 1, autoRenew: false }).text).toBe("Expires in 1 day. Auto-renew is off.");
     expect(deriveCreatureState({ ...base, transferLock: true }).state).toBe("armored");
     expect(deriveCreatureState({ ...base, daysToExpiry: -3 }).state).toBe("sleeping");
     expect(deriveCreatureState({ ...base, attentionReason: "Verify your email" }).state).toBe("attention");

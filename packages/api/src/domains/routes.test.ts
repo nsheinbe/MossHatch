@@ -87,6 +87,15 @@ describe("GET /api/v1/domains/:id and the other id routes: unowned and nonexiste
     const r = await h.app.call("POST", `/api/v1/domains/${d.id}/renew`, { cookie: (await relogin(h, ada)).cookie, body: {} });
     expect(r.status).toBe(409); expect(r.json.error.code).toBe("not_renewable");
   });
+
+  it("AUD-O6: past its expiry date, Renew now says to write to support instead of a false \"Renewing now\", and charges nothing", async () => {
+    const d = await buyDomain(h, ada, "free-routes3.dev");
+    await h.app.db.owner.query("update domains set expires_at = $2, state = 'expired' where id = $1", [d.id, new Date(h.app.clock.now().getTime() - days(3))]);
+    const before = (await h.app.db.owner.query("select count(*)::int as n from orders where domain_id = $1 and kind = 'renew'", [d.id])).rows[0].n;
+    const r = await h.app.call("POST", `/api/v1/domains/${d.id}/renew`, { cookie: (await relogin(h, ada)).cookie, body: {} });
+    expect(r.status).toBe(409); expect(r.json.error.code).toBe("renew_by_support");
+    expect((await h.app.db.owner.query("select count(*)::int as n from orders where domain_id = $1 and kind = 'renew'", [d.id])).rows[0].n).toBe(before);
+  });
 });
 
 describe("GET /api/v1/ledger", () => {

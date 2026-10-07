@@ -17,6 +17,8 @@ export interface DomainFacts {
   attentionReason?: string;
   /** Age in days since registration. */
   ageDays: number;
+  /** Whether auto-renew is on. False says "Expires in…" instead of "Renews in…" (docs/AUDIT-2026-10-07.md O4); unknown reads as renewing. */
+  autoRenew?: boolean;
 }
 
 export interface DerivedState {
@@ -44,7 +46,8 @@ export function deriveCreatureState(f: DomainFacts): DerivedState {
   }
   if (f.dnsWriteInFlight) return { state: "shedding", text: "Your DNS change is spreading", locked };
   if (f.daysToExpiry <= RENEW_WINDOW_DAYS) {
-    return { state: "drowsy", text: `Renews in ${f.daysToExpiry} ${f.daysToExpiry === 1 ? "day" : "days"}`, locked };
+    const n = `${f.daysToExpiry} ${f.daysToExpiry === 1 ? "day" : "days"}`;
+    return { state: "drowsy", text: f.autoRenew === false ? `Expires in ${n}. Auto-renew is off.` : `Renews in ${n}`, locked };
   }
   if (locked) return { state: "armored", text: "Transfer lock on", locked };
   return { state: "thriving", text: "Healthy. Nothing needs you.", locked };

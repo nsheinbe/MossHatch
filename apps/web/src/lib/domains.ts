@@ -10,6 +10,10 @@ export interface DomainDetail extends DomainSummary {
   registry_statuses: string[]; released: { at: string | null } | null;
   renewal: DomainSummary["renewal"] & { state: string | null; held_reason: string | null; price_ceiling_minor: string | null; currency: string };
   mandate: { accepted_at: string | null; price_ceiling_minor: string; term_years: number; charge_days_before_expiry: number } | null;
+  /** The accredited registrar that holds the registration. */
+  registrar?: { name: string; short: string; iana_id: number };
+  /** When the owner first changed this name's DNS records or nameservers here, or null. */
+  connected_at?: string | null;
 }
 export interface Security {
   domain: string; state: string; attention: { kind: string; message: string } | null; locked: boolean;
@@ -22,6 +26,8 @@ export interface Security {
 }
 export interface TransferState {
   domain: string; state: "none" | "requested" | "unrequested" | "stopped_pending"; stop_available: boolean; note: string | null; message: string | null; timing: string;
+  /** False where transfers away cannot be watched automatically: "none" then means none seen. */
+  tracked?: boolean;
   transfers: { id: string; gaining_registrar: string | null; requested_at: string | null; requested_by_you: boolean }[];
 }
 export interface DnsRecordView { id: string; type: string; name: string; value: string; priority?: number; weight?: number; port?: number; sensitive: boolean; reasons: string[] }
@@ -106,6 +112,8 @@ export function explainDomain(e: unknown): string {
       case "not_renewable": return "This name cannot be renewed right now.";
       case "payment_declined": return "The card was declined. Nothing was renewed.";
       case "renewal_paused": case "sell_gate": return "Renewals are paused for a short while. Nothing was charged.";
+      case "renew_by_support": return "This name has expired, so online renewal has closed. Write to support@mosshatch.com and we renew it for you once you confirm the price. Nothing was charged.";
+      case "renewal_price_check": return "The registrar's renewal price needs checking before anything is charged. Nothing was charged; we email you once it is confirmed.";
       case "transfer_locked": return "This name cannot leave for 60 days after a change of registrant.";
       case "dispute_lock": return "A dispute lock is on. Transfers and contact changes are paused.";
       case "contact_change_pending": return "A contact change is waiting for approval. Finish that first.";

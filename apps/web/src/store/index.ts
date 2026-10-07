@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-/** The preview's registered-or-not answer from the public registry (packages/api/src/lookup). */
-export type LookupStatus = "registered" | "unregistered" | "unknown";
+/**
+ * What a search found for one name: the preview's registered-or-not answer from the public registry (packages/api/src/lookup), or,
+ * live, the registrar's answer, which can also be a premium name (priced by the registry; not sold here) or one the registry reserves.
+ */
+export type LookupStatus = "registered" | "unregistered" | "unknown" | "premium" | "reserved";
 
 export interface Result {
   domain: string;
@@ -67,6 +70,11 @@ export interface UiState {
   orderId: string | null;
   /** Stripe Checkout Session id from the return URL; the server checks it belongs to the order. */
   orderSession: string | null;
+  /**
+   * An unfinished checkout to offer back: from Stripe's back link (/checkout/cancelled), Back, or a reload (docs/AUDIT-2026-10-07.md D4, D5).
+   * The order id only; the request to replay is kept by lib/orders.ts (pendingCheckout, this tab only). Never persisted here.
+   */
+  resume: { orderId: string; reason: "cancelled" | "returned" } | null;
   /** The domain whose panel is open: an id and its name, nothing else. */
   domainPanel: { id: string; fqdn: string } | null;
   /** Bumped when a change in the panel means the grove should re-read the domains. */
@@ -107,7 +115,7 @@ export const useUi = create<UiState>()(
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
       hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
-      rescue: null,
+      rescue: null, resume: null,
       set: (p) => set(p),
     }),
     {

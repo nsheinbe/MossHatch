@@ -2,7 +2,7 @@ import { LAUNCH_TLDS, normalizeLabel } from "../search/labels.ts";
 import { RdapDirectory, rdapStatus, type Fetch, type LookupStatus } from "./rdap.ts";
 
 /**
- * GET /api/lookup?name=<label> — the preview's "is this name already registered?" check, served by api/index.ts before (and
+ * GET /api/lookup?name=<label> (or POST {"name": "<label>"}, the web app's form) — the preview's "is this name already registered?" check, served by api/index.ts before (and
  * independently of) the full API boot. No database, no registrar, no price: for each of the six preview extensions it asks that
  * registry's public RDAP service and answers `registered`, `unregistered` or `unknown` (lookup/rdap.ts).
  *
@@ -45,6 +45,20 @@ export function networkKey(r: Request): string {
     return head.slice(0, 4).join(":") + "::/64";
   }
   return "unknown";
+}
+
+/** The one `name` of a small JSON body, or nothing (which the caller answers as bad_name). */
+async function nameFromBody(request: Request): Promise<string[]> {
+  if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return [];
+  const text = await request.text();
+  if (text.length > 512) return [];
+  try {
+    const b = JSON.parse(text) as unknown;
+    if (b === null || typeof b !== "object" || Array.isArray(b)) return [];
+    const keys = Object.keys(b);
+    const v = (b as { name?: unknown }).name;
+    return keys.length === 1 && typeof v === "string" ? [v] : [];
+  } catch { return []; }
 }
 
 /** A counting semaphore whose waiters give up at a deadline. */
@@ -149,13 +163,16 @@ export function createLookup(o: LookupOptions = {}): (request: Request) => Promi
     const url = new URL(request.url);
     if (url.pathname.replace(/\/$/, "") !== LOOKUP_PATH) return null;
     try {
-      if (request.method !== "GET" && request.method !== "HEAD") return json(405, { error: { code: "method_not_allowed" } }, { allow: "GET" });
+      if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "POST") return json(405, { error: { code: "method_not_allowed" } }, { allow: "GET, POST" });
       // Same-site use only: the page calls this; another site's page may not use it as an RDAP relay. (curl sends no such header.)
       const site = request.headers.get("sec-fetch-site");
       if (site && site !== "same-origin" && site !== "none") return json(403, { error: { code: "cross_site" } });
       // Vercel's rewrite (vercel.json "/api/:path*" -> "/api/index") adds the captured segment as `path`; it carries nothing of the caller's.
-      for (const k of url.searchParams.keys()) if (k !== "name" && k !== "path") return json(400, { error: { code: "bad_request" } });
-      const raw = url.searchParams.getAll("name");
+      const post = request.method === "POST";
+      for (const k of url.searchParams.keys()) if ((post || k !== "name") && k !== "path") return json(400, { error: { code: "bad_request" } });
+      // The web app POSTs {"name": "..."} so the name is never part of a URL, and so never in our host's request logs
+      // (docs/AUDIT-2026-10-07.md V1). GET ?name= still works for anyone calling it by hand.
+      const raw = post ? await nameFromBody(request) : url.searchParams.getAll("name");
       const name = raw.length === 1 ? normalizeLabel(raw[0]!) : ({ ok: false } as const);
       if (!name.ok) return json(400, { error: { code: "bad_name" } });
       const wait = admit(networkKey(request));

@@ -74,11 +74,20 @@ export const domainRoutes: Route[] = [
         "select id, state from orders where domain_id = $1 and kind = 'renew' and state in ('draft','renewing_upstream','renewed','refund_pending') and created_at > $2 order by created_at desc limit 1",
         [d.id, new Date(ctx.clock.now().getTime() - 7 * 86_400_000)])).rows[0];
       if (recent && recent.state !== "draft") return json({ status: recent.state === "renewed" ? "renewed" : "renewing", order_id: recent.id }, recent.state === "renewed" ? 200 : 202);
+      // Online renewal ends at the expiry date (fees page). Past it the draft would only lapse while the page said "Renewing now"
+      // (docs/AUDIT-2026-10-07.md O6); in the grace period support renews the name once the person confirms the price.
+      if (d.expiresAt && ctx.clock.now().getTime() >= d.expiresAt.getTime()) throw new HttpError(409, "renew_by_support");
       const term = await tx(ctx.cron, (c) => ensureTerm(c, d, ctx.clock.now()));
       if (!term) throw new HttpError(503, "no_price");
       if (term.state === "renewed") return json({ status: "renewed", order_id: term.orderId });
       const order = await ensureRenewalOrder(ctx, term, d);
       if (!order) throw new HttpError(503, "no_price");
+      // The decline ladder gave up on the saved card (C, C+3, C+6): it is not charged again. Renew now opens Stripe Checkout, where any
+      // card can pay (C-38; docs/AUDIT-2026-10-07.md O7). The registrar is still called only after Stripe says the payment succeeded.
+      if (term.state === "payment_failed" && order.state === "draft") {
+        try { const url = await startRenewalCheckout(ctx, order, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily }); if (url) return json({ status: "checkout", order_id: order.id, checkout_url: url }, 200); }
+        catch (e) { if (e instanceof StripeError) throw new HttpError(503, "payment_unavailable"); throw e; }
+      }
       await markManualRenewal(ctx, order.id, userId);
       const after = await advanceRenewal(machine(ctx), order.id, { manual: true });
       if (!after) throw new HttpError(503, "renewal_unavailable");
@@ -86,8 +95,9 @@ export const domainRoutes: Route[] = [
       if (after.state === "renewing_upstream" || after.state === "captured") return json({ status: "renewing", order_id: after.id }, 202);
       if (after.state === "refund_pending" || after.state === "refunded") return json({ status: "refunded", order_id: after.id }, 409);
       const t = (await ctx.cron.query("select state, held_reason from renewal_terms where order_id = $1", [after.id])).rows[0];
-      // The bank wants the person present (3-D Secure): bring them back on-session through Checkout (C-38).
-      if (after.failureCode === "authentication_required") {
+      // The bank wants the person present (3-D Secure), or declined the saved card: bring them back on-session through Checkout, where they
+      // can confirm or use another card (C-38; O7).
+      if (after.failureCode === "authentication_required" || after.failureCode === "card_declined") {
         try { const url = await startRenewalCheckout(ctx, after, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily }); if (url) return json({ status: "checkout", order_id: after.id, checkout_url: url }, 200); }
         catch (e) { if (!(e instanceof StripeError)) throw e; }
       }
@@ -102,6 +112,8 @@ export const domainRoutes: Route[] = [
         throw new HttpError(409, "payment_method_required");
       }
       if (t?.held_reason === "account_review" || t?.held_reason === "paused") throw new HttpError(409, "renewal_paused");
+      // The registrar's live renew price is premium or above our table (P3): a person checks it before anything is charged.
+      if (t?.held_reason === "price_check") throw new HttpError(409, "renewal_price_check");
       if (t?.held_reason === "funds_gate" || t?.held_reason === "registrar_unavailable") throw new HttpError(503, "sell_gate", "Renewals are paused for a short while. Nothing was charged.");
       return json({ status: "pending", order_id: after.id }, 202);
     },

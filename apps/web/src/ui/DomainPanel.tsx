@@ -4,6 +4,7 @@ import { explainDomain, getDomain, getSecurity, getTransfer, type DomainDetail, 
 import { DomainOverview } from "./DomainOverview";
 import { DnsTab } from "./DnsTab";
 import { CardSection } from "./CardSection";
+import { DomainChecklist } from "./DomainChecklist";
 
 // The Nest (secrets) and the Gate (transfer away) load only when their tab opens.
 const NestTab = lazy(() => import("./NestTab"));
@@ -63,6 +64,7 @@ export default function DomainPanel() {
         <div id={`tabpanel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
           {err && <p role="alert" className="notice">{err}</p>}
           {!d && !err && <p role="status">Loading.</p>}
+          {d && tab === "overview" && !d.released && <DomainChecklist d={d} sec={sec} go={setTab} />}
           {d && tab === "overview" && <DomainOverview d={d} sec={sec} xfer={xfer} reload={reload} />}
           {d && tab === "overview" && !d.released && <CardSection domainId={d.id} fqdn={domainPanel.fqdn} />}
           {d && tab === "dns" && <DnsTab d={d} sec={sec} reloadAll={reload} />}

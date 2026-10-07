@@ -1,6 +1,19 @@
 import { createHash } from "node:crypto";
 import { DNS_RECORD_TYPES, RegistrarError, type DnsRecord } from "./port.ts";
 
+/** Openprovider's own DNS. A registration through Openprovider is created with these, so its records are edited here. */
+export const OPENPROVIDER_NAMESERVERS = ["ns1.openprovider.nl", "ns2.openprovider.be", "ns3.openprovider.eu"];
+
+/**
+ * Whether a name's nameservers are our registrar's own DNS (Openprovider's, or OpenSRS's SystemDNS, which is also the mock's), so its records
+ * live and are edited here. The one rule behind `domains.dns_hosted_here` at registration, transfer-in, sync and a nameserver change
+ * (docs/AUDIT-2026-10-07.md O8: it used to know SystemDNS only, and a new registration never set it).
+ */
+export function isProviderDns(nameservers: readonly string[]): boolean {
+  const ns = nameservers.map((n) => n.trim().toLowerCase().replace(/\.$/, ""));
+  return ns.length > 0 && (ns.every((n) => OPENPROVIDER_NAMESERVERS.includes(n)) || ns.every((n) => n.endsWith(".systemdns.com")));
+}
+
 /** TXT strings longer than this are split or refused by the caller; OpenSRS documents up to 254 characters (RCP KB 201000063118). */
 export const TXT_MAX = 254;
 

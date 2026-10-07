@@ -2,6 +2,7 @@ import { readFundingLease, releaseFundingLease, reserveFunding } from "./funding
 import crypto from "node:crypto";
 import { tx, type PoolClient } from "@mosshatch/db";
 import { RegistrarError } from "@mosshatch/registrar/port";
+import { isProviderDns } from "@mosshatch/registrar/dns";
 import { claimRegistration, registrantFingerprint } from "@mosshatch/registrar/mock-port";
 import { PricingError } from "../pricing/index.ts";
 import type { AppContext } from "../ports.ts";
@@ -11,7 +12,7 @@ import { LeaseLostError } from "../jobs/engine.ts";
 import { hashOf } from "../util/bytes.ts";
 import { StripeError, type CheckoutSession, type CreateSessionInput, type PaymentIntent, type Refund } from "../stripe/port.ts";
 import {
-  ADD_GRACE_DEADLINE_MS, CAPTURE_RETRY_WINDOW_MS, FALLBACK_AUTH_WINDOW_MS, LATE_WATCH_MS, MIN_AUTH_WINDOW_MS, PAY_LINK_MS, PAY_LINK_REUSE_MIN_MS, REFUND_CAP_PER_30_DAYS, SWEEP_UNKNOWN_AFTER_MS,
+  ADD_GRACE_DEADLINE_MS, CAPTURE_RETRY_WINDOW_MS, FALLBACK_AUTH_WINDOW_MS, LATE_WATCH_MS, MIN_AUTH_WINDOW_MS, PAY_LINK_MS, PAY_LINK_REUSE_MIN_MS, REFUND_CAP_PER_30_DAYS, SESSION_TTL_MS, SWEEP_UNKNOWN_AFTER_MS,
   type OrderRow, type OrderState, type OrdersServices, type VoidReason,
 } from "./types.ts";
 import { alert, backoffMs, loadOrder, mailCustomer, mailReceipt, mailVoid, ordersSvc, rowToOrder } from "./support.ts";
@@ -230,7 +231,13 @@ export function authorizedAmountGuard(o: Pick<OrderRow, "id" | "livemode" | "sub
 }
 
 async function reconcilePayment(m: M, o: OrderRow): Promise<Step> {
-  if (!o.sessionId) return "wait";
+  if (!o.sessionId) {
+    // No Checkout Session was ever recorded (Stripe failed at creation, and the customer never had a link to pay). Once no Session for it
+    // could still be open, the order ends instead of being re-checked every five minutes forever (docs/AUDIT-2026-10-07.md F7).
+    if (now(m).getTime() - o.createdAt.getTime() <= SESSION_TTL_MS + 5 * 60_000) return "wait";
+    const r = await ltx(m, (c) => move(m, c, o.id, ["checkout_open", "payment_failed"], "checkout_expired", {}, { cause: "job", detail: { no_session: true } }));
+    return r ? "progressed" : "wait";
+  }
   const s = await m.svc.stripe.retrieveSession(o.sessionId);
   if (s.livemode !== o.livemode) { await ltx(m, (c) => alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "livemode_mismatch" })); return "wait"; }
   if (s.status === "open") return "wait";
@@ -479,9 +486,25 @@ async function onRegisterError(m: M, o: OrderRow, op: Op, e: RegistrarError): Pr
     });
     return r ? "progressed" : "wait";
   }
-  // rejected: the registry or reseller refused. If the domain now belongs to someone else, say so.
-  let takenByOther = e.code === "domain_taken" || e.code === "order_exists";
-  if (takenByOther) { const d = await m.svc.registrar.getDomain(o.fqdn); takenByOther = !!d && d.profileUsername !== o.regUsername; }
+  // rejected: the registry or reseller refused. Before calling that final, look at the name upstream. A create that took effect on an
+  // earlier attempt whose answer was lost is refused now as a duplicate (Openprovider 346), and the name is ours: finish it instead of
+  // voiding a registered name (docs/AUDIT-2026-10-07.md F2). A lookup that fails throws here and leaves the operation `sent`, so the
+  // sweeper reconciles it under the claim rule rather than this pass voiding blind.
+  const upstream = await m.svc.registrar.getDomain(o.fqdn);
+  const ours = !!upstream && !!o.regUsername && upstream.profileUsername === o.regUsername;
+  if (ours && upstream.state === "active") {
+    await ltx(m, (c) => alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "register_refused_but_ours", detail: { code: e.code ?? null } }));
+    return finishRegistered(m, o, { registrarOrderId: upstream.registrarOrderId ?? "", ...(upstream.expiresAt ? { expiresAt: upstream.expiresAt } : {}), op });
+  }
+  if (ours && upstream.state === "pending") {
+    // Ours and still pending at the registry: the same wait as an accepted-pending create.
+    await cron(m).query("update order_operations set registrar_order_id = $2, response_code = 'accepted_pending', detail = detail || $3::jsonb where id = $1", [op.id, upstream.registrarOrderId ?? "", { accepted_pending: true, reason: "found_pending_after_refusal" }]);
+    await cron(m).query("update orders set next_check_at = $2 where id = $1 and state in ('registering','paid_before_registration')", [o.id, new Date(now(m).getTime() + backoffMs(0))]);
+    return "wait";
+  }
+  // If the domain now belongs to someone else (in our account under another profile, or refused as existing), say so.
+  const takenCode = e.code === "domain_taken" || e.code === "order_exists" || e.code === "346";
+  const takenByOther = takenCode && !ours && (!upstream || upstream.profileUsername !== o.regUsername);
   await ltx(m, async (c) => {
     await resolveOp(c, op.id, "rejected", { detail: { code: e.code ?? null } });
     await failRegistration(m, c, o, from, takenByOther ? "taken_by_other" : "registration_rejected", takenByOther ? "taken_by_other" : e.code ?? "rejected");
@@ -494,12 +517,12 @@ async function failRegistration(m: M, c: PoolClient, o: OrderRow, from: OrderSta
   if (failed) await move(m, c, o.id, "registration_failed", "canceling", { cancel_pi_id: o.cancelPiId ?? o.paymentIntentId }, { cause: "system" });
 }
 
-async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string; expiresAt?: Date; op?: Op | null }): Promise<Step> {
+async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string; expiresAt?: Date; op?: Op | null }, from: OrderState[] = ["registering", "paid_before_registration", "outcome_unknown"], extra: Record<string, unknown> = {}): Promise<Step> {
   const dom = await m.svc.registrar.getDomain(o.fqdn);
   const at = now(m);
   const expires = r.expiresAt ?? dom?.expiresAt ?? null;
   const moved = await ltx(m, async (c) => {
-    const row = await move(m, c, o.id, ["registering", "paid_before_registration", "outcome_unknown"], "registered", { funding_reserved_minor: 0, registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0 }, { cause: "job" });
+    const row = await move(m, c, o.id, from, "registered", { funding_reserved_minor: 0, registered_at: at, registrar_ref: r.registrarOrderId, registrar_expires_at: expires, next_check_at: null, check_count: 0, ...extra }, { cause: "job" });
     if (!row) return null;
     if (r.op) await resolveOp(c, r.op.id, "registered", { registrarOrderId: r.registrarOrderId });
     await createDomainRow(m, c, o, { registrarRef: r.registrarOrderId, at, dom });
@@ -511,10 +534,10 @@ async function finishRegistered(m: M, o: OrderRow, r: { registrarOrderId: string
 async function createDomainRow(m: M, c: PoolClient, o: OrderRow, i: { registrarRef: string; at: Date; dom: Awaited<ReturnType<OrdersServices["registrar"]["getDomain"]>> }): Promise<void> {
   const tld = o.fqdn.slice(o.fqdn.indexOf(".") + 1);
   const ins = await c.query(
-    `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, livemode, synced_at)
-     values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
+    `insert into domains (user_id, fqdn_ascii, tld, registrar, registrar_ref, state, registered_at, registry_created_at, expires_at, locked, privacy_status, nameservers, registry_statuses, ds_present, dns_hosted_here, livemode, synced_at)
+     values ($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$6) on conflict (fqdn_ascii) where released_at is null do nothing returning id`,
     [o.userId, o.fqdn, tld, m.svc.registrarId, i.registrarRef, i.at, i.dom?.createdAt ?? i.at, i.dom?.expiresAt ?? null, i.dom?.locked ?? true, i.dom?.privacyStatus ?? "redacted_default",
-      i.dom?.nameservers ?? [], i.dom?.registryStatuses ?? [], i.dom?.dsPresent ?? false, o.livemode],
+      i.dom?.nameservers ?? [], i.dom?.registryStatuses ?? [], i.dom?.dsPresent ?? false, isProviderDns(i.dom?.nameservers ?? []), o.livemode],
   );
   const id = ins.rows[0]?.id as string | undefined;
   if (!id) { await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "domain_row_conflict" }); return; }
@@ -910,6 +933,29 @@ export async function closeOrderSession(m: M, o: OrderRow): Promise<string | nul
   } catch (e) { if (!(e instanceof StripeError) || e.kind !== "invalid_request") throw e; return null; }
 }
 
+/** Cancels that stopped waiting for a registration, not ones that refused the payment (review, guards, region, the customer). */
+const RECOVERABLE_VOIDS = new Set<VoidReason>(["unknown_deadline", "auth_window", "registrar_unavailable", "registration_rejected", "taken_by_other"]);
+
+/** canceling -> registered for a name that is ours upstream, while the order's own hold is capturable (or was captured). Null when it is not. */
+async function recoverRegistered(m: M, o: OrderRow, registrarOrderId: string): Promise<Step | null> {
+  if (!o.paymentIntentId || (o.cancelPiId && o.cancelPiId !== o.paymentIntentId)) return null;
+  const pi = await m.svc.stripe.retrievePaymentIntent(o.paymentIntentId);
+  const capturable = pi.status === "requires_capture" && captureBeforeOf(o).getTime() > now(m).getTime();
+  if (!capturable && pi.status !== "succeeded") return null;
+  const op = await latestOp(cron(m), o.id, "register");
+  let step: Step;
+  try {
+    step = await finishRegistered(m, o, { registrarOrderId, op: op && op.state !== "resolved" ? op : null }, ["canceling"],
+      { void_reason: null, cancel_pi_id: null, late_watch_state: o.lateWatchState === "watching" ? "claimed" : o.lateWatchState ?? null });
+  } catch (e) {
+    // Another order took the name lock while this one was canceling: keep the existing loss path (alert, watch) for a person.
+    if ((e as { code?: string }).code === "23505") return null;
+    throw e;
+  }
+  if (step === "progressed") await ltx(m, (c) => alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "registration_recovered" }));
+  return step;
+}
+
 async function runCancel(m: M, o: OrderRow): Promise<Step> {
   // 0. Close the order's Checkout; a PaymentIntent it produced that the order never recorded is released below.
   const sessionPi = await closeOrderSession(m, o);
@@ -917,6 +963,13 @@ async function runCancel(m: M, o: OrderRow): Promise<Step> {
   const regOps = (await cron(m).query("select state from order_operations where order_id = $1 and kind = 'register'", [o.id])).rows;
   if (regOps.some((r) => r.state !== "intent") && o.regUsername) {
     const ups = await m.svc.registrar.getOrdersByDomain(o.fqdn);
+    // A registration of ours that already completed upstream is delivered, not thrown away, when the cancel was not a refusal of the
+    // payment and the hold can still be captured (docs/AUDIT-2026-10-07.md F5). Otherwise the loss path below books it and watches.
+    const done = ups.find((u) => u.profileUsername === o.regUsername && u.status === "completed" && u.type === "new");
+    if (done && o.voidReason && RECOVERABLE_VOIDS.has(o.voidReason)) {
+      const recovered = await recoverRegistered(m, o, done.registrarOrderId);
+      if (recovered) return recovered;
+    }
     const mine = ups.filter((u) => u.profileUsername === o.regUsername && (u.status === "pending" || u.status === "waiting"));
     for (const u of mine) await m.svc.registrar.cancelPendingOrder(u.registrarOrderId);
     if (mine.length) {

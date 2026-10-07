@@ -36,8 +36,8 @@ async function buy(page: Page, request: import("@playwright/test").APIRequestCon
   const pay = page.getByRole("button", { name: /Buy domain & hatch/ });
   const shown = (await pay.textContent())!.match(/\$([\d.]+)/)![1]!;
   // C-31: the auto-renew box is unticked by default and separate from the terms box.
-  await page.getByText("Auto-renew (optional)", { exact: true }).click();
-  const save = page.getByLabel("Save my card for auto-renew.", { exact: true });
+  // The auto-renew choice is visible beside the price with its full terms (docs/AUDIT-2026-10-07.md P5), not folded away.
+  const save = page.getByLabel("Save my card for auto-renew (optional)", { exact: true });
   await expect(save).not.toBeChecked();
   if (o.autoRenew) await save.check();
   await page.getByLabel(/I accept the/).check();

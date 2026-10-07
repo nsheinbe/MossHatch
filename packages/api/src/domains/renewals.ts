@@ -179,7 +179,21 @@ async function termOfOrder(q: Pick<PoolClient, "query">, orderId: string): Promi
 // Holds: reasons the automatic charge waits (C-33, ST-102, ST-109)
 // ---------------------------------------------------------------------------------------------------------------------------------------
 
-export type HoldReason = "paused" | "account_review" | "no_price" | "above_cap" | "price_notice_pending" | "funds_gate" | "no_saved_card" | "registrar_unavailable" | "reconsent_required" | "charge_notice_pending";
+export type HoldReason = "paused" | "account_review" | "no_price" | "above_cap" | "price_notice_pending" | "funds_gate" | "no_saved_card" | "registrar_unavailable" | "reconsent_required" | "charge_notice_pending" | "price_check";
+
+/**
+ * The registrar's live renewal price against the table row the customer is charged from. A renewal is charged first and renewed
+ * upstream second, so a registrar increase nobody entered would be charged at the old price and could sell below cost (docs/AUDIT-2026-10-07.md
+ * P3). Higher than the table, or premium: hold (`price_check`) until a dated row is added, which also starts the price-change notices.
+ * Lower or equal: proceed at the table price the customer was told. An unreachable registrar holds like the sell gate does.
+ */
+export async function liveRenewalCheck(ctx: AppContext, fqdn: string, years: number, tableWholesaleMinor: bigint): Promise<{ reason: HoldReason } | null> {
+  let live;
+  try { live = await svcOf(ctx).registrar.quote(fqdn, years, "renew"); }
+  catch (e) { if (e instanceof RegistrarError) return { reason: e.code === "premium_refused" ? "price_check" : "registrar_unavailable" }; throw e; }
+  if (live.isRegistryPremium || live.wholesale.minor > tableWholesaleMinor) return { reason: "price_check" };
+  return null;
+}
 
 /** The pre-charge notice must reach the person at least this long before an automatic charge (Visa 7 days, C-38; the C-8 notice gives 8). */
 export const PRE_CHARGE_NOTICE_MS = 7 * DAY_MS;
@@ -218,7 +232,8 @@ export async function chargeHold(ctx: AppContext, term: TermRow, d: DomainRow, m
   }
   const gate = await sellGate(ctx, "renew", q.wholesaleMinor, { excludeTermId: term.id });
   if (!gate.ok) return { reason: gate.reason === "registrar_unavailable" ? "registrar_unavailable" : "funds_gate" };
-  return null;
+  // Last, so a renewal that would wait anyway costs no registrar call; a Renew now click is checked too (the click consents to the table price).
+  return liveRenewalCheck(ctx, d.fqdn, q.years, q.wholesaleMinor);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
@@ -245,6 +260,7 @@ async function chargeStep(m: M, o: OrderRow, manual: boolean): Promise<Step> {
   if (hold) {
     await setHeld(ctx, term, hold.reason);
     if (hold.reason === "funds_gate" || hold.reason === "registrar_unavailable") await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "page", kind: "renewal_sell_gate", subject: o.id, detail: { order_id: o.id, reason: hold.reason } }));
+    if (hold.reason === "price_check") await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "page", kind: "renewal_price_check", subject: d.tld, detail: { tld: d.tld } }));
     return "wait";
   }
   const card = mandate?.paymentMethodRef && mandate.customerRef ? { customer: mandate.customerRef, paymentMethod: mandate.paymentMethodRef } : (o.stripeCustomerId && o.paymentMethodRef ? { customer: o.stripeCustomerId, paymentMethod: o.paymentMethodRef } : await savedCard(ctx.cron, d.userId));
@@ -636,6 +652,8 @@ export async function runRenewalScheduler(ctx: AppContext): Promise<SchedulerRes
     if (hold) {
       await setHeld(ctx, t, hold.reason); res.held++;
       if (hold.reason === "funds_gate" || hold.reason === "registrar_unavailable") await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "page", kind: "renewal_sell_gate", subject: t.id, detail: { term_id: t.id, reason: hold.reason } }));
+      // One page per extension: the price table needs a dated row for the registrar's new renewal price (scripts/live-preflight.mjs reads it).
+      if (hold.reason === "price_check") await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "page", kind: "renewal_price_check", subject: d.tld, detail: { tld: d.tld } }));
       continue;
     }
     const order = await ensureRenewalOrder(ctx, t, d);

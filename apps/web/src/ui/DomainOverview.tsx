@@ -46,8 +46,12 @@ export function DomainOverview({ d, sec, xfer, reload }: { d: DomainDetail; sec:
         <div><dt>Expires</dt><dd>{d.expires_at ? day(d.expires_at) : "Not known yet"}{d.days_to_expiry !== null && d.days_to_expiry >= 0 ? `, in ${d.days_to_expiry} ${d.days_to_expiry === 1 ? "day" : "days"}` : ""}</dd></div>
         <div><dt>Renewal price</dt><dd>{price ? `${price} for ${years(d.renewal.years)}` : "Not known yet"}{d.renewal.charge_at && on ? `, charged ${day(d.renewal.charge_at)}` : ""}</dd></div>
         <div><dt>Transfer lock</dt><dd>{d.locked ? "On" : "Off"}</dd></div>
-        <div><dt>Transfer</dt><dd>{xfer ? ({ none: "None in progress", requested: "In progress, and you asked for it", unrequested: "In progress, and you did not ask for it", stopped_pending: "Stopped, waiting for our team" }[xfer.state]) : "Not known just now"}</dd></div>
-        {sec?.registrant_verification && sec.registrant_verification.state !== "verified" && <div><dt>Registrant email</dt><dd>Not verified yet. See the DNS tab.</dd></div>}
+        <div><dt>Transfer</dt><dd>{!xfer ? "Not known just now" : xfer.state === "none" && xfer.tracked === false
+          ? "None we know of. Transfers away aren't tracked automatically at this registrar yet: if you get an email about a transfer you didn't ask for, decline it there and write to support@mosshatch.com."
+          : ({ none: "None in progress", requested: "In progress, and you asked for it", unrequested: "In progress, and you did not ask for it", stopped_pending: "Stopped, waiting for our team" }[xfer.state])}</dd></div>
+        {sec?.registrant_verification && sec.registrant_verification.state !== "verified" && <div><dt>Registrant email</dt><dd>Not verified yet. Verify it on the DNS tab, under Contact and registrant.</dd></div>}
+        {d.registrar && <div><dt>Registrar of record</dt><dd>{d.registrar.short} (IANA ID {d.registrar.iana_id}). Mosshatch manages the name for you there. <a href="/legal/registrant-rights.html">Your rights as a registrant</a></dd></div>}
+        <div><dt>Help</dt><dd><a href={`mailto:support@mosshatch.com?subject=${encodeURIComponent(`Domain ${d.fqdn}`)}`}>Email support@mosshatch.com</a></dd></div>
       </dl>
 
       <div className="section" role="group" aria-labelledby="ren-h">
@@ -77,14 +81,16 @@ export function DomainOverview({ d, sec, xfer, reload }: { d: DomainDetail; sec:
           </>
         )}
         {req && <StepUp key={req.type} req={req} onDone={() => setReq(null)} />}
-        <div className="row-actions">
+        {d.days_to_expiry !== null && d.days_to_expiry < 0 ? (
+          <p className="notice">This name has expired, so online renewal has closed. While the registry still allows it, <a href={`mailto:support@mosshatch.com?subject=${encodeURIComponent(`Renew ${d.fqdn}`)}`}>email support@mosshatch.com</a> and we renew it for you once you confirm the price.</p>
+        ) : <div className="row-actions">
           <button type="button" className="btn secondary" disabled={busy} onClick={() => void act(async () => {
             const r = await renewNow(d.id, !on && agree && doc ? doc.version : undefined);
             // No card saved for renewals: pay this one on Stripe's page. The registry is asked only after the payment succeeds.
             if (r.status === "checkout" && r.checkout_url) { sessionStorage.setItem("mh.order", r.order_id); window.location.assign(r.checkout_url); return "Opening Stripe to pay for the renewal."; }
             return r.status === "renewed" ? "Renewed." : r.status === "refunded" ? "The renewal could not be finished, so it was refunded." : "Renewing now. This can take a minute.";
           })}>Renew now</button>
-        </div>
+        </div>}
       </div>
 
       <TransferCode fqdn={d.fqdn} locked={d.locked} onChanged={reload} />

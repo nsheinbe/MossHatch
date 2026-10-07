@@ -28,7 +28,7 @@ export type FuseClass = "code_issue" | "unlock" | "ns_change" | "contact_change"
 /** Own targets from plan 4.3b (raising one is a passkey-approved config change): code issue 5 an hour, unlock 10, nameserver change 20, contact change 10. */
 export const DEFAULT_FUSE_LIMITS: Readonly<Record<FuseClass, number>> = { code_issue: 5, unlock: 10, ns_change: 20, contact_change: 10 };
 
-export interface AdapterAlert { kind: "fuse_tripped" | "debit_mismatch" | "auth_failed" | "kill_switch_closed"; detail: string }
+export interface AdapterAlert { kind: "fuse_tripped" | "debit_mismatch" | "debit_unverified" | "auth_failed" | "kill_switch_closed"; detail: string }
 
 /**
  * Velocity fuse across all customers. In-memory here; a multi-instance deployment needs a shared counter behind the same interface
