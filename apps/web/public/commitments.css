@@ -38,3 +38,9 @@ table.fees th, table.fees td { border-bottom: 1px solid rgba(241, 234, 216, 0.25
 .wl-form input[type="checkbox"], .wl-form input[type="radio"] { width: 22px; height: 22px; flex: none; accent-color: #ffb257; }
 .wl-form .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
 .wl-form input:focus-visible { outline: 3px solid #ffb257; outline-offset: 2px; }
+
+/* Waitlist preparation works with scripts disabled and the strict self-only CSP. */
+.waitlist-getting-ready { margin: 24px 0; padding: 24px; border: 1px solid #506457; border-radius: 16px; }
+.readiness-task { display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; }
+.readiness-task input { width: 20px; height: 20px; flex: none; }
+.readiness-note { font-size: 0.875rem; }
