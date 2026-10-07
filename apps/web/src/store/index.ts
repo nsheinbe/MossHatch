@@ -13,6 +13,7 @@ export interface Result {
   status?: LookupStatus;
   /** Formatted all-in first-year price, present only when available. */
   price?: string;
+  renewal?: string;
   years?: number;
   sample: boolean;
   /** Breakdown for "How the price is made" (sample data in Phase 1). */
@@ -117,3 +118,4 @@ export const useUi = create<UiState>()(
     },
   ),
 );
+

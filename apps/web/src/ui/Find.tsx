@@ -1,124 +1,114 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useUi, type Result } from "../store";
 import { handle } from "../world/handle";
-import { search, searchLive } from "../lib/find";
+import { parseQuery, search, searchLive, staticPrices } from "../lib/find";
+import { alternativeNames, nameIdeas } from "../lib/ideas";
 import { sound } from "../audio/synth";
 import { Chip } from "./Chips";
-import { useArrivalDemo } from "./demo";
 import { isDemo } from "../lib/site";
-
-const narrowQuery = "(max-width: 720px)";
+import { trackConversion } from "../lib/conversion";
 
 export function useNarrow() {
-  const [narrow, setNarrow] = useState(() => matchMedia(narrowQuery).matches);
-  useEffect(() => {
-    const m = matchMedia(narrowQuery);
-    const f = () => setNarrow(m.matches);
-    m.addEventListener("change", f);
-    return () => m.removeEventListener("change", f);
-  }, []);
+  const [narrow, setNarrow] = useState(() => matchMedia("(max-width: 720px)").matches);
+  useEffect(() => { const m = matchMedia("(max-width: 720px)"); const f = () => setNarrow(m.matches); m.addEventListener("change", f); return () => m.removeEventListener("change", f); }, []);
   return narrow;
 }
-
-export function Find() {
-  const { query, results, alternatives, demo, dealOpen, hatchPhase, apiReady, set } = useUi();
-  const narrow = useNarrow();
+export function Find({ simple = false }: { simple?: boolean }) {
+  const { query, results, checking, dealOpen, apiReady, set } = useUi();
   const preview = isDemo(apiReady);
   const token = useRef(0);
-  const timer = useRef<number>(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { if (handle.world) handle.world.overlayMode = narrow ? "list" : "project"; }, [narrow]);
-
-  const run = useCallback(async (q: string) => {
-    const my = ++token.current;
-    let r: Awaited<ReturnType<typeof search>>;
-    try { r = useUi.getState().apiReady ? await searchLive(q) : await search(q); }
-    catch { if (my === token.current) set({ checking: false }); return; }   // throttled or offline: keep what is on screen
-    if (my !== token.current) return; // stale
-    const w = handle.world;
-    if (!r) { set({ results: [], alternatives: [], checking: false }); w?.clearResults(); return; }
-    set({ results: r.results, alternatives: r.alternatives, checking: false });
-    // A name the registry could not be asked about is neither an egg nor a sleeper: it is only listed, as "couldn't check".
-    w?.setResults(r.results.filter((x) => x.status !== "unknown").map((x) => ({ domain: x.domain, available: x.available })));
+  const [error, setError] = useState("");
+  const [mode, setMode] = useState<"name" | "idea">("name");
+  const [idea, setIdea] = useState("");
+  const [inspiration, setInspiration] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<Result[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionNote, setSuggestionNote] = useState("");
+  const suggestionToken = useRef(0);
+  const com = staticPrices().find(p => p.tld === "com");
+  useEffect(() => { if (handle.world) handle.world.overlayMode = "list"; }, [simple]);
+  useEffect(() => { trackConversion("visit", preview); }, [preview]);
+  const run = useCallback(async (raw: string) => {
+    const mine = ++token.current;
+    if (!parseQuery(raw)) { setError("Enter a name using letters, numbers or hyphens."); set({ checking: false, results: [] }); return; }
+    setError(""); set({ checking: true });
+    trackConversion("search", isDemo(useUi.getState().apiReady));
+    try {
+      const r = useUi.getState().apiReady ? await searchLive(raw) : await search(raw);
+      if (mine !== token.current) return;
+      set({ results: r?.results ?? [], checking: false });
+      handle.world?.setResults((r?.results ?? []).filter(x => x.status !== "unknown").map(x => ({ domain: x.domain, available: x.available })));
+      if (r?.results.some(x => x.available)) trackConversion("available", isDemo(useUi.getState().apiReady));
+      if (r?.results.every(x => x.status === "unknown")) setError("We couldn't check these names right now. Please try again shortly.");
+    } catch {
+      if (mine !== token.current) return;
+      set({ checking: false, results: [] }); handle.world?.clearResults();
+      setError("Search is temporarily unavailable. Please try again shortly; your name has not been reserved.");
+    }
   }, [set]);
-
-  // Every change of the query (typed or demo-typed) runs a search after a short pause.
-  const first = useRef(true);
   useEffect(() => {
-    if (first.current) { first.current = false; return; }
-    window.clearTimeout(timer.current);
-    if (!query.trim()) { token.current++; set({ results: [], alternatives: [], checking: false }); handle.world?.clearResults(); return; }
-    set({ checking: true });
-    timer.current = window.setTimeout(() => void run(query), 220);
-    return () => window.clearTimeout(timer.current);
-  }, [query, run, set]);
-
-  useArrivalDemo(inputRef);
-
-  const onPick = (r: Result) => { set({ selected: r, hatchPhase: "sheet" }); };
-
-  const list = narrow;
-  let ai = 0;
-  const chip = (r: Result, inList: boolean) => <Chip key={r.domain} r={r} list={inList} row={r.available ? ai++ % 2 : 0} onPick={onPick} />;
-  const checked = results.filter((r) => r.status !== "unknown"), unchecked = results.filter((r) => r.status === "unknown");
-  const hiding = hatchPhase === "hatching";
-  // Rescue: a taken name may be the person's own at another registrar (the pre-check says whether it can move).
-  const rescuable = alternatives.length === 0 ? results.find((r) => !r.available) : undefined;
-
+    token.current++; suggestionToken.current++;
+    setSuggestions([]); setSuggestionNote(""); setSuggesting(false);
+    set({ results: [], checking: !!query.trim() }); handle.world?.clearResults();
+    if (!query.trim()) { setError(""); return; }
+    const timer = window.setTimeout(() => void run(query), 650);
+    return () => { window.clearTimeout(timer); token.current++; };
+  }, [query, apiReady, run, set]);
+  const pick = (r: Result) => { trackConversion("selected", preview); set({ selected: r, hatchPhase: "sheet" }); };
+  const suggest = async () => {
+    const mine = ++suggestionToken.current;
+    setSuggesting(true); setSuggestionNote(""); setSuggestions([]);
+    const found: Result[] = []; let unknown = false;
+    for (const label of alternativeNames(query)) {
+      if (mine !== suggestionToken.current) return;
+      try {
+        const r = apiReady ? await searchLive(label, true) : await search(`${label}.com`);
+        const result = r?.results.find(x => x.tld === "com");
+        if (result?.available) found.push(result);
+        if (!result || result.status === "unknown") unknown = true;
+      } catch { unknown = true; break; }
+    }
+    if (mine !== suggestionToken.current) return;
+    setSuggestions(found); setSuggesting(false);
+    setSuggestionNote(found.length ? "Each suggestion was checked. Availability can change before checkout." : unknown ? "Some checks are unavailable. Try again shortly or search another name." : "Those variations are taken too. Try describing your idea for a fresh direction.");
+  };
+  const rescuable = results.find(r => r.status === "registered");
+  const takenCom = results.find(r => r.tld === "com" && r.status === "registered");
   return (
-    <main className={`find${results.length ? " has-results" : ""}`} style={hiding ? { visibility: "hidden" } : undefined}>
-      <div className="hero">
-        <h1>Every name hatches.</h1>
-        <p>Find a domain. Hatch its creature. Give your next idea a little life.</p>
-        <a className="hero-guide" href="/how-it-works">How Mosshatch works</a>
+    <main className={`find shop-find${results.length ? " has-results" : ""}${simple ? " simple-find" : ""}`}>
+      <div className="shop-intro">
+        <span className="eyebrow">A home for your next idea</span>
+        <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>
+        <p>A name you own. A creature that's yours. A little world waiting to begin.</p>
+        <div className="shop-promises"><span>Clear renewal pricing</span><span>No preselected extras</span><span>Your domain, your control</span></div>
       </div>
-
-      {list
-        ? <div className="chips-list" aria-label="Results">{results.map((r) => chip(r, true))}</div>
-        : <>{checked.map((r) => chip(r, false))}{unchecked.length > 0 && <div className="chips-list" aria-label="Not checked">{unchecked.map((r) => chip(r, true))}</div>}</>}
-
-      {alternatives.length > 0 && (
-        <div className="alternatives" role="group" aria-label="Open alternatives">
-          <p className="lead">That name is taken. These are open:</p>
-          {alternatives.map((a) => (
-            <button key={a} type="button" className="link-btn" onClick={() => set({ query: a.slice(0, a.indexOf(".")) })}>{a}</button>
-          ))}
-        </div>
-      )}
-
-      {dealOpen && (
-        <div className="panel deal" role="region" aria-label="The deal">
-          <div className="head"><h2>The deal</h2></div>
-          <div className="body">
-            <p>One flat price per year. It is what the registry charges plus one small fee, and it renews at the same price.</p>
-            <p>WHOIS privacy is free. No add-ons. Nothing is pre-checked.</p>
-            <p className="notice">{preview ? "Whether a name is already registered comes from the public registry. Prices are set at launch. In this preview nothing is registered, reserved or charged." : "Prices here are sample prices for this preview."}</p>
-            <button type="button" className="btn secondary" onClick={() => set({ dealOpen: false })}>Got it</button>
-          </div>
-        </div>
-      )}
-
-      <form className="pool-input" role="search" onSubmit={(e) => e.preventDefault()}>
+      {simple && <p className="notice">You're using the lightweight view. Search and checkout work without the animated grove.</p>}
+      <div className="search-modes" role="group" aria-label="How would you like to find a name?">
+        <button type="button" aria-pressed={mode === "name"} onClick={() => setMode("name")}>I have a name</button>
+        <button type="button" aria-pressed={mode === "idea"} onClick={() => setMode("idea")}>Describe my idea</button>
+      </div>
+      {mode === "idea" && <form className="idea-form" onSubmit={e => { e.preventDefault(); setInspiration(nameIdeas(idea)); }}>
+        <label htmlFor="idea-input">What are you bringing to life?</label>
+        <textarea id="idea-input" className="text-input" value={idea} maxLength={240} placeholder="A ceramics studio inspired by the coast" onChange={e => setIdea(e.target.value)} />
+        <button className="btn secondary" type="submit" disabled={!idea.trim()}>Find inspiration</button>
+        <p className="fineprint">Ideas are made in your browser. Select one to check availability.</p>
+        <div className="idea-names">{inspiration.map(name => <button type="button" className="link-btn" key={name} onClick={() => { set({ query: name }); setMode("name"); }}>{name}.com</button>)}</div>
+      </form>}
+      <form className="pool-input shop-search" role="search" onSubmit={e => { e.preventDefault(); void run(query); }}>
         <label htmlFor="name-input">What will you name it?</label>
         <div className="field">
-          <input
-            id="name-input" ref={inputRef} type="text" value={query} autoComplete="off" autoCapitalize="none" spellCheck={false}
-            inputMode="url" maxLength={70} placeholder="moonfern"
-            onChange={(e) => { set({ query: e.target.value }); handle.world?.keystroke(); sound.drop(); }}
-          />
-          <button type="button" className="link-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button>
+          <input id="name-input" type="text" value={query} autoComplete="off" autoCapitalize="none" spellCheck={false} inputMode="url" maxLength={70} placeholder="Your next great name" onChange={e => { set({ query: e.target.value, demo: "done" }); handle.world?.keystroke(); sound.drop(); }} />
+          <button type="submit" className="btn primary" disabled={checking || !query.trim()}>Search</button>
         </div>
-        {apiReady && rescuable && (
-          <div className="rescue-offer" role="group" aria-label="Bring a name you own">
-            <span>Already yours at another registrar?</span>
-            <button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button>
-          </div>
-        )}
-        <p className="search-note">{apiReady ? "We check names with our registrar, never register one because you searched, and never sell your searches." : "To check whether a name is taken, we ask the public registry. We don't log or sell your searches."} <a href="/commitments.html">Our commitments</a> · <a href="/fees.html">Fees</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
+        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com published test price ${com.price} / year. Public launch pricing may change.` : "Start with a name or a domain, like moonfern.com"}</p>
       </form>
-
-      {demo === "playing" && <p className="demo-note" role="status">Demo: watching “moonfern” hatch. Type to try your own.</p>}
+      {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
+      {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(r => <Chip key={r.domain} r={r} list row={0} onPick={pick} />)}</div>}
+      {takenCom && <section className="shop-alternatives" aria-label="Alternative .com names"><p><strong>Your .com taken?</strong> Let's find another way in.</p><button className="btn secondary" type="button" disabled={suggesting} onClick={() => void suggest()}>{suggesting ? "Checking alternatives…" : "Find similar .com names"}</button><div className="shop-results">{suggestions.map(r => <Chip key={r.domain} r={r} list row={0} onPick={pick} />)}</div>{suggestionNote && <p role="status" className="fineprint">{suggestionNote}</p>}</section>}
+      {apiReady && rescuable && <div className="rescue-offer" role="group" aria-label="Bring a name you own"><span>Already own {rescuable.domain}?</span><button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button></div>}
+      <div className="shop-links"><button type="button" className="text-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button><a href="/how-it-works">How it works</a><a href="/fees.html">Prices & renewals</a></div>
+      {dealOpen && <section className="shop-deal" aria-label="The deal"><h2>A clear price. A name that's yours.</h2><p>See the registration term and renewal price before checkout. Taxes, if applicable, are shown by Stripe before you confirm.</p><p>Privacy protection is included where the registry supports it. .ai registrant details are public. No add-ons are preselected.</p><p>{preview ? "These are published invite-only test prices. A practice hatch never registers or reserves a domain." : "Availability is checked again before purchase. Your creature hatches after registration is confirmed."}</p><button className="link-btn" type="button" onClick={() => set({ dealOpen: false })}>Got it</button></section>}
+      <p className="search-note">We don't sell your searches. <a href="/commitments.html">Our commitments</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
     </main>
   );
 }

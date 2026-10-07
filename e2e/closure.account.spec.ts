@@ -47,7 +47,7 @@ test("account data: download my data with a passkey, close my account, sign in t
   await expect(chip).toBeVisible({ timeout: 20_000 });
   await chip.click();
   await expect(page.getByText(/\.dev names work only over HTTPS/)).toBeVisible();
-  await page.getByRole("button", { name: "Not yet" }).click();
+  await page.getByRole("button", { name: "Keep exploring" }).click();
 
   // Download my data: ask with the passkey, the job runs, the copy downloads as a ZIP.
   const panel = page.getByRole("region", { name: "Your account" });

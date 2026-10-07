@@ -283,3 +283,73 @@ dialog.waitlist a { color: var(--lantern); }
 .hero-guide { display: inline-block; pointer-events: auto; margin-top: 8px; padding: 10px 14px; min-height: 44px; color: var(--shell); text-underline-offset: 4px; }
 .wl-optional summary { cursor: pointer; padding: 12px 0; min-height: 44px; }
 .row-actions a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+
+
+/* A stable, scrollable shop sits beside the living grove. Shopping never depends on WebGL. */
+.find.shop-find { position: fixed; inset: calc(84px + var(--bh)) auto 22px 28px; width: min(590px, calc(100vw - 56px)); padding: 30px; overflow-y: auto; overflow-x: hidden; border: 1px solid rgba(216,233,207,.22); border-radius: 26px; background: linear-gradient(150deg,rgba(17,36,33,.97),rgba(12,20,34,.94)); backdrop-filter: blur(22px); box-shadow: 0 20px 65px rgba(0,0,0,.22); z-index: 14; pointer-events: auto; scrollbar-width: thin; }
+.shop-intro .eyebrow { display: block; color: #c3d6a4; text-transform: uppercase; letter-spacing: .14em; font-size: .7rem; margin-bottom: 12px; }
+.shop-intro h1 { font-size: clamp(1.8rem, 2.9vw, 2.65rem); line-height: 1.16; letter-spacing: -.035em; }
+.shop-intro h1 em { font-style: normal; color: #e9cf93; }
+.shop-intro > p { color: #c8d2c7; margin: 16px 0; max-width: 40ch; }
+.shop-promises { display: flex; flex-wrap: wrap; gap: 7px 16px; font-size: .75rem; color: #c7d7b6; margin-bottom: 24px; }
+.shop-promises span::before { content: '✓'; margin-right: 5px; color: #bcd78b; }
+.search-modes { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--glass-border); border-radius: 14px; margin: 18px 0; background: rgba(0,0,0,.16); }
+.search-modes button { flex: 1; padding: 9px 6px; min-height: 44px; background: transparent; border: 0; border-radius: 10px; font-size: .9rem; }
+.search-modes button[aria-pressed="true"] { background: #d8e1c5; color: #152521; font-weight: 700; }
+.pool-input.shop-search { position: static; transform: none; width: auto; max-width: none; display: grid; gap: 9px; }
+.pool-input.shop-search label { text-align: left; font: 700 .9rem var(--body); text-shadow: none; }
+.pool-input.shop-search input { min-width: 0; border-radius: 12px; background: #0c191c; padding: 0 14px; }
+.shop-search .btn { border-radius: 12px; padding: 0 20px; }
+.search-status { margin: 0; font-size: .78rem; color: #c0cbbf; min-height: 24px; }
+.shop-results { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin: 14px 0; }
+.shop-results .chip { position: relative; left: auto; top: auto; transform: none !important; will-change: auto; min-width: 0; width: 100%; padding: 14px; gap: 5px; border-radius: 14px; background: rgba(255,255,255,.035); }
+.shop-results .chip::after { display: none; }
+.shop-results .chip .name, .shop-results .chip .ext { overflow-wrap: anywhere; }
+.shop-results .chip .dot { background: #b5cd8e; }
+.shop-results .chip.taken .dot { background: #8fa3c8; }
+.shop-results .chip.unknown .dot { background: var(--lantern); }
+.shop-results .chip.taken, .shop-results .chip.unknown { grid-column: 1 / -1; opacity: 1; }
+.shop-results .chip-price { font-size: 1.22rem; font-weight: 700; color: #f4dfae; }
+.shop-results .chip small { font-size: .73rem; line-height: 1.4; color: #c2cec3; }
+.chip-action { display: flex; justify-content: space-between; width: 100%; color: #e8d69f; border-top: 1px solid var(--glass-border); margin-top: 7px; padding-top: 8px; font-size: .8rem; }
+.shop-links { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0 12px; align-items: center; font-size: .85rem; }
+.shop-links a, .shop-links button { color: #e3d8b2; min-height: 36px; display: inline-flex; align-items: center; }
+.shop-find .search-note { text-shadow: none; text-align: left; font-size: .72rem; color: #bdc7bf; }
+.shop-deal, .search-error, .shop-alternatives { border-top: 1px solid var(--glass-border); margin-top: 18px; padding-top: 18px; }
+.shop-deal h2 { font-size: 1.3rem; }
+.shop-deal p { font-size: .88rem; }
+.idea-form label { font-weight: 700; font-size: .9rem; }
+.idea-form .btn { margin-top: 10px; }
+.idea-names { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.ownership-preview { margin-bottom: 18px; border: 1px solid var(--glass-border); border-radius: 14px; padding: 12px; background: #101f22; }
+.preview-address { font-size: .75rem; padding: 0 2px 10px; overflow-wrap: anywhere; color: #bccbbd; }
+.preview-world { text-align: center; padding: 10px 10px 20px; border-radius: 10px; background: radial-gradient(ellipse at 50% 65%,#375343,#182b2c 70%); }
+.preview-world .preview-title { font-family: var(--display); font-size: 1.3rem; margin: 4px auto 12px; line-height: 1.3; }
+.preview-world > span { font-size: .8rem; color: #caddac; overflow-wrap: anywhere; }
+.ownership-facts { padding-left: 20px; font-size: .85rem; }
+.ownership-facts li { margin-top: 7px; }
+.checkout-status { margin: 12px 0; padding: 12px; background: rgba(157,187,85,.08); border-radius: 12px; }
+.checkout-actions { position: sticky; bottom: -16px; background: #111f26; margin: 16px -18px -16px; padding: 16px 18px; border-top: 1px solid var(--glass-border); z-index: 1; }
+.checkout-actions .btn.primary { width: 100%; }
+@media (min-width: 1050px) { .panel.side { width: 400px; } }
+@media (max-width: 720px) {
+  .find.shop-find { inset: calc(70px + var(--bh)) 10px calc(72px + env(safe-area-inset-bottom)); width: auto; padding: 20px; border-radius: 20px; }
+  .shop-intro h1 { font-size: 1.85rem; }
+  .shop-promises { gap: 6px 12px; margin-bottom: 14px; }
+  .shop-intro > p { font-size: .9rem; }
+  .shop-results .chip { padding: 11px; }
+  .shop-results { gap: 8px; }
+  html[data-site="demo"] .panel.side, .panel.side { max-height: calc(100dvh - var(--bh) - 78px); }
+  .shop-find .search-note { line-height: 1.7; }
+}
+@media (max-width: 360px) { .shop-results { grid-template-columns: 1fr; } .find.shop-find { padding: 14px; } }
+
+/* Keep purchase information readable over the scene and the mobile search beneath it. */
+.checkout-sheet { background: #14232a; }
+.checkout-sheet .head { background: #14232a; }
+.checkout-sheet .body { scroll-padding-bottom: 110px; }
+@media (max-width: 720px) {
+ .checkout-sheet .preview-world { display: grid; grid-template-columns: 85px 1fr; align-items: center; padding: 10px; }
+ .checkout-sheet .preview-world svg { width: 85px; height: 80px; grid-row: 1 / 3; }
+ .checkout-sheet .preview-world .preview-title { font-size: 1.05rem; margin: 0 0 6px; }
+}
