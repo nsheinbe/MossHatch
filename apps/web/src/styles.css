@@ -380,13 +380,9 @@ dialog.waitlist a { color: var(--lantern); }
 .find.stepping-aside { visibility: hidden; opacity: 0; pointer-events: none; }
 @media (prefers-reduced-motion: no-preference) { .find.shop-find { transition: opacity .35s ease, visibility .35s; } }
 .order-panel.docked { right: auto; left: 16px; width: min(340px, calc(100vw - 32px)); }
-@media (max-width: 720px) {
-  .order-panel.docked { top: calc(62px + env(safe-area-inset-top)); bottom: auto; left: 10px; right: 10px; width: auto; max-height: 24vh; border-radius: 14px; }
-  .order-panel.docked .head { display: none; }
-  .order-panel.docked .journey, .order-panel.docked .order-story { display: none; }
-  .order-panel.docked .body { padding: 10px 14px; }
-  .order-panel.docked .notice { margin: 0 0 4px; }
-}
+/* On a phone the card fills the screen and already says the name is registered; the receipt waits until the card is closed, and the
+   charge is in the receipt email and the Ledger. */
+@media (max-width: 720px) { .order-panel.docked { display: none; } }
 .checkout-sheet dl.rows-small { margin-top: 12px; grid-template-columns: auto 1fr; font-size: .86rem; }
 .checkout-sheet dl.rows-small dd { font-weight: 400; text-align: left; }
 .checkout-sheet dl.rows dd { overflow-wrap: anywhere; }
