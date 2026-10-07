@@ -1,8 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-/** The preview's registered-or-not answer from the public registry (packages/api/src/lookup). */
-export type LookupStatus = "registered" | "unregistered" | "unknown";
+/**
+ * What a search found for one name: the preview's registered-or-not answer from the public registry (packages/api/src/lookup), or,
+ * live, the registrar's answer, which can also be a premium name (priced by the registry; not sold here) or one the registry reserves.
+ */
+export type LookupStatus = "registered" | "unregistered" | "unknown" | "premium" | "reserved";
 
 export interface Result {
   domain: string;

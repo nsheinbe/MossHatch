@@ -156,6 +156,9 @@ export async function transferStateHandler(req: HandlerReq): Promise<HandlerResu
       domain: d.fqdn_ascii,
       state: !open ? "none" : open.state === "stopped" ? "stopped_pending" : open.explained ? "requested" : "unrequested",
       stop_available: !!open,
+      // Openprovider has no transfers-away list (its adapter answers transfers_away_unsupported), so there "none" means none we have
+      // seen, not none at all (docs/AUDIT-2026-10-07.md F13). The Overview says so instead of "None in progress".
+      tracked: d.registrar !== "openprovider",
       can_cancel_upstream: false,
       note: open ? noCancelNote(d.registrar) : null,
       message: open && !open.explained ? `A transfer to ${open.gaining_registrar ?? "another registrar"} started ${iso(open.requested_at)}. You did not ask for it. Decline it in the email from ${registrarWords(d.registrar).from}, or press Stop this transfer.` : null,

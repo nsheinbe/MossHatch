@@ -74,6 +74,9 @@ export const domainRoutes: Route[] = [
         "select id, state from orders where domain_id = $1 and kind = 'renew' and state in ('draft','renewing_upstream','renewed','refund_pending') and created_at > $2 order by created_at desc limit 1",
         [d.id, new Date(ctx.clock.now().getTime() - 7 * 86_400_000)])).rows[0];
       if (recent && recent.state !== "draft") return json({ status: recent.state === "renewed" ? "renewed" : "renewing", order_id: recent.id }, recent.state === "renewed" ? 200 : 202);
+      // Online renewal ends at the expiry date (fees page). Past it the draft would only lapse while the page said "Renewing now"
+      // (docs/AUDIT-2026-10-07.md O6); in the grace period support renews the name once the person confirms the price.
+      if (d.expiresAt && ctx.clock.now().getTime() >= d.expiresAt.getTime()) throw new HttpError(409, "renew_by_support");
       const term = await tx(ctx.cron, (c) => ensureTerm(c, d, ctx.clock.now()));
       if (!term) throw new HttpError(503, "no_price");
       if (term.state === "renewed") return json({ status: "renewed", order_id: term.orderId });
@@ -109,6 +112,8 @@ export const domainRoutes: Route[] = [
         throw new HttpError(409, "payment_method_required");
       }
       if (t?.held_reason === "account_review" || t?.held_reason === "paused") throw new HttpError(409, "renewal_paused");
+      // The registrar's live renew price is premium or above our table (P3): a person checks it before anything is charged.
+      if (t?.held_reason === "price_check") throw new HttpError(409, "renewal_price_check");
       if (t?.held_reason === "funds_gate" || t?.held_reason === "registrar_unavailable") throw new HttpError(503, "sell_gate", "Renewals are paused for a short while. Nothing was charged.");
       return json({ status: "pending", order_id: after.id }, 202);
     },

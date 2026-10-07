@@ -35,10 +35,10 @@ export function Header() {
           </button>
         )}
         <button type="button" aria-pressed={on} onClick={() => { const n = !on; sound.setEnabled(n); set({ sound: n }); }}>
-          <span className="dot" aria-hidden="true" /><span className="label">Sound {on ? "on" : "off"}</span>
+          <span className="dot" aria-hidden="true" /><span className="label">Sound<span className="state"> {on ? "on" : "off"}</span></span>
         </button>
         <button type="button" aria-pressed={calm} onClick={() => { const n = !calm; handle.world?.setCalm(n); set({ calm: n }); }}>
-          <span className="dot" aria-hidden="true" /><span className="label">Calm {calm ? "on" : "off"}</span>
+          <span className="dot" aria-hidden="true" /><span className="label">Calm<span className="state"> {calm ? "on" : "off"}</span></span>
         </button>
       </div>
     </header>

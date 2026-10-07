@@ -169,7 +169,11 @@ function devLookup(): Plugin {
             const mod: any = await server.ssrLoadModule(root + "../../packages/api/src/lookup/index.ts");
             handler = mod.createLookup(process.env.MH_FAKE_LOOKUP === "1" ? { fetch: mod.fakeRdapFetch, perMinute: 10_000, perHour: 100_000 } : {});
           }
-          const out = await handler!(new Request("http://localhost" + req.url, { method: req.method, headers: { "x-forwarded-for": req.socket.remoteAddress ?? "" } }));
+          // The web app POSTs {"name": ...} (the name stays out of the URL); a GET has no body.
+          const chunks: Buffer[] = []; let n = 0;
+          for await (const c of req) { chunks.push(c as Buffer); if ((n += (c as Buffer).length) > 4096) break; }
+          const body = req.method === "POST" ? Buffer.concat(chunks) : undefined;
+          const out = await handler!(new Request("http://localhost" + req.url, { method: req.method, headers: { "x-forwarded-for": req.socket.remoteAddress ?? "", "content-type": String(req.headers["content-type"] ?? "") }, body }));
           if (!out) return next();
           res.statusCode = out.status;
           out.headers.forEach((v, k) => res.setHeader(k, v));

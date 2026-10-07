@@ -70,10 +70,11 @@ export function orderStory(o: Pick<OrderView, "state"> & Partial<Pick<OrderView,
 
 /** The buying journey as one sequence (C3): which step an order is on, and whether it stopped. Practice hatches never use it. */
 export type Step = "choose" | "pay" | "register" | "yours";
-export function journeyOf(state: string): { at: Step; stopped: boolean } {
+export function journeyOf(state: string): { at: Step; stopped: boolean; complete?: boolean } {
   if (["checkout_open", "draft", "payment_failed"].includes(state)) return { at: "pay", stopped: state === "payment_failed" };
   if (["authorized", "review_hold", "registering", "outcome_unknown", "registrar_unavailable", "paid_before_registration"].includes(state)) return { at: "register", stopped: false };
-  if (["registered", "capturing", "captured", "capture_failed", "renewed"].includes(state)) return { at: "yours", stopped: state === "capture_failed" };
+  // The registrar confirmed the name: the last step is done, not "in progress" (a payment still to finish is the one exception).
+  if (["registered", "capturing", "captured", "capture_failed", "renewed"].includes(state)) return { at: "yours", stopped: state === "capture_failed", complete: state !== "capture_failed" };
   return { at: "pay", stopped: true };
 }
 

@@ -132,7 +132,12 @@ void main() {
   float band = smoothstep(0.55, 1.0, sin(vObj.y * 6.0 - uTime * 2.4 + vObj.x * 2.0));
   col = mix(col, vec3(0.227, 0.604, 0.596) * 1.35, uShed * band * 0.55);
 
+  // Creatures and eggs take a lighter ink than the grove, so a small creature on a phone reads as itself, not through a screen.
+#if defined(CREATURE) || defined(EGG)
+  col = mix(col, uInk, ink * 0.6);
+#else
   col = mix(col, uInk, ink * 0.88);
+#endif
   col += vEmit * uLCol * 0.9 + uGlow * vec3(1.0, 0.72, 0.36);
 #ifdef EGG
   col = mix(col, uLCol * (1.2 + uCrack), cl);

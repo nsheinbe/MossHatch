@@ -12,7 +12,11 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const file = (p) => fs.existsSync(p) && fs.statSync(p).isFile();
 const lookup = createLookup({ fetch: fakeRdapFetch, perMinute: 10_000, perHour: 100_000 });
 async function fakeLookup(q, r) {
-  const res = await lookup(new Request("http://127.0.0.1" + q.url, { method: q.method, headers: { "sec-fetch-site": q.headers["sec-fetch-site"] ?? "none" } }));
+  // The web app POSTs {"name": ...} (the name stays out of the URL); a GET has no body.
+  const chunks = []; let n = 0;
+  for await (const c of q) { chunks.push(c); if ((n += c.length) > 4096) break; }
+  const body = q.method === "POST" ? Buffer.concat(chunks) : undefined;
+  const res = await lookup(new Request("http://127.0.0.1" + q.url, { method: q.method, headers: { "sec-fetch-site": q.headers["sec-fetch-site"] ?? "none", "content-type": q.headers["content-type"] ?? "" }, body }));
   r.writeHead(res.status, Object.fromEntries(res.headers)); r.end(Buffer.from(await res.arrayBuffer()));
 }
 let lastWaitlist = null;

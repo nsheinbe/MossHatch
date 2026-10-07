@@ -12,6 +12,15 @@ export const SUPPORT_EMAIL = "support@mosshatch.com";
 /** A support link that names the order (an opaque id) so a reply needs no back-and-forth. Never the card, the contact or a token. */
 export const supportHref = (orderId?: string) => `mailto:${SUPPORT_EMAIL}${orderId ? `?subject=${encodeURIComponent(`Order ${orderId}`)}` : ""}`;
 
+/** The world once the canvas host has built it, or null after 20 seconds (no WebGL, or it failed) or once `alive` turns false. */
+async function waitForWorld(alive: () => boolean): Promise<typeof handle.world> {
+  for (let i = 0; i < 80 && alive(); i++) {
+    if (handle.world) return handle.world;
+    await new Promise((r) => window.setTimeout(r, 250));
+  }
+  return handle.world;
+}
+
 export function OrderReturn() {
   const { orderId, orderSession, accountOpen, hatchPhase, set } = useUi();
   const [order, setOrder] = useState<OrderView | null>(null);
@@ -31,7 +40,16 @@ export function OrderReturn() {
         if (o.state !== "checkout_open") forgetCheckout();               // the checkout was finished (or ended): nothing to resume
         if (o.kind === "transfer_in") { set({ orderId: null, orderSession: null, rescue: { fqdn: o.fqdn, transferId: takeHandoff(o.id), orderId: o.id } }); history.replaceState(null, "", "/"); return; }
         const registered = o.kind !== "renew" && ["registered", "capturing", "captured"].includes(o.state);
-        if (registered && !hatched && handle.world) { hatched = true; handle.world.setResults([{ domain: o.fqdn, available: true }]); hatchTimer = window.setTimeout(() => { if (active) void runHatch(o.fqdn); }, 1600); }
+        if (registered && !hatched) {
+          // The order can be finished before the grove has loaded (a slow phone, or a quick registration). Wait for the grove instead of
+          // skipping the hatch for good; without WebGL there is no grove and this panel carries the news alone.
+          hatched = true;
+          void waitForWorld(() => active).then((w) => {
+            if (!w || !active) return;
+            w.setResults([{ domain: o.fqdn, available: true }]);
+            hatchTimer = window.setTimeout(() => { if (active) void runHatch(o.fqdn); }, 1600);
+          });
+        }
         if (!TERMINAL.has(o.state)) timer = window.setTimeout(() => void tick(false), 2000);
       } catch { if (!active) return; setError(true); if (++failures <= 3) timer = window.setTimeout(() => void tick(false), Math.min(15000, 2000 * 2 ** failures)); }
     };
@@ -59,7 +77,7 @@ export function OrderReturn() {
     <aside className={`panel side order-panel${docked ? " docked" : ""}`} role="region" aria-label="Your order" aria-live="polite">
       <div className="head"><h2>{order?.fqdn ?? "Your order"}</h2></div>
       <div className="body">
-        {journey && <JourneySteps at={journey.at} stopped={journey.stopped} />}
+        {journey && <JourneySteps at={journey.at} stopped={journey.stopped} complete={journey.complete} />}
         <p className="order-story">{order ? (order.message ?? orderStory(order)) : "Checking your order…"}</p>
         {error && <div role="alert"><p>We couldn't refresh your order. This does not mean registration failed. Sign in with the account you used, then check again.</p><button className="btn secondary" onClick={() => setRevision((x) => x + 1)}>Check order again</button><button className="text-btn" onClick={() => set({ accountOpen: true })}>Sign in</button></div>}
         {order?.charged_minor && <p className="notice">Charged {(Number(order.charged_minor) / 100).toFixed(2)} USD, tax included.</p>}

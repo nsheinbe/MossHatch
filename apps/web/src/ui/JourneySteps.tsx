@@ -8,8 +8,8 @@ const STEPS: { id: Step; label: string }[] = [
  * Where a real purchase stands, as one sequence (docs/AUDIT-2026-10-07.md C3): choosing the name, payment on Stripe, registration with the
  * registrar, and the name confirmed as yours. A practice hatch never shows it, so nothing a preview does can look like ownership.
  */
-export function JourneySteps({ at, stopped = false }: { at: Step; stopped?: boolean }) {
-  const idx = STEPS.findIndex((s) => s.id === at);
+export function JourneySteps({ at, stopped = false, complete = false }: { at: Step; stopped?: boolean; complete?: boolean }) {
+  const idx = complete ? STEPS.length : STEPS.findIndex((s) => s.id === at);
   return (
     <ol className="journey" aria-label="Purchase progress">
       {STEPS.map((s, i) => {

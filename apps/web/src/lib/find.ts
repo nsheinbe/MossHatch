@@ -3,20 +3,26 @@ import { EXTENSIONS } from "@mosshatch/registrar";
 import type { LookupStatus, Result } from "../store";
 import { api } from "./api";
 
-/** Lowercase letters, digits and hyphens; 1 to 63 characters; no leading or trailing hyphen. */
-export function parseQuery(raw: string): { label: string; tld?: string } | null {
-  let v = raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\s+/g, "");
+/**
+ * Lowercase letters, digits and hyphens; 1 to 63 characters; no leading or trailing hyphen. An extension we do not sell (moonfern.net)
+ * is not dropped silently: it comes back as `unsupported`, so the page can say so while it shows the extensions we do sell.
+ */
+export function parseQuery(raw: string): { label: string; tld?: string; unsupported?: string } | null {
+  let v = raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\s+/g, "").replace(/\/.*$/, "");
   const { label, tld } = splitDomain(v);
   v = label.replace(/[^a-z0-9-]/g, "");
   v = v.replace(/^-+/, "").replace(/-+$/, "").slice(0, 63);
   if (!v) return null;
-  return { label: v, tld: (EXTENSIONS as readonly string[]).includes(tld) ? tld : undefined };
+  const sold = (EXTENSIONS as readonly string[]).includes(tld);
+  const typed = tld.replace(/\.+$/, "");
+  return { label: v, tld: sold ? tld : undefined, ...(!sold && /^[a-z0-9.-]{2,30}$/.test(typed) ? { unsupported: typed } : {}) };
 }
 
 /**
  * Whether each extension of a name is already registered, from our /api/lookup (which asks each registry's public RDAP service:
  * packages/api/src/lookup). Anything it cannot answer, or a failed request, is "unknown"; this never guesses. Answers are kept in
- * memory for five minutes so retyping a name does not ask again.
+ * memory for five minutes so retyping a name does not ask again. The name travels in the request body, never in a URL, so it cannot
+ * end up in a request log (docs/AUDIT-2026-10-07.md V1).
  */
 const memo = new Map<string, { at: number; statuses: Map<string, LookupStatus> }>();
 async function lookup(label: string): Promise<Map<string, LookupStatus>> {
@@ -24,7 +30,7 @@ async function lookup(label: string): Promise<Map<string, LookupStatus>> {
   if (hit && Date.now() - hit.at < 5 * 60_000) return hit.statuses;
   const statuses = new Map<string, LookupStatus>();
   try {
-    const res = await fetch(`/api/lookup?name=${encodeURIComponent(label)}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    const res = await fetch("/api/lookup", { method: "POST", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ name: label }) });
     if (!res.ok) return statuses;
     const body = (await res.json()) as { results?: { tld?: unknown; status?: unknown }[] };
     for (const r of body.results ?? []) {
@@ -63,14 +69,14 @@ export async function searchLive(raw: string, onlyCom = false): Promise<{ result
   const q = parseQuery(raw);
   if (!q) return null;
   const order = onlyCom ? ["com"] : q.tld ? [q.tld, ...EXTENSIONS.filter((e) => e !== q.tld)] : [...EXTENSIONS];
-  const out = await api<ServerSearch>("GET", `/api/v1/search?name=${encodeURIComponent(q.label)}&tlds=${order.join(",")}`);
+  const out = await api<ServerSearch>("POST", "/api/v1/search", { name: q.label, tlds: order.join(",") });
   const byTld = new Map(out.results.map((r) => [r.tld, r]));
   const results: Result[] = order.filter((t) => byTld.has(t)).map((tld) => {
     const r = byTld.get(tld)!;
     const avail = r.kind === "available" && !!r.price && !r.unconfirmed;
     return {
       domain: r.fqdn, tld, available: avail, sample: r.source === "sample",
-      status: r.kind === "taken" ? "registered" : avail ? "unregistered" : "unknown",
+      status: r.kind === "taken" ? "registered" : r.kind === "premium" || r.kind === "reserved" ? r.kind : avail ? "unregistered" : "unknown",
       price: avail ? formatUsd(usd(Number(r.price!.subtotal_minor))) : undefined, years: r.price?.years ?? 1,
     };
   });
@@ -95,7 +101,7 @@ export interface LiveQuote {
 }
 interface QuoteJson { fqdn: string; expires_at: string; quoted_at?: string; subtotal_minor: string; wholesale_minor: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
+  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
   if (!out.quote || out.quote.fqdn !== fqdn || out.availability?.kind !== "available" || out.availability.unconfirmed) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
   const level = BigInt(out.quote.renewal_level_minor ?? "0");

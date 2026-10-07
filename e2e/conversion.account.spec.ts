@@ -37,7 +37,7 @@ test("conversion: no-WebGL checkout rejects unconfirmed and expired quotes, reco
  await page.goto('/');
  await signUp(page,request,`conversion${Date.now()}@example.org`);
  let quoteMode:'unknown'|'expired'|'ok'='unknown';
- await page.route('**/api/v1/quote?**',async route=>{
+ await page.route('**/api/v1/quote',async route=>{
   const response=await route.fetch();const data=await response.json();
   if(quoteMode==='unknown')data.availability.kind='unknown';
   if(quoteMode==='expired')data.quote.expires_at=new Date(Date.now()-1000).toISOString();

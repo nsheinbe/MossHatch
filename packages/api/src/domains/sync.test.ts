@@ -63,7 +63,11 @@ describe("domain.sync: adapter truth into domains", () => {
 
     // drowsy: inside the renewal window with nothing blocking.
     at(h, new Date(E.getTime() - days(20))); await syncDomain(h.app.ctx, d.id);
+    // AUD-O4: with auto-renew off the words say it expires; with it on, that it renews.
+    expect(await viewOf(h, o, d.id)).toMatchObject({ state: "drowsy", state_text: "Expires in 20 days. Auto-renew is off.", days_to_expiry: 20 });
+    await h.app.db.owner.query("update domains set auto_renew = true where id = $1", [d.id]);
     expect(await viewOf(h, o, d.id)).toMatchObject({ state: "drowsy", state_text: "Renews in 20 days", days_to_expiry: 20 });
+    await h.app.db.owner.query("update domains set auto_renew = false where id = $1", [d.id]);
 
     // attention: a sync error older than 15 minutes ("We cannot confirm this domain's state right now"), shown as unconfirmed.
     const realGet = h.registrar.getDomain.bind(h.registrar);

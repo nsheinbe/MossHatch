@@ -12,13 +12,20 @@ try {
  count(*)::int as checkouts_created,
  count(*) filter(where o.authorized_at is not null)::int as authorized_orders,
  count(*) filter(where o.registered_at is not null)::int as confirmed_registrations,
+ count(*) filter(where o.registered_at is not null and s.first_setup_at is not null)::int as first_setup_actions,
+ count(*) filter(where o.registered_at is not null and s.first_setup_at <= o.registered_at + interval '7 days')::int as first_setup_within_7_days,
  count(*) filter(where o.registered_at is not null and p.captured_minor>0)::int as paid_registrations,
  coalesce(sum(p.captured_minor),0)::text as captured_including_tax_minor,
  coalesce(sum(p.refunded_minor),0)::text as refunded_minor,
  coalesce(sum(case when o.registered_at is not null and p.captured_minor>0 and p.refunded_minor=0 then p.captured_minor-p.tax_minor-coalesce((o.quote->>'wholesale_minor')::bigint,0) else 0 end),0)::text as quoted_contribution_before_processing_fees_nonrefunded_minor
  from orders o left join conversion_orders a on a.order_id=o.id
+ left join lateral(select least(
+   (select min(l.at) from audit_log l where l.resource_kind='domain' and l.resource_id=o.domain_id::text and l.action in ('dns.write','domain.nameservers_changed','domain.registrant_verified','domain.ds_added')),
+   (select min(r.applied_at) from recipe_applications r where r.domain_id=o.domain_id and r.applied_at is not null),
+   (select min(m.accepted_at) from renewal_mandates m where m.domain_id=o.domain_id),
+   (select min(c.published_at) from cards c where c.domain_id=o.domain_id)) as first_setup_at) s on true
  left join lateral(select coalesce(sum(amount_minor) filter(where captured_at is not null),0) as captured_minor,coalesce(sum(tax_minor) filter(where captured_at is not null),0) as tax_minor,coalesce(sum(refunded_minor),0) as refunded_minor from payments where order_id=o.id and livemode=true) p on true
  where o.livemode=true and o.kind='register' and o.created_at >= current_date-($1::int-1)
  group by 1,2,3,4 order by paid_registrations desc`,[days])).rows;
- console.log(JSON.stringify({days,stage_definition:'At most one stage per mode per page load; not unique people. Bots and blockers can affect counts. Preview and live are separate.',purchase_definition:'Live registration orders only; registration uses server registered_at and payment uses captured payments. Attribution first write wins.',contribution_definition:'Estimate using quoted wholesale for nonrefunded registered orders; excludes processing fees, chargebacks, overhead and refunded-order economics. Not net profit.',stages,orders},null,2));
+ console.log(JSON.stringify({days,stage_definition:'At most one stage per mode per page load; not unique people. Bots and blockers can affect counts. Preview and live are separate.',purchase_definition:'Live registration orders only; registration uses server registered_at and payment uses captured payments. Attribution first write wins.',activation_definition:'Activation is a confirmed registration (orders.registered_at), never signup or payment alone. First setup action: the earliest DNS write, nameserver or DNSSEC change, registrant email confirmation, auto-renew authorisation, applied recipe or published card for that domain, read from records the product already keeps.',contribution_definition:'Estimate using quoted wholesale for nonrefunded registered orders; excludes processing fees, chargebacks, overhead and refunded-order economics. Not net profit.',stages,orders},null,2));
 } finally { await pool.end(); }

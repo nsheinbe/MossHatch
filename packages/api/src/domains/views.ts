@@ -1,5 +1,5 @@
 import { withUser, type PoolClient } from "@mosshatch/db";
-import { deriveTraits } from "@mosshatch/core";
+import { deriveTraits, registrarOfRecord } from "@mosshatch/core";
 import { HttpError } from "../http/router.ts";
 import type { AppContext } from "../ports.ts";
 import { DAY_MS, UUID_RE, iso, rowToDomain, tableExists, type DomainRow } from "./common.ts";
@@ -64,6 +64,8 @@ export async function domainView(c: PoolClient, d: DomainRow, now: Date) {
     registered_at: iso(d.registeredAt), registry_created_at: iso(d.registryCreatedAt), age_days: ageDays,
     traits_inputs: { domain: d.fqdn, age_days: ageDays, registry_created_at: iso(d.registryCreatedAt) }, traits: deriveTraits(d.fqdn),
     as_of: iso(s.asOf), source: s.source, confirmed: s.confirmed,
+    // The accredited registrar that holds the registration (D-024 row 12; docs/AUDIT-2026-10-07.md O3), shown on the Overview.
+    registrar: (({ name, short, ianaId }) => ({ name, short, iana_id: ianaId }))(registrarOfRecord(d.registrar)),
   };
 }
 
