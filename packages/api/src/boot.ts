@@ -6,6 +6,7 @@ import { LocalKms, LocalPii } from "./kms.ts";
 import { systemClock, type AppContext } from "./ports.ts";
 import { createEmailTransport, resendFromEnv } from "./mail/transport.ts";
 import { NodeDnsResolver } from "./mail/dns.ts";
+import { alertAddressFromEnv, createAlertNotifier } from "./ops/notifier.ts";
 import { MemoryAnchorSink } from "./ops/anchor.ts";
 import { MemoryErasureLedger } from "./ops/erasure.ts";
 import { FakeCloudTrail } from "./ops/kms-reconcile.ts";
@@ -126,7 +127,8 @@ export async function bootFromEnv(env: Record<string, string | undefined>, deps:
   Object.assign(ctx.services, production
     ? { anchorSink: production.anchorSink, cloudTrail: production.cloudTrail, erasureLedger: production.erasureLedger }
     : { anchorSink: new MemoryAnchorSink(), cloudTrail: new FakeCloudTrail(), erasureLedger: new MemoryErasureLedger() });
-  Object.assign(ctx.services, { dnsResolver: new NodeDnsResolver(), alertNotifier: { notify: async (a: { kind: string }) => { console.warn("alert", a.kind); } } });
+  // Pages are logged and, with MH_ALERT_EMAIL set, emailed to the operator so auto-safe never pauses sales unseen (ops/notifier.ts).
+  Object.assign(ctx.services, { dnsResolver: new NodeDnsResolver(), alertNotifier: createAlertNotifier({ email: ctx.email, to: alertAddressFromEnv(env) }) });
   // Quotes read the price table of the registrar that will be charged (MH_REGISTRAR_PROVIDER: openprovider rows in production).
   configurePriceTables(env);
   // The mock (local and preview) is priced from the same effective-dated table the quotes use, so the price guard sees one price on both sides.

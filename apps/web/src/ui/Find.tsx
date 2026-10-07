@@ -14,7 +14,7 @@ export function useNarrow() {
   return narrow;
 }
 export function Find({ simple = false }: { simple?: boolean }) {
-  const { query, results, checking, dealOpen, apiReady, set } = useUi();
+  const { query, results, checking, dealOpen, apiReady, hatchPhase, set } = useUi();
   const preview = isDemo(apiReady);
   const token = useRef(0);
   const [error, setError] = useState("");
@@ -75,7 +75,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
   const rescuable = results.find(r => r.status === "registered");
   const takenCom = results.find(r => r.tld === "com" && r.status === "registered");
   return (
-    <main className={`find shop-find${results.length ? " has-results" : ""}${simple ? " simple-find" : ""}`}>
+    <main className={`find shop-find${results.length ? " has-results" : ""}${simple ? " simple-find" : ""}${hatchPhase === "hatching" || hatchPhase === "card" ? " stepping-aside" : ""}`}>
       <div className="shop-intro">
         <span className="eyebrow">A home for your next idea</span>
         <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>

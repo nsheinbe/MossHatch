@@ -77,15 +77,33 @@ export async function searchLive(raw: string, onlyCom = false): Promise<{ result
   return { results, alternatives: [] };
 }
 
-/** `wholesale` is the registrar price the customer pays for: this year's upstream price raised to the renewal price when that is higher (`heldAtRenewal`). */
-export interface LiveQuote { domain: string; expiresAt: string; subtotal: string; wholesale: string; fee: string; taxCeiling: string; years: number; heldAtRenewal: boolean }
+/**
+ * A live quote with the checkout facts the server owns (docs/AUDIT-2026-10-07.md P4, P5): the honest price breakdown (what the registrar
+ * charges for this term, the renewal level added when its renewal costs more, and our fee), whether new registrations are open right now,
+ * the registrar of record and the refund window.
+ */
+export interface LiveQuote {
+  domain: string; expiresAt: string; quotedAt: string; subtotal: string; years: number;
+  /** What the registrar charges us for this term. */
+  registrarNow: string;
+  /** Added so the first term costs what each renewal will (D-059), or null when the renewal costs no more. */
+  renewalLevel: string | null;
+  fee: string; taxCeiling: string;
+  salesOpen: boolean;
+  registrar: { name: string; short: string; ianaId: number } | null;
+  refund: { refundable: boolean; windowDays: number };
+}
+interface QuoteJson { fqdn: string; expires_at: string; quoted_at?: string; subtotal_minor: string; wholesale_minor: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: { fqdn: string; expires_at: string; subtotal_minor: string; wholesale_minor: string; registrar_price_minor?: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number } | null }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
+  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
   if (!out.quote || out.quote.fqdn !== fqdn || out.availability?.kind !== "available" || out.availability.unconfirmed) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
+  const level = BigInt(out.quote.renewal_level_minor ?? "0");
   return {
-    domain: out.quote.fqdn, expiresAt: out.quote.expires_at, subtotal: f(out.quote.subtotal_minor), wholesale: f(out.quote.registrar_price_minor ?? out.quote.wholesale_minor), fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor), years: out.quote.years,
-    heldAtRenewal: Number(out.quote.renewal_level_minor ?? "0") > 0,
+    domain: out.quote.fqdn, expiresAt: out.quote.expires_at, quotedAt: out.quote.quoted_at ?? new Date().toISOString(), subtotal: f(out.quote.subtotal_minor), years: out.quote.years,
+    registrarNow: f(out.quote.wholesale_minor), renewalLevel: level > 0n ? f(level.toString()) : null, fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor),
+    salesOpen: out.sales_open !== false,
+    registrar: out.registrar ? { name: out.registrar.name, short: out.registrar.short, ianaId: out.registrar.iana_id } : null,
+    refund: { refundable: out.refund?.refundable ?? false, windowDays: out.refund?.window_days ?? 0 },
   };
 }
-

@@ -214,7 +214,7 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
     expect(await meta('meta[name="description"]'), url).toBeTruthy();
     expect(await meta('meta[property="og:title"]'), url).toBeTruthy();
   }
-  for (const url of ["/device", "/checkout/return", "/invite", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
+  for (const url of ["/device", "/checkout/return", "/checkout/cancelled", "/invite", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
     expect((await request.get(url)).headers()["x-robots-tag"], url).toBe("noindex");
   }
   expect((await request.get("/")).headers()["x-robots-tag"]).toBeUndefined();

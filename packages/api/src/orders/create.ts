@@ -20,6 +20,12 @@ export const RESERVING_STATES = ["review_hold", "authorized", "registering", "ou
 export const PAUSED_MESSAGE = "Registration is paused for a short while. Nothing was charged.";
 export const MAINTENANCE_MESSAGE = "Registrations are paused while our registrar is in maintenance. Nothing was charged.";
 
+/** New registrations are paused when orders or registrar writes are paused; the quote route shows the same answer before checkout. */
+export async function salesPaused(c: Pick<PoolClient, "query">): Promise<boolean> {
+  const r = await c.query("select 1 from flags where name in ('orders_paused','registrar_writes_paused') and value = 'true'::jsonb limit 1");
+  return (r.rowCount ?? 0) > 0;
+}
+
 export interface CreateOrderInput {
   userId: string;
   fqdn: unknown;
@@ -84,7 +90,9 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
     if (!u || u.status !== "active") throw new HttpError(403, "account_inactive");
     if (!u.email_verified_at) throw new HttpError(403, "email_unverified");
     if (u.frozen_at) throw new HttpError(403, "account_frozen");
-    if ((await c.query("select value from flags where name = 'orders_paused'")).rows[0]?.value === true) throw new HttpError(503, "orders_paused", PAUSED_MESSAGE);
+    // Paused registrar writes (an operator, or auto-safe after an unacknowledged page) would leave a paid order waiting at "registering"
+    // until its card hold nearly expired (docs/AUDIT-2026-10-07.md F3): refuse before Checkout, so nothing is held.
+    if (await salesPaused(c)) throw new HttpError(503, "orders_paused", PAUSED_MESSAGE);
     const perUser = await hit(ctx, c, `orders:user:${input.userId}`, { bucket: "orders_create_user", max: 20, windowSeconds: 3600 });
     const perIp = await hit(ctx, c, `orders:ip:${input.ipPrefix}`, { bucket: "orders_create_ip", max: 60, windowSeconds: 3600 });
     if (!perUser.allowed || !perIp.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(Math.max(perUser.retryAfterSeconds, perIp.retryAfterSeconds)) });

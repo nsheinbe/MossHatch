@@ -9,6 +9,10 @@ import { buildQuote, PricingError, quoteToJson } from "../pricing/quote.ts";
 import { normalizeLabel, parseFqdn, parseTlds } from "./labels.ts";
 import { chipPrices, searchAvailability, SearchCache } from "./service.ts";
 import { tldNotices } from "../closure/tld-https.ts";
+import { registrarOfRecord } from "@mosshatch/core";
+import { priceTableFor } from "../pricing/registrar.ts";
+import { salesPaused } from "../orders/create.ts";
+import { refundWindow } from "../domains/refunds.ts";
 
 /** Rate limits (PLAN.md 4.5 table row "Search and quote"; own targets, tuned after OpenSRS answers). */
 export const LIMIT_ANON_IP: Limit = { bucket: "search:ip", max: 30, windowSeconds: 600 };
@@ -100,8 +104,18 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
         const { items } = await searchAvailability(req.ctx, { registrar, cache }, fq.label, [fq.tld as never]);
         const a = items[0]!;
         const purchasable = a.kind === "available" || a.kind === "unknown";
+        // The checkout sheet's disclosure rows come from here, not from client constants: whether new registrations are open right now
+        // (orders or registrar writes paused refuse checkout), the registrar of record (D-024 row 12) and the refund window (row 9).
+        const table = priceTableFor(fq.tld);
+        const facts = await withNoUser(req.ctx.runtime, async (c) => ({ paused: await salesPaused(c), refund: await refundWindow(c, table, fq.tld) }));
+        const rec = registrarOfRecord(table);
         // C-58: the HTTPS notice for .dev and .app travels with the quote (closure/tld-https.ts), so every client shows it before checkout.
-        return json({ availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, notices: tldNotices(a.fqdn) });
+        return json({
+          availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, notices: tldNotices(a.fqdn),
+          sales_open: !facts.paused,
+          registrar: { name: rec.name, short: rec.short, iana_id: rec.ianaId },
+          refund: { refundable: facts.refund.refundable, window_days: facts.refund.refundable ? Math.min(5, facts.refund.windowDays ?? 5) : 0 },
+        });
       },
     },
   );

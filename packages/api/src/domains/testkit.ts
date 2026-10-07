@@ -39,6 +39,9 @@ export interface Bought { id: string; fqdn: string; orderId: string }
  * auto-renew box at checkout (the card is saved for off-session renewals, C-31); pass `autoRenew: false` for a one-time card.
  */
 export async function buyDomain(h: DomainsHarness, who: Buyer, fqdn: string, o: Parameters<typeof buyAndPay>[3] = {}): Promise<Bought> {
+  // Checkout refuses while registrar writes are paused (docs/AUDIT-2026-10-07.md F3), and this harness's clock skew engages auto-safe (see
+  // `settle`): clear it before checkout as well as before fulfilment.
+  await hygiene(h);
   const r = await buyAndPay(h, who, fqdn, { autoRenew: true, ...o });
   await deliverAll(h);
   await hygiene(h);

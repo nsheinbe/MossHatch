@@ -353,3 +353,38 @@ dialog.waitlist a { color: var(--lantern); }
  .checkout-sheet .preview-world svg { width: 85px; height: 80px; grid-row: 1 / 3; }
  .checkout-sheet .preview-world .preview-title { font-size: 1.05rem; margin: 0 0 6px; }
 }
+
+/* Purchase progress (docs/AUDIT-2026-10-07.md C3): one sequence from choosing a name to owning it. Never shown for a practice hatch. */
+.journey { list-style: none; display: flex; gap: 6px; padding: 0; margin: 0 0 14px; counter-reset: step; }
+.journey-step { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: .78rem; color: rgba(241,234,216,.7); text-align: center; position: relative; }
+.journey-step::before { content: ""; position: absolute; top: 6px; left: calc(-50% + 9px); right: calc(50% + 9px); height: 2px; background: rgba(241,234,216,.22); }
+.journey-step:first-child::before { display: none; }
+.journey-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(241,234,216,.45); background: transparent; position: relative; z-index: 1; }
+.journey-step.done { color: var(--shell); }
+.journey-step.done .journey-dot { background: #9dbb55; border-color: #9dbb55; }
+.journey-step.done + .journey-step::before, .journey-step.done::before { background: #9dbb55; }
+.journey-step.current { color: var(--shell); font-weight: 700; }
+.journey-step.current .journey-dot { border-color: var(--lantern); background: rgba(255,178,87,.35); box-shadow: 0 0 0 4px rgba(255,178,87,.16); }
+.journey-step.stopped { color: var(--shell); font-weight: 700; }
+.journey-step.stopped .journey-dot { border-color: #ff9a7e; background: rgba(255,154,126,.35); }
+@media (prefers-reduced-motion: no-preference) { .journey-step.current .journey-dot { animation: journey-glow 2.4s ease-in-out infinite; } }
+@keyframes journey-glow { 50% { box-shadow: 0 0 0 7px rgba(255,178,87,.08); } }
+
+/* While a creature hatches and its card is up, the search steps aside and the order docks on the other side as a short receipt,
+   so the card, the creature and the order never cover each other (docs/AUDIT-2026-10-07.md C1). */
+.order-panel { z-index: 31; }
+.find.stepping-aside { visibility: hidden; opacity: 0; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) { .find.shop-find { transition: opacity .35s ease, visibility .35s; } }
+.order-panel.docked { right: auto; left: 16px; width: min(340px, calc(100vw - 32px)); }
+@media (max-width: 720px) {
+  .order-panel.docked { top: calc(62px + env(safe-area-inset-top)); bottom: auto; left: 10px; right: 10px; width: auto; max-height: 24vh; border-radius: 14px; }
+  .order-panel.docked .head { display: none; }
+  .order-panel.docked .journey, .order-panel.docked .order-story { display: none; }
+  .order-panel.docked .body { padding: 10px 14px; }
+  .order-panel.docked .notice { margin: 0 0 4px; }
+}
+.checkout-sheet dl.rows-small { margin-top: 12px; grid-template-columns: auto 1fr; font-size: .86rem; }
+.checkout-sheet dl.rows-small dd { font-weight: 400; text-align: left; }
+.checkout-sheet dl.rows dd { overflow-wrap: anywhere; }
+.auto-renew-choice { margin: 14px 0 6px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 12px; background: rgba(11,18,33,.35); }
+.auto-renew-choice .fineprint { margin-top: 6px; }

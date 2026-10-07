@@ -10,6 +10,8 @@ import { handle } from "../world/handle";
 import { sound } from "../audio/synth";
 import { AccountPanel } from "./AccountPanel";
 import { OrderReturn } from "./OrderReturn";
+import { CheckoutResume } from "./CheckoutResume";
+import { pendingCheckout } from "../lib/orders";
 import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
 import { WaitlistHost } from "./WaitlistHost";
@@ -28,7 +30,7 @@ const Rescue = lazy(() => import("./Rescue"));
 
 /** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
 function noindexAppRoutes() {
-  if (!["/device", "/checkout/return", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
+  if (!["/device", "/checkout/return", "/checkout/cancelled", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
   const m = document.createElement("meta");
   m.name = "robots"; m.content = "noindex";
   document.head.append(m);
@@ -82,6 +84,10 @@ export function App() {
       const q = new URLSearchParams(location.search);
       const id = q.get("order"), sid = q.get("session_id");
       if (location.pathname === "/checkout/return" && id && /^[0-9a-f-]{36}$/i.test(id) && sid && /^[A-Za-z0-9_]{6,200}$/.test(sid)) set({ orderId: id, orderSession: sid });
+      // Stripe's back link lands here (it was a 404 before: docs/AUDIT-2026-10-07.md D4): offer the same checkout back.
+      else if (location.pathname === "/checkout/cancelled" && id && /^[0-9a-f-]{36}$/i.test(id)) { set({ resume: { orderId: id, reason: "cancelled" } }); history.replaceState(null, "", "/"); }
+      // Back from Stripe, or a reload, with a checkout this tab started and did not finish (D5).
+      else if (ready && me) { const p = pendingCheckout(); if (p) set({ resume: { orderId: p.orderId, reason: "returned" } }); }
     })();
   }, [set]);
 
@@ -100,6 +106,7 @@ export function App() {
       <CardPanel />
       <AccountPanel />
       <OrderReturn />
+      <CheckoutResume />
       <WaitlistHost source="app" />
       <div key={flash} className={`flash${flash ? " on" : ""}`} aria-hidden="true" />
     </>

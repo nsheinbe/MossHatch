@@ -31,6 +31,10 @@
       "destination": "/"
     },
     {
+      "source": "/checkout/cancelled",
+      "destination": "/"
+    },
+    {
       "source": "/device",
       "destination": "/"
     },
@@ -101,6 +105,15 @@
     },
     {
       "source": "/checkout/return",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    },
+    {
+      "source": "/checkout/cancelled",
       "headers": [
         {
           "key": "X-Robots-Tag",

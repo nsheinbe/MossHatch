@@ -79,6 +79,12 @@ export const domainRoutes: Route[] = [
       if (term.state === "renewed") return json({ status: "renewed", order_id: term.orderId });
       const order = await ensureRenewalOrder(ctx, term, d);
       if (!order) throw new HttpError(503, "no_price");
+      // The decline ladder gave up on the saved card (C, C+3, C+6): it is not charged again. Renew now opens Stripe Checkout, where any
+      // card can pay (C-38; docs/AUDIT-2026-10-07.md O7). The registrar is still called only after Stripe says the payment succeeded.
+      if (term.state === "payment_failed" && order.state === "draft") {
+        try { const url = await startRenewalCheckout(ctx, order, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily }); if (url) return json({ status: "checkout", order_id: order.id, checkout_url: url }, 200); }
+        catch (e) { if (e instanceof StripeError) throw new HttpError(503, "payment_unavailable"); throw e; }
+      }
       await markManualRenewal(ctx, order.id, userId);
       const after = await advanceRenewal(machine(ctx), order.id, { manual: true });
       if (!after) throw new HttpError(503, "renewal_unavailable");
@@ -86,8 +92,9 @@ export const domainRoutes: Route[] = [
       if (after.state === "renewing_upstream" || after.state === "captured") return json({ status: "renewing", order_id: after.id }, 202);
       if (after.state === "refund_pending" || after.state === "refunded") return json({ status: "refunded", order_id: after.id }, 409);
       const t = (await ctx.cron.query("select state, held_reason from renewal_terms where order_id = $1", [after.id])).rows[0];
-      // The bank wants the person present (3-D Secure): bring them back on-session through Checkout (C-38).
-      if (after.failureCode === "authentication_required") {
+      // The bank wants the person present (3-D Secure), or declined the saved card: bring them back on-session through Checkout, where they
+      // can confirm or use another card (C-38; O7).
+      if (after.failureCode === "authentication_required" || after.failureCode === "card_declined") {
         try { const url = await startRenewalCheckout(ctx, after, { consentHash: saveConsent, ipPrefix: r.ipPrefix, uaFamily: r.uaFamily }); if (url) return json({ status: "checkout", order_id: after.id, checkout_url: url }, 200); }
         catch (e) { if (!(e instanceof StripeError)) throw e; }
       }

@@ -1,4 +1,5 @@
 import type { PoolClient } from "@mosshatch/db";
+import { registrarOfRecord } from "@mosshatch/core";
 import type { AppContext } from "../ports.ts";
 import { sendMail } from "../email.ts";
 import { raiseAlert, type AlertInput } from "../ops/alerts.ts";
@@ -94,6 +95,14 @@ export async function mailVoid(ctx: AppContext, c: PoolClient, o: OrderRow, reas
 export async function mailReceipt(ctx: AppContext, c: PoolClient, o: OrderRow, p: { totalMinor: bigint; taxMinor: bigint; paidAt: Date }) {
   const to = await customerAddresses(c, o.userId);
   if (to.length === 0) return;
-  const msg = buildMail("receipt", { orderId: o.id, fqdn: o.fqdn, years: o.years, totalMinor: p.totalMinor.toString(), taxMinor: p.taxMinor.toString(), paidAt: p.paidAt.toISOString() }, { to, dedupeKey: `receipt:${o.id}`, userId: o.userId, origin: ctx.config.origin });
+  // The receipt names the registrar of record (the fees page promises it, C-13) and, for a registration, the refund cut-off (D-024 row 9).
+  const registrarId = ordersSvc(ctx).registrarId;
+  const extra: { registrar: string; refundBy?: string } = { registrar: `${registrarOfRecord(registrarId).name} (IANA ID ${registrarOfRecord(registrarId).ianaId})` };
+  if (o.kind === "register") {
+    // The same rule as domains/refunds.ts refundWindow (read here directly: that module imports this one).
+    const w = (await c.query("select refundable, window_days from refund_policy where registrar = $1 and tld = $2", [registrarId, o.fqdn.slice(o.fqdn.indexOf(".") + 1)])).rows[0];
+    if (w?.refundable) extra.refundBy = new Date((o.registeredAt ?? p.paidAt).getTime() + Math.min(5, (w.window_days as number | null) ?? 5) * 86_400_000).toISOString();
+  }
+  const msg = buildMail("receipt", { orderId: o.id, fqdn: o.fqdn, years: o.years, totalMinor: p.totalMinor.toString(), taxMinor: p.taxMinor.toString(), paidAt: p.paidAt.toISOString(), ...extra }, { to, dedupeKey: `receipt:${o.id}`, userId: o.userId, origin: ctx.config.origin });
   await sendMail(c, ctx.email, msg);
 }

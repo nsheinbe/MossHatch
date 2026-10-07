@@ -197,6 +197,17 @@ describe("quote route", () => {
     const ai = await get("/api/v1/quote?domain=free-y.ai");
     expect(ai.json.quote).toMatchObject({ years: 2, subtotal_minor: "24200" });
   });
+  it("AUD-P5/F3: carries the checkout facts from the server: whether sales are open, the registrar of record and the refund window", async () => {
+    const r = await get("/api/v1/quote?domain=moonfern.com");
+    expect(r.json.sales_open).toBe(true);
+    expect(r.json.registrar).toMatchObject({ iana_id: 69 });                     // the sample table: OpenSRS (Tucows)
+    expect(r.json.refund).toEqual({ refundable: true, window_days: 5 });
+    const ai = await get("/api/v1/quote?domain=free-y.ai");
+    expect(ai.json.refund).toEqual({ refundable: false, window_days: 0 });
+    await app.db.owner.query("update flags set value = 'true' where name = 'registrar_writes_paused'");
+    try { expect((await get("/api/v1/quote?domain=moonfern.com", ip(2))).json.sales_open).toBe(false); }
+    finally { await app.db.owner.query("update flags set value = 'false' where name = 'registrar_writes_paused'"); }
+  });
   it("refuses a one-year .ai, an unsupported extension, and any client-supplied price or unknown parameter", async () => {
     expect((await get("/api/v1/quote?domain=free-y.ai&years=1")).json.error.code).toBe("invalid_term");
     expect((await get("/api/v1/quote?domain=moonfern.xyz")).json.error.code).toBe("unsupported_tld");
