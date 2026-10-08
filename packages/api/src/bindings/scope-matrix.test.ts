@@ -53,6 +53,8 @@ const ENTRIES: Record<string, Entry> = {
   // Agent surface (Phase 5): the REST equivalents of the MCP tools, the MCP endpoint, and the approval state for the binding that asked.
   "GET /api/v1/approvals/:id": { cap: null, env: false, call: (_p, _e, t) => bearer(k, t, "GET", "/api/v1/approvals/018f0000-0000-7000-8000-000000000000") },
   "POST /mcp": { cap: null, env: false, call: (_p, _e, t) => k.app.call("POST", "/mcp", { authorization: `Bearer ${t}`, browser: false, body: { jsonrpc: "2.0", id: 1, method: "tools/list" } }) },
+  // A client's GET stream is refused with 405 for every token: never 401 or 403, which would read as an access problem.
+  "GET /mcp": { cap: null, env: false, call: (_p, _e, t) => k.app.call("GET", "/mcp", { authorization: `Bearer ${t}`, browser: false, headers: { accept: "text/event-stream" } }) },
   "POST /api/v1/agent/scope-requests": { cap: null, env: false, call: (p, _e, t) => bearer(k, t, "POST", "/api/v1/agent/scope-requests", { scopes: [`dns.read:${p.domain.fqdn}`] }) },
   // A list answers for A's domain only when a scope covers it: "not listed" is the list's form of a refusal.
   "GET /api/v1/agent/domains": { cap: "domains.read", env: false, call: async (p, _e, t) => { const r = await bearer(k, t, "GET", "/api/v1/agent/domains"); return r.status === 200 && !r.text.includes(`"${p.domain.fqdn}"`) ? { status: 403, text: "not listed" } : r; } },
