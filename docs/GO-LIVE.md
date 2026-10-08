@@ -116,8 +116,13 @@ non-member rows and the 2026-10-07 member rows that supersede them: com/register
 ## 5. Stripe live
 
 1. Activate the live account (business details, bank account). Settings, Public details: the statement descriptor prefix (C-40).
-2. **Stripe Tax** in live mode: activate it and set the origin address. Checkout is created with `automatic_tax` and Stripe refuses it
-   when Tax is not active. Registrations per your accountant (Stripe Tax charges zero where you have none).
+2. **Stripe Tax** in live mode: activate it, set the origin address, **and set the preset product tax code** (Settings, Tax, "Preset
+   product tax code"; the Products carry none, C-44). Checkout is created with `automatic_tax` and Stripe refuses it when Tax is not
+   active or no tax code can be found ("You must specify a tax code in all line items", seen 2026-10-08). Registrations per your
+   accountant (Stripe Tax charges zero where you have none).
+   **Managed Payments**: Stripe turns its merchant-of-record mode on by default for a new account. Mosshatch is the merchant itself, so
+   the app sends `managed_payments[enabled]=false` on every Checkout Session; also turn the account default off (Settings, Managed
+   Payments) so Dashboard-made links and other products agree with it.
 3. Developers, API keys, **Create restricted key** `mosshatch-production` with Write on: Customers, Checkout Sessions, PaymentIntents,
    PaymentMethods, Refunds, Products; Read on Charges and Radar reviews (the PaymentIntent read expands the charge and review). If Stripe
    names another permission in an error, add exactly that one.

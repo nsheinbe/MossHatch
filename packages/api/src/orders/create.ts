@@ -15,6 +15,7 @@ import { reservedRenewalsMinor } from "../domains/gate.ts";
 import { ModeError, refuseSampleAtLiveCheckout } from "../config/modeguard.ts";
 import { operationForOrderKind } from "../stripe/catalog.ts";
 import { preCheckoutRegionGate } from "./tax.ts";
+import { raiseAlert } from "../ops/alerts.ts";
 
 export const RESERVING_STATES = ["review_hold", "authorized", "registering", "outcome_unknown", "registrar_unavailable", "paid_before_registration"];
 export const PAUSED_MESSAGE = "Registration is paused for a short while. Nothing was charged.";
@@ -257,6 +258,10 @@ export async function ensureSession(ctx: AppContext, svc: OrdersServices, order:
       const next = await restartCheckout(ctx, svc, order.id);
       return next ? ensureSession(ctx, svc, next, depth + 1) : { url: null, session: null };
     }
+    // A refused Checkout reaches the buyer as "couldn't open" and must reach the operator too (2026-10-08: the first live Session was
+    // refused twice, for Managed Payments and for a missing tax code, and nothing recorded why). Codes and the parameter name only.
+    console.error("stripe checkout_session refused", e.kind, e.status ?? "", e.code ?? "", e.param ?? "");
+    await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "stripe.checkout_refused", subject: order.id, email: true, detail: { kind: e.kind, status: e.status, code: e.code ?? null, param: e.param ?? null, attempt: order.attempt } })).catch(() => undefined);
     throw new HttpError(503, "payment_unavailable");
   }
   const stored = await tx(ctx.cron, async (c) => {

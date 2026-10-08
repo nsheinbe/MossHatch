@@ -7,9 +7,12 @@ import type { ProductSpec, StripeOperation } from "./catalog.ts";
 export type StripeErrorKind = "api_error" | "timeout" | "rate_limit" | "invalid_request" | "card_error" | "idempotency_error" | "idempotency_in_progress" | "authentication" | "signature";
 
 export class StripeError extends Error {
-  constructor(public kind: StripeErrorKind, public status: number | null, public code?: string, message?: string) {
+  /** Stripe's `param` for an invalid request (the parameter it objected to): a name, never a value. */
+  param?: string;
+  constructor(public kind: StripeErrorKind, public status: number | null, public code?: string, message?: string, param?: string) {
     super(message ?? `${kind}${code ? ":" + code : ""}`);
     this.name = "StripeError";
+    if (param) this.param = param;
   }
   /** A 5xx from Stripe. Stripe caches it under the idempotency key, so a retry needs a NEW key after a GET. */
   get isServerError() { return this.kind === "api_error" && (this.status ?? 500) >= 500; }

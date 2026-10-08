@@ -17,6 +17,29 @@ beforeEach(async () => { await h.app.db.owner.query("delete from rate_counters")
 
 const count = async (where = "true", args: unknown[] = []) => Number((await h.app.db.owner.query(`select count(*)::int as n from orders where ${where}`, args)).rows[0].n);
 
+describe("a refused Checkout Session reaches the operator (2026-10-08: the first live Session was refused twice and nothing said why)", () => {
+  it("answers 503 payment_unavailable, logs codes only, and raises stripe.checkout_refused as an emailed warning", async () => {
+    const { alerts } = await import("./testkit.ts");
+    const notified: { kind: string; email?: boolean }[] = [];
+    (h.app.ctx.services as Record<string, unknown>).alertNotifier = { notify: async (a: { kind: string; email?: boolean }) => { notified.push(a); } };
+    h.stripe.fail("createCheckoutSession", { kind: "server", times: 1 });
+    const res = await postOrder(h, ada, { fqdn: "free-refused.com", years: 1 }, "refused-1");
+    expect(res.status, res.text).toBe(503); expect(res.json.error.code).toBe("payment_unavailable");
+    const rows = await alerts(h, "stripe.checkout_refused");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.severity).toBe("warn");
+    expect(rows[0]!.detail).toMatchObject({ kind: "api_error", attempt: 1 });
+    expect(JSON.stringify(rows[0]!.detail)).not.toMatch(/example\.com|ada/);
+    expect(notified).toEqual([expect.objectContaining({ kind: "stripe.checkout_refused", email: true })]);
+    delete (h.app.ctx.services as Record<string, unknown>).alertNotifier;
+    // Stripe caches the refusal under the Session's idempotency key, so the same key keeps answering it; once the intent's 30-minute
+    // margin is gone the replay starts attempt 2 under a new key, and with Stripe answering again the Session opens.
+    h.app.clock.advance(2 * 60_000);
+    const again = await postOrder(h, ada, { fqdn: "free-refused.com", years: 1 }, "refused-1");
+    expect(again.status, again.text).toBe(200); expect(again.json.checkout_url).toBeTruthy();
+  });
+});
+
 describe("ST-97: a client-supplied price is ignored, and the amount charged equals the amount shown", () => {
   it("prices from the frozen server quote whatever the body says, and pins the Checkout parameters", async () => {
     const res = await postOrder(h, ada, { fqdn: "free-price.com", years: 1, price: 1, price_minor: 1, total_minor: 1, amount: 1, unit_amount: 1, currency: "eur", subtotal_minor: 1, price_id: "price_free" }, "st97-a");
