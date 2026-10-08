@@ -191,7 +191,7 @@ function ContactSection({ f, sec, reloadAll }: { f: string; sec: Security | null
       <h3 id="ct-h">Contact and registrant</h3>
       {pending && (
         <div className="banner" role="status">
-          <p>Verify the registrant email within {ver!.days_left} {ver!.days_left === 1 ? "day" : "days"}, or the registry puts the name on hold. We send an eight-digit code to that address.</p>
+          <p>Verify the registrant email within {ver!.days_left} {ver!.days_left === 1 ? "day" : "days"}, or the registry puts the name on hold. We send an eight-digit code to that address. If it is not in your inbox within a minute, look in Junk: our mail is new to most providers.</p>
           <div className="row-actions"><button type="button" className="btn secondary" disabled={busy} onClick={() => void run(async () => { await sendVerification(f); return "If the address can be reached, a code is on its way."; })}>Email me a code</button></div>
           <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await verifyRegistrant(f, code.trim()); setCode(""); loadVer(); reloadAll(); return "The registrant email is verified."; }); }}>
             <label htmlFor="rv-code">Eight-digit code</label>
