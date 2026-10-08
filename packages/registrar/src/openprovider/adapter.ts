@@ -4,6 +4,7 @@ import {
   type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult, type RegistrarCapabilities, type RegistrarPort,
   type TransferAway, type UpstreamOrder, type TransferInCheck, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
+  type DnskeyInput, type RegistrantVerificationState,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
 import { canonicalZone, OPENPROVIDER_NAMESERVERS, validateZone, zoneHash } from "../dns.ts";
@@ -319,6 +320,7 @@ export class OpenproviderAdapter implements RegistrarPort {
     return {
       mode: this.cfg.mode, dnsHosting: true, dnssec: true, webhooks: false, idempotentRegister: false, sandbox: this.cfg.mode === "sandbox",
       authCodeModel: "api", restore: { ...RESTORE_TLDS }, funding: true, inventory: true, events: false, cancelTransferAway: false,
+      dnssecKeyInput: "dnskey", registrantVerification: "provider",
     };
   }
   async health() {
@@ -625,12 +627,15 @@ export class OpenproviderAdapter implements RegistrarPort {
   }
 
   // ---- DNSSEC -----------------------------------------------------------------------------------------------------
-  /** DS records as the registry derives them (SHA-256) from the DNSKEYs Openprovider holds for the domain. */
+  /**
+   * DS records as the registry derives them (SHA-256) from the DNSKEYs Openprovider holds for the domain. The key Openprovider's own DNS manages
+   * (read-only on the domain: its nameservers sign every zone they host) is `managed`; it cannot be added by hand, and removing it turns the signing off.
+   */
   async getDs(fqdn: string): Promise<DsRecord[]> {
     const { d } = this.split(fqdn);
     const raw = await this.detail(d);
     if (!raw) throw rejected("not_in_account");
-    return this.keysOf(raw).map((k) => dsFromDnskey(d, k, 2));
+    return this.keysOf(raw).map((k) => ({ ...dsFromDnskey(d, k, 2), ...(k.readonly ? { managed: true } : {}) }));
   }
   private checkDs(ds: DsRecord) {
     if (!Number.isInteger(ds.keyTag) || ds.keyTag < 0 || ds.keyTag > 65535 || !Number.isInteger(ds.algorithm) || !Number.isInteger(ds.digestType) || !/^[0-9a-f]{20,128}$/i.test(ds.digest)) throw rejected("bad_ds");
@@ -661,8 +666,9 @@ export class OpenproviderAdapter implements RegistrarPort {
   private checkKey(k: Dnskey) {
     if (![256, 257].includes(k.flags) || k.protocol !== 3 || !Number.isInteger(k.algorithm) || k.algorithm < 1 || k.algorithm > 255 || !/^[A-Za-z0-9+/]{20,}={0,2}$/.test(k.publicKey.replace(/\s+/g, ""))) throw rejected("bad_dnskey");
   }
-  /** Adapter extra (not on the port): adds a DNSKEY; idempotent. The DS that results is `dsFromDnskey(fqdn, key)`. */
-  async addDnskey(fqdn: string, key: Dnskey): Promise<DsRecord> {
+  /** Adds a DNSKEY; idempotent. The DS that results is `dsFromDnskey(fqdn, key)`, which is what the registry publishes. */
+  async addDnskey(fqdn: string, input: DnskeyInput): Promise<DsRecord> {
+    const key: Dnskey = { flags: input.flags, protocol: input.protocol ?? 3, algorithm: input.algorithm, publicKey: input.publicKey.replace(/\s+/g, "") };
     const { d } = this.split(fqdn); this.checkKey(key);
     const raw = await this.detail(d); if (!raw) throw rejected("not_in_account");
     const keys = this.keysOf(raw);
@@ -675,6 +681,40 @@ export class OpenproviderAdapter implements RegistrarPort {
       if (!back || !this.keysOf(back).some(same)) throw rejected("dnssec_key_not_applied");
     }
     return dsFromDnskey(d, key, 2);
+  }
+
+  // ---- registrant email verification (ICANN) ----------------------------------------------------------------------
+  /**
+   * Openprovider runs the ICANN registrant email verification itself for every gTLD registration: it emails the registrant a link and suspends the
+   * domain when the link is not used in time. `GET /customers/verifications/emails/domains?domain=` lists its checks for the name (support article
+   * 360024748273): status `verified`, `in progress`, `not verified` or `failed` (description `expired`, `bounced` or `softBounced`), `is_suspended`,
+   * `expiration_date`. An open check outranks an old verified one (the address may have changed), and a suspension outranks everything.
+   */
+  private async verificationRows(d: string): Promise<JObj[]> {
+    const r = await this.call("LIST_EMAIL_VERIFICATIONS", { query: { domain: d, limit: "10", offset: "0" } });
+    const rows = arr(r.data.results).map(obj).filter((x): x is JObj => !!x && (str(x.domain) ?? "").toLowerCase() === d);
+    const rank = (x: JObj) => (bool(x.is_suspended) ? 0 : (str(x.status) ?? "").toLowerCase() === "verified" ? 2 : 1);
+    return rows.sort((a, b) => rank(a) - rank(b));
+  }
+  async getRegistrantVerification(fqdn: string): Promise<RegistrantVerificationState | null> {
+    const { d } = this.split(fqdn);
+    const row = (await this.verificationRows(d))[0];
+    if (!row) return null;
+    const status = (str(row.status) ?? "").toLowerCase().replace(/[\s_-]+/g, " ");
+    const desc = (str(row.description) ?? "").toLowerCase();
+    const reason = desc.includes("soft") ? "soft_bounced" : desc.includes("bounce") ? "bounced" : desc.includes("expire") ? "expired" : undefined;
+    const mapped: RegistrantVerificationState["status"] = status === "verified" ? "verified" : status === "failed" ? "failed" : status === "not verified" ? "unverified" : "pending";
+    const expiresAt = parseAmsterdam(str(row.expiration_date));
+    return { status: mapped, ...(reason ? { reason } : {}), suspended: bool(row.is_suspended), ...(expiresAt ? { expiresAt } : {}) };
+  }
+  /** Sends the provider's email again, to the address of the open check. The address stays in this process; only `sent` goes back. */
+  async resendRegistrantVerification(fqdn: string): Promise<{ sent: boolean }> {
+    const { d } = this.split(fqdn);
+    const open = (await this.verificationRows(d)).find((x) => (str(x.status) ?? "").toLowerCase() !== "verified");
+    const email = open ? str(open.email) : undefined;
+    if (!email) return { sent: false };
+    const r = await this.call("RESTART_EMAIL_VERIFICATION", { body: { email } });
+    return { sent: r.data.success === undefined ? true : bool(r.data.success) };
   }
 
   // ---- contacts ---------------------------------------------------------------------------------------------------

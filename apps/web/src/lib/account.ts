@@ -17,7 +17,7 @@ export interface RecoveryBanner {
 export interface Me {
   user: { id: string; email: string };
   /** Suspended credentials are the ones a recovery paused (30 days; signing in with one undoes the recovery). */
-  credentials: { id: string; label: string; backup_eligible: boolean; created_at?: string; suspended?: boolean }[];
+  credentials: { id: string; label: string; alg?: number; backupEligible?: boolean; backupState?: boolean; transports?: string[]; createdAt?: string; lastUsedAt?: string | null; suspended?: boolean; revoked?: boolean }[];
   addresses: { id: string; address: string; kind: string; verified: boolean }[];
   recovery?: RecoveryBanner | null;
   hold?: { active: boolean; allHeldUntil: string | null; secretRevealUntil: string | null };
@@ -79,6 +79,18 @@ export async function recoveryPasskey(options?: RegistrationOptions): Promise<{ 
 export const recoveryCancel = () => api<{ ok: boolean; cancelled: boolean }>("POST", "/api/v1/auth/recovery/cancel", {});
 
 export const signOut = () => api("POST", "/api/v1/auth/logout", {});
+
+// ---- passkeys ----------------------------------------------------------------------------------------------------------------------------
+export interface PasskeyView { id: string; label: string; alg: number; backupEligible: boolean; backupState: boolean; transports: string[]; createdAt: string; lastUsedAt: string | null; suspended: boolean; revoked: boolean }
+export const listPasskeys = async () => (await api<{ passkeys: PasskeyView[] }>("GET", "/api/v1/passkeys")).passkeys;
+/** After the `passkey.add` step-up is committed: the browser makes the new passkey, then it is added with the action id. From a click of its own. */
+export async function addPasskey(actionId: string): Promise<PasskeyView> {
+  const { options } = await api<{ options: RegistrationOptions }>("POST", "/api/v1/auth/register/options", {});
+  const registration = await startRegistration({ optionsJSON: options });
+  return (await api<{ credential: PasskeyView }>("POST", "/api/v1/passkeys", { registration }, { "X-MH-Action-Id": actionId })).credential;
+}
+/** `confirmLast` removes the last live passkey (only with recovery codes left; the server refuses otherwise). */
+export const removePasskey = (id: string, confirmLast = false) => api("DELETE", `/api/v1/passkeys/${encodeURIComponent(id)}`, confirmLast ? { confirmLast: true } : undefined);
 export const revokeAll = () => api("POST", "/api/v1/auth/sessions/revoke-all", {});
 
 /** Plain-language text for the error codes a person can hit. Never echoes server text. */
@@ -105,6 +117,16 @@ export function explain(e: unknown): string {
     case "contact_required": return "Add your registrant contact first.";
     case "name_unavailable": return "Someone else just took that name. Nothing was charged.";
     case "recovery_not_open": return "This recovery was cancelled or has already finished. Start again if you still need it.";
+    // Passkeys (Your account): adding and removing.
+    case "credential_exists": return "That passkey is already on your account.";
+    case "registration_failed": case "invalid_challenge": return "The passkey could not be created. Try again.";
+    case "recovery_hold": return "Passkeys cannot change while an account recovery is open or on hold.";
+    case "confirm_required": return "This is your last passkey. Tick the box to confirm, and keep your recovery codes safe: they become your only way in.";
+    case "last_credential_no_recovery_codes": return "This is your last passkey and no recovery codes are left, so it cannot be removed.";
+    case "credential_suspended": return "A passkey paused by a recovery cannot be removed until the recovery ends.";
+    case "hardened_mode_requires_device_bound": return "Your account only accepts passkeys that stay on one device.";
+    case "params_changed": return "Something changed while you were signing. Try again.";
+    case "not_verified": return "Confirm your email address first.";
     case "network": return "The connection failed. Check your network.";
     // Checkout refusals (docs/AUDIT-2026-10-07.md F9): each says what happened to the money and what to do next.
     case "orders_paused": case "sell_gate": case "global_daily_cap": case "global_total_cap":

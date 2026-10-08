@@ -18,6 +18,7 @@
     "./opensrs": "./src/opensrs/index.ts",
     "./openprovider": "./src/openprovider/index.ts",
     "./dns": "./src/dns.ts",
-    "./contract": "./src/contract.ts"
+    "./contract": "./src/contract.ts",
+  "./dnssec": "./src/openprovider/dnssec.ts"
   }
 }

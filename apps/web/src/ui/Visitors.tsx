@@ -51,7 +51,7 @@ export default function Visitors() {
   const [made, setMade] = useState<{ name: string; token: string } | null>(null);
   const [edit, setEdit] = useState<string | null>(null);
   const [confirmHome, setConfirmHome] = useState(false);
-  const [form, setForm] = useState({ name: "", picks: ["domains.read:*"] as string[], extra: "", cap: "0", days: "30" });
+  const [form, setForm] = useState({ name: "", picks: ["domains.read:*"] as string[], extra: "", cap: "", days: "30" });
   const [change, setChange] = useState({ scopes: "", cap: "", days: "" });
   const [threshold, setThr] = useState("");
   const head = useRef<HTMLHeadingElement>(null);
@@ -75,6 +75,8 @@ export default function Visitors() {
     if (!form.name.trim()) { setMsg("Give the token a name, like the app or agent that will use it."); return; }
     if (scopes.length === 0) { setMsg("Pick at least one thing the token can do."); return; }
     const spends = canSpend(scopes);
+    // A spending token with a cap of zero could suggest nothing: every suggestion would be over it.
+    if (spends && !(minor(form.cap) > 0)) { setMsg("Set the most it can ask you to spend, in dollars. With nothing there it could not suggest anything."); return; }
     const input = { name: form.name.trim(), scopes, spend_cap_minor: spends ? minor(form.cap) : 0, expires_in_days: Number(form.days) };
     setReq({ type: "agent.token.create" as StepUpType, target: account.user.id, input, run: async (actionId) => { const t = await createToken(actionId); setMade({ name: input.name, token: t.token }); await load(); } });
   };
@@ -159,8 +161,8 @@ export default function Visitors() {
                     <textarea id="chg-scopes" className="text-input" rows={4} value={change.scopes} onChange={(e) => setChange({ ...change, scopes: e.target.value })} spellCheck={false} />
                     <label htmlFor="chg-cap">Spend cap in dollars (leave empty to keep)</label>
                     <input id="chg-cap" className="text-input" inputMode="decimal" value={change.cap} onChange={(e) => setChange({ ...change, cap: e.target.value })} />
-                    <label htmlFor="chg-days">Days from now until it expires (leave empty to keep)</label>
-                    <input id="chg-days" className="text-input" inputMode="numeric" value={change.days} onChange={(e) => setChange({ ...change, days: e.target.value })} />
+                    <label htmlFor="chg-days">Days from now until it expires, 1 to 90 (leave empty to keep)</label>
+                    <input id="chg-days" className="text-input" inputMode="numeric" min={1} max={90} value={change.days} onChange={(e) => setChange({ ...change, days: e.target.value })} />
                     <p className="fineprint">Less access is saved at once. More access, a higher cap or a later expiry needs your passkey.</p>
                     <div className="row-actions"><button type="submit" className="btn primary">Save</button><button type="button" className="btn secondary" onClick={() => setEdit(null)}>Cancel</button></div>
                   </form>
@@ -175,12 +177,15 @@ export default function Visitors() {
                     {/* Only the sentence is announced; a live region would read the token itself aloud. */}
                     <p role="status">Here is the token for {made.name}. It is shown once. Store it where the program reads it, never in a repository.</p>
                     <p><code className="token-once" style={{ wordBreak: "break-all" }}>{made.token}</code></p>
-                    <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setMade(null)}>I stored it</button></div>
+                    <div className="row-actions">
+                      <button type="button" className="btn secondary" onClick={() => void navigator.clipboard.writeText(made.token).then(() => setMsg("Copied."), () => setMsg("Could not copy. Select the token and copy it by hand."))}>Copy</button>
+                      <button type="button" className="btn secondary" onClick={() => setMade(null)}>I stored it</button>
+                    </div>
                   </div>
                 ) : (
                   <form className="form-grid" onSubmit={create}>
                     <label htmlFor="tok-name">Name</label>
-                    <input id="tok-name" className="text-input" value={form.name} placeholder="For example: Claude, deploy script" onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
+                    <input id="tok-name" className="text-input" value={form.name} placeholder="For example: Claude, deploy script" onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} required autoComplete="off" />
                     <fieldset className="choices">
                       <legend>What it can do</legend>
                       {CHOICES.map((c) => (
@@ -193,8 +198,8 @@ export default function Visitors() {
                     {canSpend([...form.picks, ...lines(form.extra)]) ? (
                       <>
                         <label htmlFor="tok-cap">Most it can ask you to spend, in dollars</label>
-                        <input id="tok-cap" className="text-input" inputMode="decimal" value={form.cap} onChange={(e) => setForm({ ...form, cap: e.target.value })} aria-describedby="tok-cap-hint" />
-                        <p id="tok-cap-hint" className="fineprint">A ceiling across all its suggestions. You still approve every purchase yourself.</p>
+                        <input id="tok-cap" className="text-input" inputMode="decimal" value={form.cap} placeholder="50" required onChange={(e) => setForm({ ...form, cap: e.target.value })} aria-describedby="tok-cap-hint" />
+                        <p id="tok-cap-hint" className="fineprint">A ceiling across all of its suggestions. You still approve every purchase with your passkey, and nothing is charged before that.</p>
                       </>
                     ) : null}
                     <label htmlFor="tok-days">Expires after</label>
@@ -217,11 +222,11 @@ export default function Visitors() {
               <section className="section" aria-labelledby="settings-h">
                 <h3 id="settings-h">Settings</h3>
                 <form className="form-grid" onSubmit={(e) => void saveThreshold(e)}>
-                  <label htmlFor="thr">Ask me to type the name when a request can cost more than (dollars)</label>
+                  <label htmlFor="thr">For a request that could cost more than this (dollars), ask me to type the domain name as well as use my passkey</label>
                   <input id="thr" className="text-input" inputMode="decimal" value={threshold} onChange={(e) => setThr(e.target.value)} />
                   <div className="row-actions"><button type="submit" className="btn secondary">Save</button></div>
                 </form>
-                <label className="check"><input type="checkbox" checked={data.device_login_enabled} onChange={(e) => void setDeviceLogin(e.target.checked).then(load).catch((x) => setMsg(explainVisitor(x)))} /> Allow command-line sign-in</label>
+                <label className="check"><input type="checkbox" checked={data.device_login_enabled} onChange={(e) => void setDeviceLogin(e.target.checked).then(load).catch((x) => setMsg(explainVisitor(x)))} /> <span>Allow command-line sign-in<span className="fineprint">Lets the Mosshatch command-line tool sign in to this account with a code you approve here. Off, it cannot.</span></span></label>
               </section>
 
               <section className="section" aria-labelledby="home-h">

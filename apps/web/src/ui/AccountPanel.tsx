@@ -25,7 +25,10 @@ function downloadCodes(codes: string[]): void {
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
 const AccountData = lazy(() => import("./AccountData"));
 
-/** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the small account view. No passwords anywhere. */
+// Passkeys: a lazy chunk too (the step-up module stays out of the first load).
+const Passkeys = lazy(() => import("./Passkeys"));
+
+/** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the account view. No passwords anywhere. */
 export function AccountPanel() {
   const { accountOpen, account, accountNotice, set } = useUi();
   const [step, setStep] = useState<Step>("choose");
@@ -64,17 +67,40 @@ export function AccountPanel() {
         <div className="body">
           {account.recovery && <RecoveryNotice recovery={account.recovery} onCancelled={async (m) => { await refresh(); setMsg(m); }} />}
           <p>Signed in as <strong>{account.user.email}</strong>.</p>
-          <p className="notice">{live} {live === 1 ? "passkey" : "passkeys"}{paused ? `, and ${paused} paused by the recovery` : ""}. {live < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
           {msg && <p role="alert" className="notice">{msg}</p>}
-          {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
-          <div className="row-actions">
-            <button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Connected apps</button>
-            <button type="button" className="btn secondary" aria-pressed={data === "export"} onClick={() => setData("export")}>Download my data</button>
-            <button type="button" className="btn secondary" aria-pressed={data === "close"} onClick={() => setData("close")}>Close my account</button>
-            <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
-            <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
-            <button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button>
-          </div>
+          {data ? (
+            <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>
+          ) : (
+            <>
+              <section className="section" aria-labelledby="pk-h">
+                <h3 id="pk-h">Passkeys</h3>
+                <p className="notice">{live} {live === 1 ? "passkey" : "passkeys"}{paused ? `, and ${paused} paused by the recovery` : ""}. {live < 2 ? "Add a second one so losing a device does not lock you out." : "You can sign in from any of them."}</p>
+                <Suspense fallback={<p role="status">Loading.</p>}><Passkeys account={account} onChanged={refresh} say={setMsg} /></Suspense>
+              </section>
+              <section className="section" aria-labelledby="apps-h">
+                <h3 id="apps-h">Apps and tools</h3>
+                <p className="notice">Tokens, AI agents and command-line sign-ins that act for you, and the requests waiting for your approval.</p>
+                <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Connected apps</button></div>
+              </section>
+              <section className="section" aria-labelledby="data-h">
+                <h3 id="data-h">Your data</h3>
+                <p className="notice">A copy of everything we hold about you, or the way out. Both need your passkey.</p>
+                <div className="row-actions">
+                  <button type="button" className="btn secondary" onClick={() => setData("export")}>Download my data</button>
+                  <button type="button" className="btn secondary" onClick={() => setData("close")}>Close my account</button>
+                </div>
+              </section>
+              <section className="section" aria-labelledby="sess-h">
+                <h3 id="sess-h">Signed in</h3>
+                <p className="notice">Sign out here, or everywhere: that ends every session of this account, on every device and browser, and revokes nothing else.</p>
+                <div className="row-actions">
+                  <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
+                  <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
+                </div>
+              </section>
+            </>
+          )}
+          <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button></div>
         </div>
       </aside>
     );
@@ -136,7 +162,7 @@ export function AccountPanel() {
         )}
         {step === "code" && (
           <form onSubmit={(e) => { e.preventDefault(); void run(async () => { const r = await signupVerify(email, code.trim()); setCodes(r.recoveryCodes); setStep("codes"); }); }}>
-            <p>If that address can be used, a code is on its way. It lasts fifteen minutes.</p>
+            <p>If that address can be used, a code is on its way. It lasts fifteen minutes. If it is not in your inbox within a minute, look in Junk: our mail is new to most providers.</p>
             <label htmlFor="acct-code">Eight-digit code</label>
             <input id="acct-code" inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value)} className="text-input" />
             <div className="row-actions">

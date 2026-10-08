@@ -31,6 +31,13 @@ const registrant = z.object({ name: z.string().min(1).max(200), email: z.string(
 const dnsRecord = z.object({ type: z.enum(["A", "AAAA", "CNAME", "MX", "SRV", "TXT"]), name: z.string().max(253), value: z.string().min(1).max(1024), priority: z.number().int().min(0).max(65535).optional(), weight: z.number().int().min(0).max(65535).optional(), port: z.number().int().min(0).max(65535).optional() }).strict();
 const ds = z.object({ keyTag: z.number().int().min(0).max(65535), algorithm: z.number().int().min(0).max(255), digestType: z.number().int().min(0).max(255), digest: z.string().regex(/^[0-9a-fA-F]{20,128}$/) }).strict();
 const years = z.number().int().min(1).max(10);
+const dnskey = z.object({ flags: z.number().int().min(0).max(65535), algorithm: z.number().int().min(1).max(255), publicKey: z.string().regex(/^[A-Za-z0-9+/=\s]{20,4096}$/), protocol: z.number().int().min(0).max(255).optional() }).strict();
+/** An optional port method. A provider without it answers `not_supported`: a rejection, with nothing sent. */
+function optional<K extends "addDnskey" | "getRegistrantVerification" | "resendRegistrantVerification">(p: RegistrarPort, k: K): NonNullable<RegistrarPort[K]> {
+  const f = p[k];
+  if (typeof f !== "function") throw new RegistrarError("rejected", "not supported by this registrar", { retryable: false, outcomeUnknown: false, code: "not_supported" });
+  return f.bind(p) as NonNullable<RegistrarPort[K]>;
+}
 const tstatus = z.enum(["pending_admin", "pending_owner", "pending_registry", "completed", "cancelled"]);
 
 type Cmd = { args: z.ZodTypeAny; run: (p: RegistrarPort, a: never[]) => Promise<unknown> | unknown };
@@ -60,6 +67,9 @@ export const RPC_COMMANDS = {
   getDs: cmd(z.tuple([fqdn]), (p, a) => p.getDs(a[0])),
   addDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.addDs(a[0], a[1])),
   removeDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.removeDs(a[0], a[1])),
+  addDnskey: cmd(z.tuple([fqdn, dnskey]), (p, a) => optional(p, "addDnskey")(a[0], a[1])),
+  getRegistrantVerification: cmd(z.tuple([fqdn]), (p, a) => optional(p, "getRegistrantVerification")(a[0])),
+  resendRegistrantVerification: cmd(z.tuple([fqdn]), (p, a) => optional(p, "resendRegistrantVerification")(a[0])),
   updateContact: cmd(z.tuple([fqdn, registrant]), (p, a) => p.updateContact(a[0], a[1])),
   getTransfersAway: cmd(z.tuple([]).rest(z.object({ statuses: z.array(tstatus).max(5).optional(), since: z.date().optional() }).strict()), (p, a) => p.getTransfersAway((a[0] ?? {}) as { statuses?: TransferAwayStatus[]; since?: Date })),
   cancelTransfer: cmd(z.tuple([fqdn]), (p, a) => p.cancelTransfer(a[0])),

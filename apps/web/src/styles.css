@@ -430,3 +430,18 @@ dialog.waitlist a { color: var(--lantern); }
 .checklist .explainer summary { cursor: pointer; font-weight: 700; font-size: .88rem; min-height: 32px; display: flex; align-items: center; }
 .checklist .explainer ul { padding-left: 18px; }
 .checklist .explainer li { margin-top: 6px; }
+
+/* Audit 2026-10-08: the DNS records table in the side panel. Each record is a block (type and name, the value under them, the note last)
+   instead of five columns squeezed into 380 pixels, where an address broke into three lines. The roles on the markup keep it a table. */
+.panel.side table.data.records, .panel.side table.data.records tbody { display: block; width: 100%; }
+.panel.side table.data.records tr { display: grid; grid-template-columns: auto 1fr auto; column-gap: 10px; row-gap: 4px; padding: 10px 0; border-bottom: 1px solid var(--glass-border); }
+.panel.side table.data.records td { display: block; padding: 0; border: 0; }
+.panel.side table.data.records td.rec-type { grid-column: 1; grid-row: 1; font-weight: 700; }
+.panel.side table.data.records td.rec-name { grid-column: 2; grid-row: 1; overflow-wrap: anywhere; }
+.panel.side table.data.records td.rec-act { grid-column: 3; grid-row: 1 / span 3; align-self: start; }
+.panel.side table.data.records td.rec-val { grid-column: 1 / 3; grid-row: 2; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88rem; word-break: normal; overflow-wrap: anywhere; }
+.panel.side table.data.records td.rec-note { grid-column: 1 / 3; grid-row: 3; }
+.panel.side table.data.records td.rec-note:empty { display: none; }
+/* Your account: the passkey list. */
+.passkeys li { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.passkeys li span { overflow-wrap: anywhere; }
