@@ -17,7 +17,7 @@ const fail = async (p: Promise<unknown>) => (await p.then(() => null, (e) => e))
 describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
   it("reproduces the first-order prices at November 2026 wholesale, exactly", async () => {
     const want: Record<string, { total: bigint; years: number }> = {
-      com: { total: 1925n, years: 1 }, dev: { total: 2100n, years: 1 }, app: { total: 2500n, years: 1 },
+      com: { total: 1825n, years: 1 }, dev: { total: 2000n, years: 1 }, app: { total: 2400n, years: 1 },
       studio: { total: 6000n, years: 1 }, io: { total: 6900n, years: 1 }, ai: { total: 24200n, years: 2 },
     };
     for (const [tld, w] of Object.entries(want)) {
@@ -31,7 +31,7 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
     const two = await q({ fqdn: "x1.ai", years: 2 }, "2026-11-07T00:00:00Z");
     expect([two.wholesaleMinor, two.feeMinor, two.subtotalMinor]).toEqual([22200n, 2000n, 24200n]);
     const three = await q({ fqdn: "x1.com", years: 3 }, "2026-11-07T00:00:00Z");
-    expect([three.wholesaleMinor, three.feeMinor, three.subtotalMinor]).toEqual([4575n, 1200n, 5775n]);
+    expect([three.wholesaleMinor, three.feeMinor, three.subtotalMinor]).toEqual([4575n, 900n, 5475n]);
   });
   it("matches the Phase 1 sample prices shown in the UI", async () => {
     for (const tld of ["com", "dev", "app", "studio", "io", "ai"]) {
@@ -45,12 +45,12 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
   it("steps .com from 14.50 to 15.25 on 2026-11-01 UTC, and .studio from 42 to 51 on 2026-10-06 (which moves it to the 9.00 band)", async () => {
     const before = await q({ fqdn: "moonfern.com" }, "2026-10-31T23:59:59Z");
     const after = await q({ fqdn: "moonfern.com" }, "2026-11-01T00:00:00Z");
-    expect([before.wholesalePerYearMinor, before.subtotalMinor]).toEqual([1450n, 1850n]);
-    expect([after.wholesalePerYearMinor, after.subtotalMinor]).toEqual([1525n, 1925n]);
+    expect([before.wholesalePerYearMinor, before.subtotalMinor]).toEqual([1450n, 1750n]);
+    expect([after.wholesalePerYearMinor, after.subtotalMinor]).toEqual([1525n, 1825n]);
     expect(after.wholesalePriceId).not.toBe(before.wholesalePriceId);
     const s1 = await q({ fqdn: "moonfern.studio" }, "2026-10-05T23:59:59Z");
     const s2 = await q({ fqdn: "moonfern.studio" }, "2026-10-06T00:00:00Z");
-    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 400n, 4600n]);
+    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 300n, 4500n]);
     expect([s2.wholesalePerYearMinor, s2.feePerYearMinor, s2.subtotalMinor]).toEqual([5100n, 900n, 6000n]);
   });
   it("pins the wholesale price row id into the quote and refuses a date with no price", async () => {
@@ -66,15 +66,15 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
       const reg = await q({ fqdn: "moonfern.dev", kind: "register" }, "2026-12-05T00:00:00Z");
       const ren = await q({ fqdn: "moonfern.dev", kind: "renew" }, "2026-12-05T00:00:00Z");
       // Renewal floor: a renewal dearer than the registration lifts the first year to the renewal price, so both cost the same.
-      expect(reg.subtotalMinor).toBe(2200n); expect(reg.wholesaleMinor).toBe(1700n); expect(reg.renewalLevelMinor).toBe(100n);
-      expect(ren.subtotalMinor).toBe(2200n); expect(ren.renewalLevelMinor).toBe(0n); expect(ren.wholesalePriceId).toBe(id); expect(ren.kind).toBe("renew");
+      expect(reg.subtotalMinor).toBe(2100n); expect(reg.wholesaleMinor).toBe(1700n); expect(reg.renewalLevelMinor).toBe(100n);
+      expect(ren.subtotalMinor).toBe(2100n); expect(ren.renewalLevelMinor).toBe(0n); expect(ren.wholesalePriceId).toBe(id); expect(ren.kind).toBe("renew");
       const early = await q({ fqdn: "moonfern.dev", kind: "renew" }, "2026-11-05T00:00:00Z");
-      expect(early.subtotalMinor).toBe(2100n);
+      expect(early.subtotalMinor).toBe(2000n);
     } finally { await app.db.owner.query("delete from wholesale_prices where id = $1", [id]); }
   });
   it("prices restore at the upstream restore fee plus the same fee, one year only", async () => {
     const r = await q({ fqdn: "moonfern.com", kind: "restore" }, "2026-11-07T00:00:00Z");
-    expect(r.subtotalMinor).toBe(8000n + 400n);
+    expect(r.subtotalMinor).toBe(8000n + 300n);
     expect((await fail(q({ fqdn: "moonfern.com", kind: "restore", years: 2 }, "2026-11-07T00:00:00Z")))?.code).toBe("invalid_term");
   });
 });
@@ -106,18 +106,18 @@ describe("pricing: refusals", () => {
     reg.overrideQuote("cheapish.com", 10890n);
     expect((await fail(q({ fqdn: "cheapish.com" }, "2026-11-07T00:00:00Z", { registrar: reg })))?.code).toBe("price_mismatch");
     const ok = await q({ fqdn: "plainname.com" }, "2026-11-07T00:00:00Z", { registrar: reg });
-    expect(ok.subtotalMinor).toBe(1925n);
+    expect(ok.subtotalMinor).toBe(1825n);
   });
 });
 
 describe("pricing: tax ceiling, hash and expiry", () => {
   it("adds a 10% ceiling of the subtotal rounded up, from the flag", async () => {
     const r = await q({ fqdn: "moonfern.com" }, "2026-11-07T00:00:00Z");
-    expect([r.taxCeilingBps, r.subtotalMinor, r.taxCeilingMinor, r.totalMinor]).toEqual([1000, 1925n, 193n, 2118n]);
+    expect([r.taxCeilingBps, r.subtotalMinor, r.taxCeilingMinor, r.totalMinor]).toEqual([1000, 1825n, 183n, 2008n]);
     await app.db.owner.query("update flags set value = '500' where name = 'pricing.tax_ceiling_bps'");
     try {
       const r2 = await q({ fqdn: "moonfern.com" }, "2026-11-07T00:00:00Z");
-      expect([r2.taxCeilingMinor, r2.totalMinor]).toEqual([97n, 2022n]);
+      expect([r2.taxCeilingMinor, r2.totalMinor]).toEqual([92n, 1917n]);
     } finally { await app.db.owner.query("update flags set value = '1000' where name = 'pricing.tax_ceiling_bps'"); }
   });
   it("hashes deterministically, expires in 30 minutes, and rejects a tampered or expired stored quote", async () => {

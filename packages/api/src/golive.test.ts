@@ -23,8 +23,12 @@ afterEach(() => { (app.ctx.services as { liveGate?: boolean }).liveGate = false;
 
 const LIVE_ROUTING = { MH_REGISTRAR_MODE: "live", MH_REGISTRAR_PROVIDER: "openprovider" };
 const ON = new Date("2026-10-02T12:00:00Z");
+/** The day after the Openprovider membership began (migration 1220): member prices, equal for register, renew and transfer. */
+const MEMBER_ON = new Date("2026-10-08T12:00:00Z");
+const quoteOn = (at: Date, fqdn: string, kind: "register" | "renew" | "transfer" | "restore" = "register", years?: number, registrar?: Pick<RegistrarPort, "quote">) =>
+  withNoUser(app.ctx.runtime, (c) => buildQuote(c, { fqdn, kind, ...(years ? { years } : {}) }, at, registrar ? { registrar } : {}));
 const quote = (fqdn: string, kind: "register" | "renew" | "transfer" | "restore" = "register", years?: number, registrar?: Pick<RegistrarPort, "quote">) =>
-  withNoUser(app.ctx.runtime, (c) => buildQuote(c, { fqdn, kind, ...(years ? { years } : {}) }, ON, registrar ? { registrar } : {}));
+  quoteOn(ON, fqdn, kind, years, registrar);
 
 /** A live registrar that quotes Openprovider's non-member .com prices (create 11.98, renew 16.98), or whatever `over` says. */
 const liveRegistrar = (over: { create?: bigint; renew?: bigint } = {}): Pick<RegistrarPort, "quote"> => ({
@@ -44,20 +48,20 @@ describe("Openprovider live pricing (migration 1120) with the renewal floor", ()
     expect([priceTableFor("com"), priceTableFor("io")]).toEqual(["openprovider", "opensrs"]);
   });
 
-  it(".com: the customer pays 20.98 the first year and 20.98 at renewal (renew 16.98 + fee 4.00), never below cost", async () => {
+  it(".com on the non-member rows: the customer pays 19.98 the first year and 19.98 at renewal (renew 16.98 + fee 3.00), never below cost", async () => {
     configurePriceTables(LIVE_ROUTING);
     const reg = await quote("moonfern.com");
-    expect(reg).toMatchObject({ wholesaleMinor: 1198n, renewalLevelMinor: 500n, feeMinor: 400n, subtotalMinor: 2098n, taxCeilingMinor: 210n, totalMinor: 2308n });
+    expect(reg).toMatchObject({ wholesaleMinor: 1198n, renewalLevelMinor: 500n, feeMinor: 300n, subtotalMinor: 1998n, taxCeilingMinor: 200n, totalMinor: 2198n });
     const ren = await quote("moonfern.com", "renew");
-    expect(ren).toMatchObject({ wholesaleMinor: 1698n, renewalLevelMinor: 0n, feeMinor: 400n, subtotalMinor: 2098n });
+    expect(ren).toMatchObject({ wholesaleMinor: 1698n, renewalLevelMinor: 0n, feeMinor: 300n, subtotalMinor: 1998n });
     expect(ren.subtotalMinor).toBe(reg.subtotalMinor);
     // The margin on a renewal is the fee, before Stripe's cut: the renewal is never sold below what Openprovider charges for it.
-    expect(ren.subtotalMinor - ren.wholesaleMinor).toBe(400n);
+    expect(ren.subtotalMinor - ren.wholesaleMinor).toBe(300n);
     // A transfer-in (Openprovider 11.98, includes a year) is held at the renewal price too.
-    expect((await quote("moonfern.com", "transfer")).subtotalMinor).toBe(2098n);
+    expect((await quote("moonfern.com", "transfer")).subtotalMinor).toBe(1998n);
     // The JSON the order stores carries the floor, shows the registrar price the customer pays for, and still verifies.
     const j = quoteToJson(reg);
-    expect(j).toMatchObject({ wholesale_minor: "1198", renewal_level_minor: "500", registrar_price_minor: "1698", subtotal_minor: "2098" });
+    expect(j).toMatchObject({ wholesale_minor: "1198", renewal_level_minor: "500", registrar_price_minor: "1698", subtotal_minor: "1998" });
     expect(verifyQuoteJson(j, ON)).toEqual({ ok: true });
     expect(verifyQuoteJson({ ...j, renewal_level_minor: "0" }, ON)).toEqual({ ok: false, reason: "hash" });
   });
@@ -65,8 +69,8 @@ describe("Openprovider live pricing (migration 1120) with the renewal floor", ()
   it("every launch extension: first year equals renewal, and the D-003 fee level follows the higher price", async () => {
     configurePriceTables(LIVE_ROUTING);
     const want: Record<string, { years: number; subtotal: bigint }> = {
-      com: { years: 1, subtotal: 1698n + 400n }, dev: { years: 1, subtotal: 2398n + 400n }, app: { years: 1, subtotal: 2698n + 400n },
-      studio: { years: 1, subtotal: 4600n + 400n }, io: { years: 1, subtotal: 8998n + 900n }, ai: { years: 2, subtotal: 2n * (13400n + 1000n) },
+      com: { years: 1, subtotal: 1698n + 300n }, dev: { years: 1, subtotal: 2398n + 300n }, app: { years: 1, subtotal: 2698n + 300n },
+      studio: { years: 1, subtotal: 4600n + 300n }, io: { years: 1, subtotal: 8998n + 900n }, ai: { years: 2, subtotal: 2n * (13400n + 1000n) },
     };
     const chips = await withNoUser(app.ctx.runtime, (c) => chipPrices(c, Object.keys(want), ON));
     for (const [tld, w] of Object.entries(want)) {
@@ -82,9 +86,40 @@ describe("Openprovider live pricing (migration 1120) with the renewal floor", ()
 
   it("the price guard passes Openprovider's live quote and refuses any difference, including a dearer renewal", async () => {
     configurePriceTables(LIVE_ROUTING);
-    expect((await quote("moonfern.com", "register", 1, liveRegistrar())).subtotalMinor).toBe(2098n);
+    expect((await quote("moonfern.com", "register", 1, liveRegistrar())).subtotalMinor).toBe(1998n);
     for (const over of [{ create: 1250n }, { renew: 1798n }]) {
       const e = await quote("moonfern.com", "register", 1, liveRegistrar(over)).catch((x) => x);
+      expect(e).toBeInstanceOf(PricingError);
+      expect((e as PricingError).code).toBe("price_mismatch");
+    }
+  });
+
+  it("member prices from 2026-10-07 (migration 1220, D-062): every extension costs the member price plus the fee, the same every year", async () => {
+    configurePriceTables(LIVE_ROUTING);
+    // Member register = renew = transfer, so no renewal floor. The fee band reads the member price: .io (50.00) and .ai (80.00) pay 9.00.
+    const want: Record<string, { years: number; subtotal: bigint; fee: bigint }> = {
+      com: { years: 1, subtotal: 1046n + 300n, fee: 300n }, dev: { years: 1, subtotal: 1220n + 300n, fee: 300n }, app: { years: 1, subtotal: 1420n + 300n, fee: 300n },
+      studio: { years: 1, subtotal: 3120n + 300n, fee: 300n }, io: { years: 1, subtotal: 5000n + 900n, fee: 900n }, ai: { years: 2, subtotal: 2n * (8000n + 900n), fee: 900n },
+    };
+    const chips = await withNoUser(app.ctx.runtime, (c) => chipPrices(c, Object.keys(want), MEMBER_ON));
+    for (const [tld, w] of Object.entries(want)) {
+      const reg = await quoteOn(MEMBER_ON, `moonfern.${tld}`);
+      const ren = await quoteOn(MEMBER_ON, `moonfern.${tld}`, "renew", w.years);
+      const xfer = await quoteOn(MEMBER_ON, `moonfern.${tld}`, "transfer", w.years);
+      expect([tld, reg.years, reg.subtotalMinor, reg.renewalLevelMinor, reg.feePerYearMinor]).toEqual([tld, w.years, w.subtotal, 0n, w.fee]);
+      expect([tld, ren.subtotalMinor, xfer.subtotalMinor]).toEqual([tld, w.subtotal, w.subtotal]);
+      expect([tld, chips.get(tld)?.subtotalMinor]).toEqual([tld, w.subtotal]);
+    }
+    // The day before the membership the non-member rows still price the order.
+    expect((await quoteOn(new Date("2026-10-06T12:00:00Z"), "moonfern.com")).subtotalMinor).toBe(1698n + 300n);
+  });
+
+  it("the price guard passes the member .com price and refuses a non-member one (a lapsed membership fails closed)", async () => {
+    configurePriceTables(LIVE_ROUTING);
+    const member = liveRegistrar({ create: 1046n, renew: 1046n });
+    expect((await quoteOn(MEMBER_ON, "moonfern.com", "register", 1, member)).subtotalMinor).toBe(1346n);
+    for (const lapsed of [liveRegistrar(), liveRegistrar({ create: 1046n, renew: 1698n })]) {
+      const e = await quoteOn(MEMBER_ON, "moonfern.com", "register", 1, lapsed).catch((x) => x);
       expect(e).toBeInstanceOf(PricingError);
       expect((e as PricingError).code).toBe("price_mismatch");
     }

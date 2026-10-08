@@ -27,7 +27,7 @@ describe("happy path and amount charged equals amount shown", () => {
     const sub = h.subtotal("com"), tax = (sub * 800n) / 10000n;
     expect(o.state).toBe("captured");
     const pay = (await h.app.db.owner.query("select * from payments where order_id = $1", [id])).rows[0];
-    // Shown: subtotal 19.25 (wholesale 15.25 + fee 4.00). Charged: subtotal plus the tax Checkout added, never more than the ceiling.
+    // Shown: subtotal 18.25 (wholesale 15.25 + fee 3.00). Charged: subtotal plus the tax Checkout added, never more than the ceiling.
     expect(BigInt(o.subtotal_minor)).toBe(sub);
     expect(BigInt(pay.amount_minor)).toBe(sub + tax);
     expect(BigInt(pay.tax_minor)).toBe(tax);

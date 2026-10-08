@@ -53,8 +53,9 @@ describe("public fee page (C-27, C-28, C-29, C-26)", () => {
       expect(text, tld).toContain(dollars(reg.subtotalMinor));
       if (/to restore/.test(text!)) expect(text).toContain(dollars((await quote(`fees-check.${tld}`, "restore", `${day}T12:00:00Z`)).subtotalMinor));
     }
-    // Every future row in the price table is announced on the page.
-    const future = (await db.owner.query("select distinct tld, effective_from::text as d from wholesale_prices where registrar = $1 and kind = 'register' and effective_from > '2026-10-01'", [REGISTRAR])).rows;
+    // Every row that takes effect after the page's price date is announced on the page.
+    const date = /id="price-date">(\d{4}-\d\d-\d\d)</.exec(html)![1]!;
+    const future = (await db.owner.query("select distinct tld, effective_from::text as d from wholesale_prices where registrar = $1 and kind = 'register' and effective_from > $2::date", [REGISTRAR, date])).rows;
     for (const f of future) expect(html, `${f.tld} ${f.d}`).toContain(`data-change="${f.tld}:${f.d}"`);
   });
 

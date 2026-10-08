@@ -41,8 +41,10 @@ code (only the money codes from steps 3 to 6 remain).
 2. Account currency **USD**. The adapter refuses any price that is not USD (`currency_mismatch`), so a EUR account cannot sell.
 3. API access enabled for the user whose login you will give the registrar project. If the panel offers an API IP allow-list, leave it
    **off** for now (no fixed egress yet, see above).
-4. Balance: USD 20 is enough for one .com (11.98 non-member) with room for a renewal test later. Do not add more until the rehearsal is done.
-5. Membership: not bought. Prices below are non-member prices. Buying a membership lowers our cost; it never raises what a customer pays.
+4. Balance: USD 20 is enough for one .com (10.46 member) above the USD 5 sell-gate floor. Top up before inviting anyone else (see the
+   balance note under "What the customer pays").
+5. Membership: Basic S, bought 2026-10-07 (expires 2027-10-08, auto-renew on; D-062). Prices below are member prices (migration 1220).
+   If the membership lapses, the price guard refuses orders and renewals until new dated rows are added.
 
 Check: in the panel, Reseller details shows the USD balance.
 
@@ -103,8 +105,9 @@ It applies pending migrations (1120 adds Openprovider's price table, the extensi
 live-access check), publishes the legal documents checkout records acceptance of, and lowers the sell gate floor from USD 250 to USD 5 (with
 a USD 20 balance the default floor refuses every order with `sell_gate`). Run it again with `--status` any time.
 
-Check: the output shows `latest migration: 1120_openprovider_live.sql`, eighteen `openprovider price rows` (com/register 11.98,
-com/renew 16.98, ...), the documents in force, `tax regions open: 51`, and `orders_paused = false`.
+Check: the output shows `latest migration: 1220_openprovider_member_prices.sql`, thirty-six `openprovider price rows` (the 2026-10-01
+non-member rows and the 2026-10-07 member rows that supersede them: com/register 10.46, com/renew 10.46, ...), the documents in force,
+`tax regions open: 51`, and `orders_paused = false`.
 
 ## 5. Stripe live
 
@@ -208,7 +211,7 @@ vercel env pull --environment=production .env.preflight      # in a checkout lin
 set -a; . ./.env.preflight; set +a
 node scripts/live-preflight.mjs
 rm .env.preflight
-# ok   prices    .com                       1y upstream USD 11.98 matches; customer pays USD 20.98 before tax
+# ok   prices    .com                       1y upstream USD 10.46 matches; customer pays USD 13.46 before tax
 # ...
 # preflight passed: nothing above stops the first purchase
 ```
@@ -218,17 +221,17 @@ answers anything else prints `unknown`, never `ok`. Run it again any time; a `FA
 
 ## 9. First purchase (a cheap .com)
 
-1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$20.98**.
-2. Open it. "How the price is made" shows Registry cost $16.98, Flat fee $4.00, and the note that the first year is charged at the
-   renewal price. Total before tax $20.98; tax is added by Stripe at Checkout.
+1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$13.46**.
+2. Open it. "How the price is made" shows Registry cost $10.46 and Flat fee $3.00. Total before tax $13.46; tax is added by Stripe at
+   Checkout.
 3. Fill the registrant contact (your real details: it goes to the registry), tick the terms, Pay. Use your own card on Stripe Checkout.
 4. Watch the egg. Behind it: Stripe authorizes (manual capture), the app re-quotes Openprovider (the price guard refuses anything other
-   than 11.98 create / 16.98 renew), registers through the registrar project, then captures.
+   than 10.46 create / 10.46 renew), registers through the registrar project, then captures.
 
 Check, in this order:
 - The app: the creature hatches; the Ledger shows the order captured. The receipt email arrives.
-- Openprovider panel: the domain is listed (status ACT), and the balance dropped by exactly 11.98.
-- Stripe dashboard (live): one payment of 20.98 plus tax, captured; the webhook endpoint shows 2xx deliveries.
+- Openprovider panel: the domain is listed (status ACT), and the balance dropped by exactly 10.46.
+- Stripe dashboard (live): one payment of 13.46 plus tax, captured; the webhook endpoint shows 2xx deliveries.
 - `whois`/`lookup.icann.org` for the name: registrar Hosting Concepts B.V. d/b/a Registrar.eu.
 
 If the hatch sheet says the price is not standard (`price_not_standard`): Openprovider's live price differs from the table, so nothing was
@@ -254,21 +257,25 @@ If it says new orders are paused: `sell_gate` (balance minus the floor too low; 
 
 ## What the customer pays (and why)
 
-Price per year = max(Openprovider register, Openprovider renew) + the D-003 fee, the same every year. Non-member prices read 2026-10-01
-from Openprovider's public price feed (migration 1120 lists the URL):
+Price per year = max(Openprovider register, Openprovider renew) + the D-003 fee, the same every year. Member prices (Basic S, from
+2026-10-07) read 2026-10-08 from Openprovider's public price API (migration 1220 lists the URL); the fee where wholesale is under USD 50
+is 3.00 from 2026-10-08 (D-062):
 
 | Extension | Openprovider create / renew | Fee | Customer, first year | Customer, renewal |
 |---|---|---|---|---|
-| .com | 11.98 / 16.98 | 4.00 | 20.98 | 20.98 |
-| .dev | 23.98 / 23.98 | 4.00 | 27.98 | 27.98 |
-| .app | 26.98 / 26.98 | 4.00 | 30.98 | 30.98 |
-| .studio | 46.00 / 46.00 | 4.00 | 50.00 | 50.00 |
-| .io | 74.98 / 89.98 | 9.00 | 98.98 | 98.98 |
-| .ai | 109.00 / 134.00 a year, 2 years minimum | 10.00 a year | 288.00 for 2 years | 288.00 for 2 years |
+| .com | 10.46 / 10.46 | 3.00 | 13.46 | 13.46 |
+| .dev | 12.20 / 12.20 | 3.00 | 15.20 | 15.20 |
+| .app | 14.20 / 14.20 | 3.00 | 17.20 | 17.20 |
+| .studio | 31.20 / 31.20 | 3.00 | 34.20 | 34.20 |
+| .io | 50.00 / 50.00 | 9.00 | 59.00 | 59.00 |
+| .ai | 80.00 / 80.00 a year, 2 years minimum | 9.00 a year | 178.00 for 2 years | 178.00 for 2 years |
 
-A renewal is never sold below cost: the renewal margin is the fee. The first-year difference (.com 5.00) is disclosed on the hatch sheet
-and the fees page. With a membership (`.com` 10.46 both ways) the table gets a new dated row and the price falls; it never rises because of
-membership. Restore is not sold online yet (no Openprovider restore price in the table, so it cannot be charged).
+A renewal is never sold below cost: the renewal margin is the fee. At member prices register and renew are equal, so the D-059 renewal
+floor adds nothing; it applies again wherever they differ (the 2026-10-01 non-member rows in migration 1120 had .com at 11.98 / 16.98).
+Restore is not sold online yet (no Openprovider restore price in the table, so it cannot be charged).
+
+Balance: the sell gate needs balance minus reserves minus the floor (USD 5) to cover each order's Openprovider cost. A .com costs 10.46,
+so USD 20 covers one. The live spend fuse allows 10 registrations in total while the invite gate is on (3 a day).
 
 ## Verified, and not
 
@@ -284,7 +291,7 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   against fakes), Stripe Tax in live mode, the restricted key's exact permission set, and the Vercel registrar project. Your first purchase
   is the first real test of all of them; that is why the balance is USD 20 and the fuses are low.
 - Unverified prices: whether Openprovider's live API quotes the same numbers as its public feed (the price guard refuses any difference),
-  whether the .studio non-member promotion (21.99 to 2026-12-31) applies to API orders, and whether a delete inside the add grace period
+  whether the .studio promotions (non-member 21.99, member 17.99, to 2026-12-31) apply to API orders, and whether a delete inside the add grace period
   credits the balance (the refund drill in the rehearsal checks it).
 - The registrar project's RPC nonces and daily cap live in Upstash Redis (step 3a), shared by every function instance and failing closed;
   tested against a fake Redis only (`packages/api/src/registrar-rpc/serve.test.ts`), never the live Upstash API.

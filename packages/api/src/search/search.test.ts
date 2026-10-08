@@ -70,7 +70,7 @@ describe("search: results", () => {
     const r = await get("/api/v1/search?name=moonfern");
     expect(r.status).toBe(200);
     const byTld = Object.fromEntries(r.json.results.map((x: any) => [x.tld, x]));
-    expect(byTld.com).toMatchObject({ fqdn: "moonfern.com", kind: "available", source: "sample", unconfirmed: false, price: { years: 1, subtotal_minor: "1850", currency: "usd" } });
+    expect(byTld.com).toMatchObject({ fqdn: "moonfern.com", kind: "available", source: "sample", unconfirmed: false, price: { years: 1, subtotal_minor: "1750", currency: "usd" } });
     for (const x of r.json.results) if (x.kind === "available") expect(x.price).not.toBeNull();
     for (const x of r.json.results) if (x.kind === "taken" || x.kind === "reserved" || x.kind === "premium") expect(x.price).toBeNull();
     const g = await get("/api/v1/search?name=google&tlds=com");
@@ -197,7 +197,7 @@ describe("AUD-V1: the web app's POST form keeps the searched name out of every U
     expect(p.status).toBe(200); expect(p.json.results).toEqual(g.json.results);
     const q = await post("/api/v1/quote", { domain: "moonfern.com", years: 1 }, ip(3));
     expect(q.status).toBe(200);
-    expect(q.json.quote).toMatchObject({ fqdn: "moonfern.com", years: 1, subtotal_minor: "1850" });
+    expect(q.json.quote).toMatchObject({ fqdn: "moonfern.com", years: 1, subtotal_minor: "1750" });
     expect((await post("/api/v1/quote", { domain: "free-y.ai" }, ip(3))).json.quote).toMatchObject({ years: 2 });
   });
   it("refuses unknown fields, non-string values, query parameters and a missing name, and keeps the CSRF guard", async () => {
@@ -218,7 +218,7 @@ describe("quote route", () => {
     const r = await get("/api/v1/quote?domain=moonfern.com");
     expect(r.status).toBe(200);
     expect(r.json.availability).toMatchObject({ kind: "available", source: "sample" });
-    expect(r.json.quote).toMatchObject({ fqdn: "moonfern.com", years: 1, subtotal_minor: "1850", tax_ceiling_minor: "185", total_minor: "2035", currency: "usd" });
+    expect(r.json.quote).toMatchObject({ fqdn: "moonfern.com", years: 1, subtotal_minor: "1750", tax_ceiling_minor: "175", total_minor: "1925", currency: "usd" });
     expect(r.json.quote.quote_hash).toMatch(/^[0-9a-f]{64}$/);
     const ai = await get("/api/v1/quote?domain=free-y.ai");
     expect(ai.json.quote).toMatchObject({ years: 2, subtotal_minor: "24200" });

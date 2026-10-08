@@ -26,7 +26,7 @@ describe("GET /api/v1/domains: the Grove", () => {
     const d = r.json.domains.find((x: { fqdn: string }) => x.fqdn === "free-routes.dev");
     expect(d).toMatchObject({
       id: dev.id, tld: "dev", state: "armored", armored: true, locked: true, auto_renew: true, adapter_state: "active", source: "adapter", confirmed: true,
-      renewal: { price_minor: "2100", wholesale_minor: "1700", fee_minor: "400", years: 1, currency: "usd", tax: "excluded", auto_renew: true, price_ceiling_minor: "2100", state: "scheduled" },
+      renewal: { price_minor: "2000", wholesale_minor: "1700", fee_minor: "300", years: 1, currency: "usd", tax: "excluded", auto_renew: true, price_ceiling_minor: "2000", state: "scheduled" },
     });
     expect(d.traits_inputs).toMatchObject({ domain: "free-routes.dev", age_days: 0 });
     expect(d.traits).toBeTruthy();
@@ -55,7 +55,7 @@ describe("GET /api/v1/domains/:id and the other id routes: unowned and nonexiste
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ id: dev.id, fqdn: "free-routes.dev", released: null, ds_present: false, privacy_status: "redacted_default", transfer_away: false, dispute_lock_state: null });
     expect(r.json.nameservers.length).toBeGreaterThan(0);
-    expect(r.json.mandate).toMatchObject({ price_ceiling_minor: "2100", term_years: 1, charge_days_before_expiry: 10 });
+    expect(r.json.mandate).toMatchObject({ price_ceiling_minor: "2000", term_years: 1, charge_days_before_expiry: 10 });
     expect(r.json.orders.map((o: { kind: string }) => o.kind)).toEqual(["register"]);
   });
 

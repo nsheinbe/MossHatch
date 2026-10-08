@@ -312,11 +312,11 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     // .com wholesale rises from 14.50 to 15.25 on 2026-11-01 (price table): a name bought now renews at the higher price.
     const { h, o, dom } = await mandated("cap", "com");
     const mandate = (await h.app.db.owner.query("select price_ceiling_minor from renewal_mandates where domain_id = $1 and revoked_at is null", [dom.id])).rows[0];
-    expect(BigInt(mandate.price_ceiling_minor)).toBe(1850n);
+    expect(BigInt(mandate.price_ceiling_minor)).toBe(1750n);
     const e = await expiry(h, dom.id);
     at(h, new Date(e.getTime() - days(44))); await settle(h);
     at(h, new Date(e.getTime() - days(44) + 3600_000 * 2)); await settle(h);
-    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes("changes from USD 18.50 to USD 19.25"));
+    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes("changes from USD 17.50 to USD 18.25"));
     expect(known.length).toBeGreaterThanOrEqual(1);
     expect(known[0]!.text).toContain("above the limit you set");
     expect(known[0]!.text).toMatch(/\/api\/v1\/email-actions\/[A-Za-z0-9_-]{43}/);
@@ -337,7 +337,7 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     at(h, new Date(e.getTime() - days(10) + 20 * 60_000)); await settle(h);
     const orders = await renewOrders(h, dom.id);
     expect(orders.map((r) => r.state)).toEqual(["renewed"]);
-    expect(renewPIs(h).at(-1)!.amount).toBe(1925);
+    expect(renewPIs(h).at(-1)!.amount).toBe(1825);
   });
 });
 

@@ -41,7 +41,7 @@ describe("registrar preflight", () => {
     const calls: string[] = [];
     const checks = await run(fakeRegistrar({ calls }));
     expect(checks.filter((c) => !c.ok)).toEqual([]);
-    expect(checks.find((c) => c.name === ".com")?.detail).toContain("USD 20.98");
+    expect(checks.find((c) => c.name === ".com")?.detail).toContain("USD 19.98");
     expect(new Set(calls)).toEqual(new Set(["health", "quote", "getBalance"]));
     expect(formatPreflight(checks).ok).toBe(true);
   });
