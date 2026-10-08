@@ -10,6 +10,7 @@ import { Creature, getKit, type CreatureFx } from "./creatures/creature";
 
 export { installKit, loadKit } from "./creatures/creature";
 import { Decor } from "./creatures/decor";
+import { CARD, portraitFraming } from "./portrait";
 import { Egg } from "./eggs";
 
 export interface Spec { domain: string; available: boolean; /** A stored spec; derived from the name when absent. */ spec?: CreatureSpec }
@@ -190,14 +191,20 @@ export class World {
 
   clearResults() { this.setResults([]); }
 
-  /** Position of the chip anchor for a result (egg top, or sleeper tag). */
+  /**
+   * Position of the chip anchor for a name: the grove creature's tag first, so a name that has hatched follows its creature even while
+   * its egg is still in the results (2026-10-08: the first live name's chip sat on the egg at the pool while the hare wandered off);
+   * then the egg's top, a sleeper's tag, or a free creature's.
+   */
   private anchorFor(domain: string, out: THREE.Vector3): THREE.Vector3 | null {
+    const g = this.grove.find((x) => x.id === domain);
+    if (g) return g.tagPosition(out);
     const e = this.eggs.find((x) => x.domain === domain);
     if (e) return e.chipAnchor(out);
     const s = this.sleepers.find((x) => x.id === domain);
     if (s) return s.tagPosition(out);
-    const g = [...this.grove, ...this.free].find((x) => x.id === domain);
-    if (g) return g.tagPosition(out);
+    const f = this.free.find((x) => x.id === domain);
+    if (f) return f.tagPosition(out);
     return null;
   }
 
@@ -244,32 +251,48 @@ export class World {
     this.setView("find");
   }
 
-  /** Render one card image of a creature with a portrait camera into a render target. */
-  snapshot(c: Creature, w = 512, h = 640): string {
-    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 0 });
-    const cam = new THREE.PerspectiveCamera(30, w / h, 0.1, 100);
-    const p = c.pos, sz = c.spec.size;
-    cam.position.set(p.x + 0.55 * sz, p.y + 0.85 * sz, p.z + 2.9 * sz);
-    cam.lookAt(p.x, p.y + 0.55 * sz, p.z);
+  /**
+   * Render one portrait of a creature into an offscreen canvas at the card's picture size: the creature alone in its clearing (the
+   * grass, the eggs, the other creatures and their props are hidden for the shot and restored after), framed from its bounds with
+   * headroom and a slight turn, multisampled. `portrait.ts` draws the caption band under it.
+   */
+  snapshot(c: Creature, w = CARD.w, h = CARD.h): HTMLCanvasElement {
+    const hidden: THREE.Object3D[] = [];
+    const hide = (o: THREE.Object3D | undefined) => { if (o?.visible) { o.visible = false; hidden.push(o); } };
+    for (const m of this.scenery.meshes) if (m.name === "grass") hide(m);
+    hide(this.decor.shells); hide(this.decor.crates); hide(this.decor.rings); hide(this.bursts.points);
+    for (const e of this.eggs) hide(e.mesh);
+    for (const o of [...this.grove, ...this.sleepers, ...this.free]) if (o !== c) hide(o.mesh);
     const prev = this.renderer.getRenderTarget();
     const pr = this.renderer.getPixelRatio();
-    this.renderer.setPixelRatio(1);
-    this.shared.uDpr.value = 1;
-    this.renderer.setRenderTarget(rt);
-    this.renderer.render(this.scene, cam);
-    const buf = new Uint8Array(w * h * 4);
-    this.renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
-    this.renderer.setRenderTarget(prev);
-    this.renderer.setPixelRatio(pr);
-    this.shared.uDpr.value = pr;
-    rt.dispose();
-    const cv = document.createElement("canvas");
-    cv.width = w; cv.height = h;
-    const ctx = cv.getContext("2d")!;
-    const img = ctx.createImageData(w, h);
-    for (let y = 0; y < h; y++) img.data.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
-    ctx.putImageData(img, 0, 0);
-    return cv.toDataURL("image/png");
+    const rt = new THREE.WebGLRenderTarget(w, h, { samples: 4 });
+    try {
+      c.mesh.updateMatrixWorld(true);
+      const f = portraitFraming(new THREE.Box3().setFromObject(c.mesh), c.heading, w / h);
+      const cam = new THREE.PerspectiveCamera(f.fov, w / h, 0.1, 100);
+      cam.position.set(...f.position);
+      cam.lookAt(...f.target);
+      // The hatched line work is sized in device pixels: draw it as a 2x screen would, so the card reads like the page does.
+      this.renderer.setPixelRatio(1);
+      this.shared.uDpr.value = w / 512;
+      this.renderer.setRenderTarget(rt);
+      this.renderer.render(this.scene, cam);
+      const buf = new Uint8Array(w * h * 4);
+      this.renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
+      const cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      const ctx = cv.getContext("2d")!;
+      const img = ctx.createImageData(w, h);
+      for (let y = 0; y < h; y++) img.data.set(buf.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+      ctx.putImageData(img, 0, 0);
+      return cv;
+    } finally {
+      this.renderer.setRenderTarget(prev);
+      this.renderer.setPixelRatio(pr);
+      this.shared.uDpr.value = pr;
+      rt.dispose();
+      for (const o of hidden) o.visible = true;
+    }
   }
 
   start() {

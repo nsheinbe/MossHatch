@@ -79,6 +79,8 @@ export interface UiState {
   resume: { orderId: string; reason: "cancelled" | "returned" } | null;
   /** The domain whose panel is open: an id and its name, nothing else. */
   domainPanel: { id: string; fqdn: string } | null;
+  /** The signed-in grove's domain ids by name, so a tap on a creature opens the same panel as its chip. */
+  groveIndex: Record<string, string>;
   /** Bumped when a change in the panel means the grove should re-read the domains. */
   groveRev: number;
   /** The Rescue (transfer in) panel: the name typed in Find and, once started, the transfer's opaque ids. Never a code. */
@@ -115,7 +117,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveIndex: {}, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
       rescue: null, resume: null,
       set: (p) => set(p),

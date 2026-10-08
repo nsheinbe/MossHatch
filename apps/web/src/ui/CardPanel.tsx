@@ -20,7 +20,8 @@ export function CardPanel() {
       <div className="head"><h2 ref={head} tabIndex={-1}>{card.domain} hatched</h2></div>
       <div className="body">
         <PracticeHatchNotice domain={card.domain} />
-        <img className="card-img" src={card.image} alt={`Portrait of ${card.domain}, a ${card.species}`} width={512} height={640} />
+        {/* The card is the 1024 x 1280 picture with a 200-pixel caption band under it (world/portrait.ts), shown at half size. */}
+        <img className="card-img" src={card.image} alt={`Portrait of ${card.domain}, a ${card.species}, captioned with the name and hatch date`} width={512} height={740} />
         <p className={`tier tier-${card.tier}`} style={{ marginTop: 10 }}><strong>{card.tierLabel}</strong></p>
         <p className="fineprint">Short, clean names hatch rarer creatures.</p>
         <p><strong>{card.species}</strong>. Hatched {card.hatchedOn}.</p>

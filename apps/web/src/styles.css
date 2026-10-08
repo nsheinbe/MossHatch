@@ -93,7 +93,7 @@ details summary { cursor: pointer; min-height: 32px; }
 .notice { font-size: 0.9rem; color: rgba(241, 234, 216, 0.85); }
 .sample-tag { color: var(--lantern); }
 
-.card-img { width: 100%; aspect-ratio: 512 / 640; border-radius: 12px; display: block; background: var(--ink); border: 1px solid var(--glass-border); }
+.card-img { width: 100%; aspect-ratio: 1024 / 1480; border-radius: 12px; display: block; background: var(--ink); border: 1px solid var(--glass-border); }
 .traits { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; padding: 0; list-style: none; }
 .traits li { padding: 2px 10px; border: 1px solid var(--glass-border); border-radius: 12px; font-size: 0.9rem; }
 
