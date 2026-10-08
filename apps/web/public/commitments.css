@@ -44,3 +44,5 @@ table.fees th, table.fees td { border-bottom: 1px solid rgba(241, 234, 216, 0.25
 .readiness-task { display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; }
 .readiness-task input { width: 20px; height: 20px; flex: none; }
 .readiness-note { font-size: 0.875rem; }
+/* Addresses and commands in code (the assistants page) break anywhere rather than push the page sideways on a phone. */
+code { overflow-wrap: anywhere; }
