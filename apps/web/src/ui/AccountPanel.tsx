@@ -27,7 +27,7 @@ const AccountData = lazy(() => import("./AccountData"));
 
 /** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the small account view. No passwords anywhere. */
 export function AccountPanel() {
-  const { accountOpen, account, set } = useUi();
+  const { accountOpen, account, accountNotice, set } = useUi();
   const [step, setStep] = useState<Step>("choose");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -41,7 +41,7 @@ export function AccountPanel() {
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
     if (!accountOpen) return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") set({ accountOpen: false }); };
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") set({ accountOpen: false, accountNotice: null }); };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [accountOpen, set]);
@@ -73,7 +73,7 @@ export function AccountPanel() {
             <button type="button" className="btn secondary" aria-pressed={data === "close"} onClick={() => setData("close")}>Close my account</button>
             <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
             <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
-            <button type="button" className="btn secondary" onClick={() => set({ accountOpen: false })}>Close</button>
+            <button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button>
           </div>
         </div>
       </aside>
@@ -82,7 +82,7 @@ export function AccountPanel() {
 
   if (step === "recover") {
     // A finished recovery signs in: the account view below takes over and shows the hold.
-    return <RecoverAccount initialEmail={email} onBack={() => { setMsg(null); setStep("choose"); }} onClose={() => set({ accountOpen: false })}
+    return <RecoverAccount initialEmail={email} onBack={() => { setMsg(null); setStep("choose"); }} onClose={() => set({ accountOpen: false, accountNotice: null })}
       onRecovered={async () => { await refresh(); setStep("choose"); }} />;
   }
 
@@ -99,7 +99,7 @@ export function AccountPanel() {
           </div>
           {msg && <p role="status" className="notice">{msg}</p>}
           <div className="row-actions">
-            <button type="button" className="btn primary" onClick={() => { setCodes([]); setMsg(null); setStep("choose"); void refresh().then(() => set({ accountOpen: false })); }}>I saved them</button>
+            <button type="button" className="btn primary" onClick={() => { setCodes([]); setMsg(null); setStep("choose"); void refresh().then(() => set({ accountOpen: false, accountNotice: null })); }}>I saved them</button>
           </div>
         </div>
       </aside>
@@ -112,10 +112,11 @@ export function AccountPanel() {
       <div className="body">
         {step === "choose" && (
           <>
+            {accountNotice && <p role="status" className="notice">{accountNotice}</p>}
             <p>Sign in with a passkey. There are no passwords.</p>
             <div className="row-actions">
               {/* The recovery banner is shown at every sign-in, so the panel stays open while there is one. */}
-              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); const me = await whoAmI(); set({ account: me, accountOpen: !!me?.recovery }); })}>Sign in with a passkey</button>
+              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); const me = await whoAmI(); set({ account: me, accountOpen: !!me?.recovery, accountNotice: null }); })}>Sign in with a passkey</button>
             </div>
             <p><button type="button" className="linklike lost-passkey" onClick={() => { setMsg(null); setStep("recover"); }}>Lost your passkey?</button></p>
             <hr className="rule" />
@@ -145,7 +146,7 @@ export function AccountPanel() {
           </form>
         )}
         {msg && <p role="alert" className="notice" style={{ marginTop: 10 }}>{msg}</p>}
-        <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ accountOpen: false })}>Close</button></div>
+        <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button></div>
       </div>
     </aside>
   );

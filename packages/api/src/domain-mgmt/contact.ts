@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { tx, withUser, type PoolClient } from "@mosshatch/db";
 import type { Registrant } from "@mosshatch/registrar/port";
 import type { AppContext, Envelope } from "../ports.ts";
@@ -9,23 +8,15 @@ import { markExecuted } from "../stepup/gate.ts";
 import { sendMail } from "../email.ts";
 import { appendAudit } from "../audit.ts";
 import { canonicalJson } from "../util/bytes.ts";
-import { loadRegistrant, REGISTRANT_FIELDS } from "../orders/registrant.ts";
+import { loadRegistrant, REGISTRANT_FIELDS, RegistrantBody } from "../orders/registrant.ts";
 import { assertWritesOpen, audit, COR_LOCK_MS, DAY_MS, emailHash, ensureSecurityRow, mapRegistrarError, normalizeFqdn, notifyDomainEvent, ownedDomain, registrarOf, takeFuse, userIdOf, type DomainRow } from "./common.ts";
 import { startRegistrantVerification } from "./verification.ts";
 
 /** Approval of a change of registrant is by email, from the upstream, to both parties; it lapses after 5 days (own target). */
 export const APPROVAL_WINDOW_MS = 5 * DAY_MS;
 
-export const ContactBody = z.strictObject({
-  name: z.string().trim().min(2).max(120),
-  email: z.string().trim().toLowerCase().email().max(254),
-  phone: z.string().trim().regex(/^\+\d{1,3}\.\d{4,14}$/),          // EPP format +CC.number
-  street: z.string().trim().min(3).max(200),
-  city: z.string().trim().min(1).max(100),
-  region: z.string().trim().min(1).max(100),
-  postalCode: z.string().trim().min(2).max(20),
-  country: z.string().trim().length(2).toUpperCase(),
-});
+/** The same body as the checkout contact: a phone typed any usual way is stored as `+CC.number`. */
+export const ContactBody = RegistrantBody;
 
 const aad = (userId: string, changeId: string, field: string) => `contactchange:${userId}:${changeId}:${field}`;
 const lc = (s: string) => s.trim().toLowerCase();

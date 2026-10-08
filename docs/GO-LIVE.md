@@ -224,7 +224,9 @@ answers anything else prints `unknown`, never `ok`. Run it again any time; a `FA
 1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$13.46**.
 2. Open it. "How the price is made" shows Registry cost $10.46 and Flat fee $3.00. Total before tax $13.46; tax is added by Stripe at
    Checkout.
-3. Fill the registrant contact (your real details: it goes to the registry), tick the terms, Pay. Use your own card on Stripe Checkout.
+3. Fill the registrant contact (your real details: it goes to the registry; the phone can be typed any usual way, it is stored as
+   `+1.3105550100`), tick the terms, Pay. Use your own card on Stripe Checkout. Take your time: while you are typing, the page keeps
+   the 15-minute session alive; if it does lapse anyway, sign-in opens with a note and what you typed is still there afterwards.
 4. Watch the egg. Behind it: Stripe authorizes (manual capture), the app re-quotes Openprovider (the price guard refuses anything other
    than 10.46 create / 10.46 renew), registers through the registrar project, then captures.
 

@@ -65,6 +65,8 @@ export interface UiState {
   apiReachable: boolean | null;
   account: Me | null;
   accountOpen: boolean;
+  /** One line on why the sign-in panel opened by itself (the session ended under someone). Shown once, never persisted. */
+  accountNotice: string | null;
   /** The Visitors view (tokens, connected apps, requests waiting for a decision). Never persisted. */
   visitorsOpen: boolean;
   orderId: string | null;
@@ -113,7 +115,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
       rescue: null, resume: null,
       set: (p) => set(p),

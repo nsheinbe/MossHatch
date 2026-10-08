@@ -31,7 +31,7 @@ async function buy(page: Page, request: import("@playwright/test").APIRequestCon
   const chip = page.locator("button.chip", { hasText: ".com" });
   await expect(chip).toBeVisible({ timeout: 20_000 });
   await chip.click();
-  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone, like +1.5555550100", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(l).fill(value);
+  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(l).fill(value);
   await page.getByRole("button", { name: "Save contact" }).click();
   const pay = page.getByRole("button", { name: /Buy domain & hatch/ });
   const shown = (await pay.textContent())!.match(/\$([\d.]+)/)![1]!;
@@ -160,7 +160,7 @@ test("sign up, contact, accept, pay, hatch, and sign out", async ({ page, reques
   await expect(chip).toBeVisible({ timeout: 20_000 });
   await chip.click();
   await expect(page.getByRole("button", { name: /Buy domain & hatch/ })).toBeDisabled();       // no contact yet
-  for (const [label, value] of [["Full name", "Ada Moss"], ["Phone, like +1.5555550100", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(label).fill(value);
+  for (const [label, value] of [["Full name", "Ada Moss"], ["Phone", "(555) 555-0100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(label).fill(value);
   await page.getByRole("button", { name: "Save contact" }).click();
   const pay = page.getByRole("button", { name: /Buy domain & hatch/ });
   await expect(pay).toBeDisabled();                                                               // acceptance is not pre-checked
@@ -313,7 +313,7 @@ test("domain management: transfer code shown once, Stop a hostile transfer, DNSS
   await contact.getByRole("button", { name: "Change contact details" }).click();
   const form = contact.getByRole("form", { name: "New contact details" });
   await expect(form.getByLabel("Full name")).toHaveValue("Ada Moss", { timeout: 20_000 });
-  for (const [l, v] of [["Phone, like +1.5555550100", "+1.5555550199"], ["Street address", "2 Moss Road"], ["City", "Salem"], ["State or region", "OR"], ["Postal code", "97301"]] as const) await form.getByLabel(l).fill(v);
+  for (const [l, v] of [["Phone", "+1.5555550199"], ["Street address", "2 Moss Road"], ["City", "Salem"], ["State or region", "OR"], ["Postal code", "97301"]] as const) await form.getByLabel(l).fill(v);
   await clean(page, "contact form");
   await form.getByRole("button", { name: "Review the change" }).click();
   await approve(page, contact, "contact");

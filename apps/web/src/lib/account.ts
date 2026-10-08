@@ -95,7 +95,11 @@ export function explain(e: unknown): string {
     case "terms_not_accepted": return "Accept the terms and the registration agreement to continue.";
     case "tld_terms_not_accepted": return "Accept the registry terms for this extension to continue.";
     case "auto_renew_consent_required": return "Tick the auto-renew authorisation, or leave auto-renew off.";
-    case "invalid_contact": return "Check the contact details. The phone number looks like +1.5555550100.";
+    case "invalid_contact": return "Check the contact details. The phone can be written any usual way, like (310) 555-0100 or +44 20 7946 0958, with the country it belongs to.";
+    // The session ended (15 minutes idle, 8 hours in all, or revoked elsewhere): lib/session.ts opens sign-in for the forms that can; this is the fallback.
+    case "unauthorized": return "Your session has ended. Sign in again, then try once more.";
+    case "csrf": case "ambiguous_credentials": return "This page is out of date. Reload it, then try again.";
+    case "internal": return "Something went wrong on our side. Try again in a moment; if it keeps happening, write to support@mosshatch.com.";
     case "email_not_verified": return "Use one of your verified email addresses for the registrant contact.";
     case "email_unverified": return "Confirm your email address first, then try again.";
     case "contact_required": return "Add your registrant contact first.";

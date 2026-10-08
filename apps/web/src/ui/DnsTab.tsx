@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { normalizePhone } from "@mosshatch/core";
+import { sessionEnded } from "../lib/session";
+import { PHONE_HINT, PHONE_PROBLEM } from "./ContactForm";
 import {
   addRecords, changeDs, changeNameservers, deleteRecord, draftContact, explainDomain, explainRollback, getContactStart, getDns, getDs, getSnapshots, getVerification, rollback,
   sendVerification, submitContact, verifyRegistrant, type ContactFields, type DnsRecordView, type DnsView, type DomainDetail, type DsView, type Security, type Snapshot,
@@ -179,7 +182,7 @@ function ContactSection({ f, sec, reloadAll }: { f: string; sec: Security | null
   const loadVer = useCallback(() => { void getVerification(f).then((v) => setVer(v.verification)).catch(() => setVer(null)); }, [f]);
   useEffect(() => { loadVer(); }, [loadVer]);
   useEffect(() => { if (open) void getContactStart(f).then((c) => { if (c.current) setForm((x) => ({ ...x, name: c.current!.name, email: c.current!.email, country: c.current!.country })); }).catch(() => undefined); }, [open, f]);
-  const run = async (fn: () => Promise<string | void>) => { setBusy(true); setMsg(null); try { const m = await fn(); if (m) setMsg(m); } catch (e) { setMsg(explainDomain(e)); } finally { setBusy(false); } };
+  const run = async (fn: () => Promise<string | void>) => { setBusy(true); setMsg(null); try { const m = await fn(); if (m) setMsg(m); } catch (e) { if (await sessionEnded(e)) return; setMsg(explainDomain(e)); } finally { setBusy(false); } };
   const set = (k: keyof ContactFields) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
   const pending = ver && ver.state !== "verified";
 
@@ -201,13 +204,17 @@ function ContactSection({ f, sec, reloadAll }: { f: string; sec: Security | null
       {msg && <p role="status" className="notice">{msg}</p>}
       {!open ? <div className="row-actions"><button type="button" className="btn secondary" onClick={() => setOpen(true)}>Change contact details</button></div> : (
         <form className="form-grid" aria-label="New contact details" onSubmit={(e) => { e.preventDefault(); void run(async () => {
-          const dr = await draftContact(f, form);
+          // The phone is read on the page first (any usual way of writing it), so a shape is never the reason a change is refused.
+          const phone = normalizePhone(form.phone, form.country);
+          if (!phone) return PHONE_PROBLEM;
+          const dr = await draftContact(f, { ...form, phone, country: form.country.trim().toUpperCase() });
           setWarn(dr.warnings.map((w) => w.message));
           setReq({ type: "domain.contact.change", target: dr.id, run: async (id) => { const r = await submitContact(f, id); setOpen(false); setWarn([]); setMsg(r.status === "applied" ? "Contact details updated." : "Sent. Both the current and the new registrant must approve it by email."); loadVer(); reloadAll(); } });
         }); }}>
           <label>Full name<input className="text-input" required value={form.name} onChange={set("name")} autoComplete="off" /></label>
           <label>Email<input className="text-input" type="email" required value={form.email} onChange={set("email")} autoComplete="off" /></label>
-          <label>Phone, like +1.5555550100<input className="text-input" required value={form.phone} onChange={set("phone")} autoComplete="off" /></label>
+          <label>Phone<input className="text-input" type="tel" inputMode="tel" required value={form.phone} onChange={set("phone")} autoComplete="off" aria-describedby="dc-phone-hint" /></label>
+          <p id="dc-phone-hint" className="fineprint">{PHONE_HINT}</p>
           <label>Street address<input className="text-input" required value={form.street} onChange={set("street")} autoComplete="off" /></label>
           <label>City<input className="text-input" required value={form.city} onChange={set("city")} autoComplete="off" /></label>
           <label>State or region<input className="text-input" required value={form.region} onChange={set("region")} autoComplete="off" /></label>

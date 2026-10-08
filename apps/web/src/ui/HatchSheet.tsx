@@ -11,6 +11,7 @@ import { JourneySteps } from "./JourneySteps";
 import { supportHref } from "./OrderReturn";
 import { handle } from "../world/handle";
 import { trackConversion, attribution } from "../lib/conversion";
+import { sessionEnded } from "../lib/session";
 
 export function HatchSheet() {
   const { selected, hatchPhase, account } = useUi();
@@ -104,8 +105,10 @@ function CheckoutSheet({ r }: { r: Result }) {
       rememberCheckout({ orderId: o.order_id, fqdn: r.domain, years, accept, autoRenew: renew, key: attempt.current.key });
       window.location.assign(o.checkout_url);
     } catch (e) {
-      setError((e as Error).message === "checkout_closed" ? "That checkout can't be reopened. Press the button again to start a fresh one; nothing was charged." : `${explain(e)} Retrying the same request will reuse your checkout attempt.`);
       setBusy(false); inFlight.current = false;
+      // The session ended while the sheet was open: sign-in opens with a note, and the same name and sheet are here after it.
+      if (await sessionEnded(e)) return;
+      setError((e as Error).message === "checkout_closed" ? "That checkout can't be reopened. Press the button again to start a fresh one; nothing was charged." : `${explain(e)} Retrying the same request will reuse your checkout attempt.`);
     }
   };
   return <aside className="panel side checkout-sheet" role="region" aria-label={`Hatch ${r.domain}`} hidden={accountOpen}>

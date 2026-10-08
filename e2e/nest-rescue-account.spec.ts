@@ -69,7 +69,7 @@ async function rescue(page: Page, request: APIRequestContext, baseURL: string, e
   await offer.getByRole("button", { name: `Transfer ${fqdn} here` }).click();
   const panel = page.getByRole("region", { name: `Transfer ${fqdn} here` });
   await expect(panel.getByRole("heading", { name: `Bring ${fqdn} here` })).toBeFocused();
-  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone, like +1.5555550100", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await panel.getByLabel(l).fill(value);
+  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await panel.getByLabel(l).fill(value);
   await panel.getByRole("button", { name: "Save contact" }).click();
 
   const code = panel.getByLabel("Transfer code from your current registrar");

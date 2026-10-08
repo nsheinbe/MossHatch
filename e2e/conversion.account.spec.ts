@@ -55,7 +55,7 @@ test("conversion: no-WebGL checkout rejects unconfirmed and expired quotes, reco
  await expect(pay).toBeDisabled();
  quoteMode='ok';
  await sheet.getByRole('button',{name:'Refresh checkout'}).click();
- for(const [label,value] of [['Full name','Ada Moss'],['Phone, like +1.5555550100','+1.5555550100'],['Street address','1 Fern Lane'],['City','Portland'],['State or region','OR'],['Postal code','97201']] as const)await sheet.getByLabel(label).fill(value);
+ for(const [label,value] of [['Full name','Ada Moss'],['Phone','+1.5555550100'],['Street address','1 Fern Lane'],['City','Portland'],['State or region','OR'],['Postal code','97201']] as const)await sheet.getByLabel(label).fill(value);
  await sheet.getByRole('button',{name:'Save contact'}).click();
  await expect(pay).toBeDisabled();
  await sheet.getByLabel(/I accept the/).check();
