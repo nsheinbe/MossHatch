@@ -73,6 +73,7 @@ export function Grove() {
           realNames.add(x.fqdn);
         }
         setLive(want);
+        set({ groveIndex: Object.fromEntries(out.domains.map((d: DomainSummary) => [d.fqdn, d.id])) });
         setLoadErr(false);
       } catch { if (!dead) setLoadErr(true); }
     })();

@@ -39,7 +39,12 @@ export function WorldHost({ onReady, onFail }: { onReady?: (w: World) => void; o
     const onDown = (e: PointerEvent) => {
       if ((e.target as HTMLElement).tagName !== "CANVAS") return;
       const c = world.tap(e.clientX, e.clientY);
-      if (c) sound.voice(c.spec.species, c.spec.choreography.pitch);
+      if (!c) return;
+      sound.voice(c.spec.species, c.spec.choreography.pitch);
+      // In the signed-in grove a creature is its domain: a tap opens the domain's panel, as its chip does.
+      const st = useUi.getState();
+      const id = st.view === "grove" ? st.groveIndex[c.id] : undefined;
+      if (id) st.set({ domainPanel: { id, fqdn: c.id } });
     };
     if (import.meta.env.DEV) {
       // Test hook, present only in the dev server (dead-code-eliminated from builds).
