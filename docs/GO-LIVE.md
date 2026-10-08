@@ -49,8 +49,12 @@ code (only the money codes from steps 3 to 6 remain).
    Do not add more until the rehearsal is done.
 5. Membership: Basic S, bought 2026-10-07 (expires 2027-10-08, auto-renew on; D-062). Prices below are member prices (migration 1220).
    If the membership lapses, the price guard refuses orders and renewals until new dated rows are added.
+6. Contracts: Account, Contracts. Sign Openprovider's reseller terms and the registry terms of **every extension on sale** (.com, .dev,
+   .app, .studio, .io, .ai). An unsigned extension refuses every create with Openprovider's code 309 (2026-10-08: the first live order
+   sat in `outcome_unknown` for twenty minutes over the unsigned .com terms, AUDIT-2026-10-08 §2d). Since that day the app parks such an
+   order in `registrar_unavailable`, emails `MH_ALERT_EMAIL` the instruction (`registrar_terms`) and retries by itself once signed.
 
-Check: in the panel, Reseller details shows the USD balance.
+Check: in the panel, Reseller details shows the USD balance, and Contracts shows "Signed" next to each extension on sale.
 
 ## 3. The `mosshatch-registrar` Vercel project
 
@@ -253,6 +257,8 @@ values ('openprovider', 'com', 'register', <cents>, current_date, 'Openprovider 
 ```
 If it says new orders are paused: `sell_gate` (balance minus the floor too low; step 4's floor), `global_daily_cap` / `global_total_cap`
 (the spend fuse), or `orders_paused` (the flag).
+If it says the registrar is busy and keeps trying, and `MH_ALERT_EMAIL` receives a `registrar_terms` warning: the extension's terms are
+unsigned at Openprovider (section 2, step 6). Sign them; the order finishes by itself within its next retry (one to thirty minutes).
 
 ## 10. Roll back to the demo, instantly
 
