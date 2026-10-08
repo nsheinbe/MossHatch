@@ -155,6 +155,14 @@ describe("Openprovider error mapping", () => {
     await expect(register({ status: 429, body: { code: 1, desc: "slow down" } })).rejects.toMatchObject({ kind: "rate_limited", retryable: true });
     await expect(register({ body: { code: 0, maintenance: true, data: {} } })).rejects.toMatchObject({ kind: "maintenance", retryable: true });
   });
+  it("a 5xx whose body carries a no-effect code (309, terms not signed) is refused before any effect: retryable, never unknown", async () => {
+    // Observed live 2026-10-08: HTTP 500 with code 309 on CREATE_DOMAIN, nothing created. Filed as unknown, the order sat reconciling.
+    await expect(register(fail(500, 309, "Domain registration terms not accepted"))).rejects.toMatchObject({ kind: "unavailable", code: "terms_not_accepted", retryable: true, outcomeUnknown: false });
+    await expect(register(fail(400, 309))).rejects.toMatchObject({ kind: "unavailable", code: "terms_not_accepted", retryable: true, outcomeUnknown: false });
+    // Any other code on a 5xx keeps the conservative path: a write is an unknown outcome, reconciled by reading.
+    await expect(register(fail(500, 1, "Internal error"))).rejects.toMatchObject({ kind: "unknown", code: "http_500", outcomeUnknown: true });
+    await expect(register({ status: 500, body: { desc: "no code at all" } })).rejects.toMatchObject({ kind: "unknown", code: "http_500", outcomeUnknown: true });
+  });
   it("REQ after create is accepted_pending, never registered", async () => {
     expect(await register(ok({ id: 9, status: "REQ" }))).toEqual({ status: "accepted_pending", registrarOrderId: "9", reason: "async" });
   });

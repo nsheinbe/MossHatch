@@ -43,7 +43,7 @@ export const usdText = (minor: bigint | number) => { const n = BigInt(minor).toS
 
 export async function alert(ctx: AppContext, q: Q, a: AlertInput & { orderId: string }) {
   // The subject is the order id, an opaque value; one open alert per (kind, order).
-  return raiseAlert(ctx, q as PoolClient, { severity: a.severity, kind: a.kind, subject: a.orderId, detail: { order_id: a.orderId, ...(a.detail ?? {}) } });
+  return raiseAlert(ctx, q as PoolClient, { severity: a.severity, kind: a.kind, subject: a.orderId, ...(a.email ? { email: true } : {}), detail: { order_id: a.orderId, ...(a.detail ?? {}) } });
 }
 
 /** Where customer mail goes: every verified, live notification address. */

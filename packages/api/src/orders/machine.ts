@@ -480,8 +480,12 @@ async function onRegisterError(m: M, o: OrderRow, op: Op, e: RegistrarError): Pr
         await insertIntent(c, o.id, "register", op.seq + 1, hashOf({ fqdn: o.fqdn, years: o.years, reg_username: o.regUsername }));
         return null;
       }
-      const row = await move(m, c, o.id, ["registering"], "registrar_unavailable", next, { cause: "job", detail: { kind: e.kind } });
+      const row = await move(m, c, o.id, ["registering"], "registrar_unavailable", next, { cause: "job", detail: { kind: e.kind, ...(e.code ? { code: e.code } : {}) } });
       if (row && e.kind === "insufficient_funds") await alert(m.ctx, c, { orderId: o.id, severity: "page", kind: "registrar_funds" });
+      // Openprovider 309 (2026-10-08, the first live order): the account had not signed the extension's registration terms. That is an
+      // operator step, so an emailed warning carrying the instruction rather than a page; the order retries under the backoff and
+      // completes by itself once the terms are signed.
+      if (row && e.code === "terms_not_accepted") await alert(m.ctx, c, { orderId: o.id, severity: "warn", kind: "registrar_terms", email: true, detail: { code: e.code } });
       return row;
     });
     return r ? "progressed" : "wait";

@@ -74,6 +74,19 @@ const PENDING = new Set(["REQ", "PEN", "SCH", "RRQ"]);
 const err = (kind: RegistrarError["kind"], code: string, o: { retryable?: boolean; outcomeUnknown?: boolean } = {}, message = "registrar request failed") =>
   new RegistrarError(kind, message, { retryable: o.retryable ?? false, outcomeUnknown: o.outcomeUnknown ?? false, code });
 const rejected = (code: string) => err("rejected", code, {}, "registrar rejected the request");
+/**
+ * Provider codes that mean the request was refused before it had any effect, whatever HTTP status carried them. Openprovider answers
+ * some business refusals with HTTP 500 and its own code in the body, the same status as a real failure, so without this list a write
+ * refused that way was filed as "outcome unknown" and reconciled for days. A code joins the list only with evidence (its entry in
+ * Openprovider's error-code list, or an observed answer); an unlisted code on a 5xx keeps the conservative unknown-outcome path.
+ * - 309: the reseller account has not accepted the current registration terms for the extension (observed live 2026-10-08 on
+ *   CREATE_DOMAIN, HTTP 500, nothing created). An operator signs them under Account, Contracts; until then every create of that
+ *   extension is refused the same way, so the caller parks the order and retries.
+ */
+const NO_EFFECT_CODES: Record<number, () => RegistrarError> = {
+  309: () => err("unavailable", "terms_not_accepted", { retryable: true }, "the registrar account has not accepted the extension's registration terms"),
+};
+const refusedBeforeEffect = (code: number | undefined): RegistrarError | null => (code !== undefined && NO_EFFECT_CODES[code] ? NO_EFFECT_CODES[code]() : null);
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 type JObj = { [k: string]: Json };
 interface Reply { data: JObj; code: number; warnings: number[]; secret?: string }
@@ -193,6 +206,9 @@ export class OpenproviderAdapter implements RegistrarPort {
         throw rejected("auth_failed");
       }
       if (res.status === 429) { log({ ...base, outcome: "error" }); throw err("rate_limited", "http_429", { retryable: true }); }
+      // A 5xx whose body carries a code from the no-effect list was refused before any effect: not an unknown outcome, even for a write.
+      const refusal = res.status >= 500 && parsed ? refusedBeforeEffect(code) : null;
+      if (refusal) { log({ ...base, outcome: "error" }); throw refusal; }
       if (res.status >= 500 || !parsed) {
         log({ ...base, outcome: "error" });
         throw err(rule.write ? "unknown" : "unavailable", res.status >= 500 ? `http_${res.status}` : "bad_response", { retryable: !rule.write, outcomeUnknown: rule.write });
@@ -208,6 +224,8 @@ export class OpenproviderAdapter implements RegistrarPort {
   }
 
   private mapError(code: number | undefined, desc: string): RegistrarError {
+    const known = refusedBeforeEffect(code);
+    if (known) return known;
     const c = code === undefined ? "bad_response" : String(code);
     // UNVERIFIED: the insufficient-balance code was not provoked in the sandbox (100,000 of play money); matched on the description instead.
     if (/insufficient|not enough (balance|funds|credit)|balance is too low/i.test(desc)) return err("insufficient_funds", c);

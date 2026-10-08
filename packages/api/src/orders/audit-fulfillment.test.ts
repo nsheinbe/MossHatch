@@ -113,6 +113,38 @@ describe("AUD-F4: the name lock holds while the first buyer waits on the registr
   });
 });
 
+describe("2026-10-08: the registrar refuses the create because the account has not signed the extension's terms (Openprovider 309)", () => {
+  it("parks the order, emails the operator the Contracts instruction once, and finishes by itself after the terms are signed", async () => {
+    const { id, name } = await authorized(ada, fq("terms"));
+    const notified: { kind: string; email?: boolean }[] = [];
+    (h.app.ctx.services as Record<string, unknown>).alertNotifier = { notify: async (a: { kind: string; email?: boolean }) => { notified.push(a); } };
+    const real = h.registrar.register.bind(h.registrar);
+    h.registrar.register = async () => { throw new RegistrarError("unavailable", "terms", { retryable: true, outcomeUnknown: false, code: "terms_not_accepted" }); };
+    await work(id);
+    expect((await orderRow(h, id)).state).toBe("registrar_unavailable");                       // parked under the hold: not voided, not unknown
+    expect((await states(h, id)).some((s) => s.endsWith(">outcome_unknown"))).toBe(false);
+    const raised = (await alerts(h, "registrar_terms")).filter((a) => a.subject === id);
+    expect(raised).toHaveLength(1); expect(raised[0]!.severity).toBe("warn"); expect(raised[0]!.detail).toMatchObject({ code: "terms_not_accepted" });
+    expect(notified).toEqual([expect.objectContaining({ kind: "registrar_terms", email: true })]);
+    // Still unsigned at the first retry: the same refusal, and no second alert or mail (one open alert per order).
+    h.app.clock.advance(2 * 60_000);
+    await work(id);
+    expect((await orderRow(h, id)).state).toBe("registrar_unavailable");
+    expect((await alerts(h, "registrar_terms")).filter((a) => a.subject === id)).toHaveLength(1);
+    expect(notified).toHaveLength(1);
+    // Signed: the next retry registers under a new operation and captures; the customer never hears of a cancellation.
+    h.registrar.register = real;
+    h.app.clock.advance(5 * 60_000);
+    await work(id);
+    const o = await orderRow(h, id);
+    expect(o.state).toBe("captured");
+    expect(o.void_reason).toBeNull();
+    expect(await domainsOf(name)).toEqual([ada.userId]);
+    expect(h.app.email.sent.some((m) => m.kind === "order.voided" && m.text.includes(name))).toBe(false);
+    delete (h.app.ctx.services as Record<string, unknown>).alertNotifier;
+  });
+});
+
 describe("AUD-F5: the cancel path delivers a registration of ours that completed, while the hold is valid", () => {
   it("a cancel for the unknown-outcome deadline finds the name registered under our profile: captured, not voided", async () => {
     const { id, name } = await authorized(ada, fq("late"));
