@@ -26,6 +26,15 @@ const call = async (name: string, args: Record<string, unknown>, o: { ip?: strin
 describe("the public MCP search: no account, two read tools", () => {
   it("answers the handshake and lists exactly search_names and get_quote; refuses a token, a foreign page and other methods", async () => {
     expect((await k.app.call("GET", PUBLIC_MCP_PATH, { browser: false })).status).toBe(405);
+    // A person who pastes either address into a browser lands on the instructions page; a client's GET stream is still refused.
+    for (const path of [PUBLIC_MCP_PATH, "/mcp"]) {
+      const b = await k.app.call("GET", path, { browser: false, headers: { accept: "text/html,application/xhtml+xml" } });
+      expect(b.status, path).toBe(302);
+      expect(b.headers.get("location"), path).toBe(`${k.app.ctx.config.origin}/assistants`);
+      const c = await k.app.call("GET", path, { browser: false, headers: { accept: "text/event-stream" } });
+      expect(c.status, path).toBe(405);
+      expect(c.headers.get("allow"), path).toBe("POST");
+    }
     const init = await pub("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "probe", version: "0" } });
     expect(init.status, init.text).toBe(200);
     expect(init.json.result.serverInfo.name).toBe("mosshatch-search");
