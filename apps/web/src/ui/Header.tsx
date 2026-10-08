@@ -2,6 +2,7 @@ import { useUi } from "../store";
 import { sound } from "../audio/synth";
 import { handle } from "../world/handle";
 import { buildSiteMode } from "../lib/site";
+import { WaitingCount, WaitingDescription } from "./Waiting";
 
 export function WordmarkMark() {
   // A hatched egg: ink lines at two angles inside an egg outline.
@@ -30,8 +31,9 @@ export function Header() {
       </nav>
       <div className="tools">
         {(apiReady || apiReachable) && (
-          <button type="button" onClick={() => set({ accountOpen: true })} aria-haspopup="dialog">
+          <button type="button" onClick={() => set({ accountOpen: true })} aria-haspopup="dialog" aria-describedby={account ? "waiting-desc" : undefined}>
             <span className="label">{account ? "Account" : buildSiteMode === "invite" ? "Invited? Sign in" : "Sign in"}</span>
+            {account && <WaitingCount />}
           </button>
         )}
         <button type="button" aria-pressed={on} onClick={() => { const n = !on; sound.setEnabled(n); set({ sound: n }); }}>
@@ -41,6 +43,7 @@ export function Header() {
           <span className="dot" aria-hidden="true" /><span className="label">Calm<span className="state"> {calm ? "on" : "off"}</span></span>
         </button>
       </div>
+      <WaitingDescription />
     </header>
   );
 }

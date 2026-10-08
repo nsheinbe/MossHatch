@@ -210,3 +210,13 @@ describe("the grant is a visitor: listed, revocable, sent home", () => {
     expect(k.app.email.sent.some((m) => m.kind === "visitors.sent_home")).toBe(true);
   });
 });
+
+describe("connected-app lifetime", () => {
+  it("a connection defaults to the longest grant (90 days), and the passkey summary says so", async () => {
+    const p = pkce(); const redirect = "https://client.example/ninety";
+    const id = await register(redirect, "Ninety-day client");
+    const c = await consent(ada, id, redirect, p, ["domains.read:*"]);
+    expect(c.view.defaults.expires_in_days).toBe(90);
+    expect(c.summary).toContain("for 90 days");
+  });
+});

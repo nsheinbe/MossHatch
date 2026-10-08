@@ -82,6 +82,8 @@ async function harness(page: Page) {
   return api;
 }
 
+type Harness = Awaited<ReturnType<typeof harness>>;
+
 /** A platform passkey that answers any assertion for rp "localhost" (the mocked prepare lists no credentials, so it is discovered). */
 async function passkey(page: Page) {
   const cdp = await page.context().newCDPSession(page);
@@ -95,9 +97,10 @@ async function passkey(page: Page) {
 }
 
 /** Loads the app signed in. Escape ends the arrival demo; it also closes /device and Rescue, so those pages skip it. */
-async function boot(page: Page, path = "/", o: { escape?: boolean } = {}) {
+async function boot(page: Page, path = "/", o: { escape?: boolean; before?: (api: Harness) => void } = {}) {
   await passkey(page);
   const api = await harness(page);
+  o.before?.(api);
   await page.goto(path);
   await page.waitForSelector("html[data-booted='1']");
   await expect(page.getByRole("button", { name: "Account", exact: true })).toBeVisible({ timeout: 20_000 });
@@ -494,4 +497,121 @@ test("ST-72 approval card: more access signs the token's access as the server ha
   await group.getByRole("button", { name: "Approve with passkey" }).click();
   await expect(region.getByText("Approved. The token can now do that.")).toBeVisible({ timeout: 20_000 });
   expect(api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/widen")).map((c) => c.headers["x-mh-action-id"])).toEqual(api.actionIds());
+});
+
+test("connect tab: a token's recipe plan waits for the passkey; the notice opens it; the preview lists every change", async ({ page }) => {
+  const APP = "0190f0f0-0000-7000-8000-00000000f0a1";
+  const CONN = "0190f0f0-0000-7000-8000-00000000f0c1";
+  const at = "2026-09-30T10:00:00.000Z", until = "2026-09-30T11:00:00.000Z";
+  const plan = {
+    recipe: "hosting-vercel", version: 1, domain: FQDN, plan_hash: "ab".repeat(32), needs_approval: true,
+    dns: { add: [{ type: "A", name: "@", value: "76.76.21.21" }, { type: "CNAME", name: "www", value: "cname.vercel-dns.com." }], remove: [{ type: "A", name: "@", value: "192.0.2.1" }] },
+    pending_records: [], variables: [], steps: [{ service: "vercel", op: "project.domain.add", target: FQDN, creates_resource: false, cost: "free" }],
+    sensitive: [{ type: "A", name: "@", reasons: ["apex"] }, { type: "CNAME", name: "www", reasons: ["www"] }],
+  };
+  const api = await boot(page, "/", { before: (a) => {
+    a.on("GET", "^/api/v1/recipe-applications/waiting$", { applications: [{ id: APP, recipe: "hosting-vercel", domain: FQDN, domain_id: DOMAIN_ID, requester: "Build bot", created_at: at, expires_at: until }] });
+    a.on("GET", "^/api/v1/recipes$", { recipes: [
+      { id: "hosting-vercel", version: 1, title: "Host on Vercel", summary: "Points this name at your Vercel project.", services: ["vercel"] },
+      { id: "email-resend", version: 1, title: "Email with Resend", summary: "Sends mail from this name with Resend.", services: ["resend"] },
+    ] });
+    a.on("GET", `${D_FQ}/connections$`, { connections: [{ id: CONN, service: "vercel", status: "active", checked_at: at, connected_at: at, recipe_application_id: null }], findings: [] });
+    a.on("GET", `${D_FQ}/recipe-applications$`, { applications: [{ id: APP, recipe: "hosting-vercel", state: "planned", needs_approval: true, failure_code: null, created_by: { kind: "agent", name: "Build bot", live: true }, created_at: at, expires_at: until, applied_at: null }] });
+    a.on("GET", `^/api/v1/recipe-applications/${esc(APP)}$`, { application_id: APP, recipe: "hosting-vercel", state: "planned", needs_approval: true, failure_code: null, applied_at: null, plan });
+    a.on("POST", `^/api/v1/recipe-applications/${esc(APP)}/approve$`, { state: "approved" });
+  } });
+
+  // The count on the Account button (described, not part of its name) and the page's notice.
+  const account = page.getByRole("button", { name: "Account", exact: true });
+  await expect(account).toHaveAccessibleDescription("1 request is waiting for your decision.", { timeout: 20_000 });
+  const notice = page.locator(".waiting-notice");
+  await expect(notice).toContainText(`Your token "Build bot" asks to run Host on Vercel on ${FQDN}.`);
+  await clean(page, "waiting notice");
+
+  // Review opens the name on its Connect tab; the notice steps aside while the panel is open.
+  await notice.getByRole("button", { name: "Review" }).click();
+  const panel = page.getByRole("region", { name: `Details for ${FQDN}` });
+  await expect(panel.getByRole("tab", { name: "Connect" })).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
+  await expect(notice).toHaveCount(0);
+  await expect(panel.getByText(`Your token "Build bot" planned Host on Vercel for this name.`)).toBeVisible();
+  // A provider not connected yet asks for its token in a password field.
+  const resend = panel.getByRole("group", { name: "Email with Resend" });
+  await expect(resend.getByLabel("Resend token")).toHaveAttribute("type", "password");
+
+  // The plan the token made: every record added and removed, the sensitive ones marked, and the passkey before anything runs.
+  await panel.getByRole("button", { name: "Review", exact: true }).click();
+  const card = panel.getByRole("group", { name: "Host on Vercel" });
+  await expect(card.getByText("A @ 76.76.21.21")).toBeVisible({ timeout: 20_000 });
+  await expect(card.getByText("CNAME www cname.vercel-dns.com.")).toBeVisible();
+  await expect(card.getByText("A @ 192.0.2.1")).toBeVisible();
+  await expect(card.getByText(`At Vercel: add ${FQDN} to your project.`)).toBeVisible();
+  await expect(card.getByText("This changes sensitive records or creates something at a provider, so it needs your passkey.")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Apply" })).toHaveCount(0);
+  await clean(page, "connect tab with a waiting plan");
+
+  await card.getByRole("button", { name: "Approve with passkey" }).click();
+  const group = card.getByRole("group", { name: "Confirm with your passkey" });
+  await group.getByRole("button", { name: "Approve with passkey" }).click();
+  await expect(card.getByText("Approved. Apply it now.")).toBeVisible({ timeout: 20_000 });
+  await expect(card.getByRole("button", { name: "Apply" })).toBeVisible();
+  const signed = api.calls.filter((c) => c.path === "/api/v1/actions/prepare").at(-1)!.body!;
+  expect(signed).toMatchObject({ type: "dns.sensitive.approve", target_id: APP });
+  expect(api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/approve")).map((c) => c.headers["x-mh-action-id"])).toEqual(api.actionIds());
+});
+
+test("connected apps: what a token did, in words; pause stops it at once; resume needs the passkey", async ({ page }) => {
+  const BID = "0190f0f0-0000-7000-8000-00000000b0c1";
+  const at = "2026-09-30T10:00:00.000Z", until = "2026-10-30T10:00:00.000Z";
+  let paused = false;
+  const api = await boot(page);
+  api.on("GET", "^/api/v1/visitors$", () => ({ json: {
+    visitors: [{ id: BID, kind: "agent", name: "Build bot", prefix: "mh_live_b0c1", scopes: [`dns.write:${FQDN}`], connected_app: null, created_at: at, last_used_at: at, expires_at: until, revoked_at: null, paused,
+      spend: { cap_minor: "0", spent_minor: "0", reserved_minor: "0" }, pending_requests: 0 }],
+    pending_requests: 0, confirm_threshold_minor: "5000", device_login_enabled: true,
+  } }));
+  api.on("GET", "^/api/v1/approvals$", { approvals: [] });
+  api.on("GET", `^/api/v1/bindings/${esc(BID)}/activity$`, { activity: [
+    { at, actor: "binding", action: "mcp.tool_call", resource_kind: "domain", resource_id: DOMAIN_ID, domain: FQDN, op: "dns_upsert", outcome: "ok" },
+    { at, actor: "binding", action: "mcp.tool_call", resource_kind: null, resource_id: null, domain: null, op: "propose_registration", outcome: "scope_denied" },
+    { at, actor: "user", action: "binding.created", resource_kind: "binding", resource_id: BID, domain: null, op: null, outcome: null },
+  ] });
+  api.on("POST", `^/api/v1/bindings/${esc(BID)}/pause$`, () => { paused = true; return { json: { binding: { paused: true } } }; });
+  api.on("POST", `^/api/v1/bindings/${esc(BID)}/widen$`, () => { paused = false; return { json: {} }; });
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("button", { name: "Connected apps" }).click();
+  const region = page.getByRole("region", { name: "Connected apps", exact: true });
+
+  // The front door: the address to give an assistant, from this site.
+  await expect(region.getByRole("heading", { name: "Connect Claude or another assistant" })).toBeVisible({ timeout: 20_000 });
+  await expect(region.locator("code.use-line").first()).toHaveText(new URL("/mcp", page.url()).toString());
+
+  await region.getByRole("button", { name: "What Build bot did" }).click();
+  const acts = region.getByRole("group", { name: "What Build bot did" });
+  await expect(acts.getByRole("listitem")).toHaveText([/Changed DNS records on fern-harness\.com through MCP$/, /Suggested a name to buy through MCP \(not allowed\)$/, /Created$/], { timeout: 20_000 });
+  await clean(page, "token activity");
+
+  // Pause takes access away, so no passkey; resume gives it back, so the passkey signs the same access.
+  await region.getByRole("button", { name: "Pause Build bot" }).click();
+  await expect(region.getByText("Paused Build bot. It cannot do anything until you resume it with your passkey.")).toBeVisible({ timeout: 20_000 });
+  expect(api.calls.filter((c) => c.path === "/api/v1/actions/prepare")).toEqual([]);
+  await region.getByRole("button", { name: "Resume Build bot" }).click();
+  await region.getByRole("group", { name: "Confirm with your passkey" }).getByRole("button", { name: "Approve with passkey" }).click();
+  await expect(region.getByText("Resumed Build bot.")).toBeVisible({ timeout: 20_000 });
+  const signed = api.calls.filter((c) => c.path === "/api/v1/actions/prepare").at(-1)!.body!;
+  expect(signed).toMatchObject({ type: "agent.token.widen", target_id: BID, user_input: { scopes: [`dns.write:${FQDN}`] } });
+  await expect(region.getByRole("button", { name: "Pause Build bot" })).toBeVisible();
+  await clean(page, "connected apps after resume");
+});
+
+test("a buy link from an assistant opens Find on the name and searches it; the name stays out of every request URL", async ({ page }) => {
+  const api = await boot(page, `/#find=${FQDN}`, { escape: false, before: (a) => a.on("POST", "^/api/v1/search$", { degraded: false, results: [] }) });
+  const input = page.locator("#name-input");
+  await expect(input).toHaveValue(FQDN);
+  expect(new URL(page.url()).hash).toBe("");
+  // The live search or, before the shop opens to this account, the public lookup: both carry the name in the body.
+  await expect.poll(() => api.calls.filter((c) => c.method === "POST" && (c.path === "/api/v1/search" || c.path === "/api/lookup")).length, { timeout: 20_000 }).toBeGreaterThan(0);
+  // Past the arrival demo's start (1.5 s) and its typing: a first visit from a link keeps the linked name.
+  await page.waitForTimeout(3500);
+  await expect(input).toHaveValue(FQDN);
+  expect(api.calls.filter((c) => c.path.includes("fern-harness") || (c.search ?? "").includes("fern-harness"))).toEqual([]);
 });

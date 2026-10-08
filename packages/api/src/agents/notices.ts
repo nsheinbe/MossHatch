@@ -27,11 +27,15 @@ function describe(f: RequestFacts): string {
   return `use more of your account: ${(f.scopes ?? []).join(", ")}`;
 }
 
-/** An agent asked for something that needs you. Coalesced into the security digest under a flood (class B). */
+/**
+ * An agent asked for something that needs you. Coalesced into the security digest under a flood (class B). No link at all (row 43;
+ * ST tests check these mails carry no URL): the text names the site and where the request waits, and signing in shows it on the
+ * Account button, which opens it from there.
+ */
 export async function requestNotice(ctx: AppContext, c: PoolClient, userId: string, requestId: string, f: RequestFacts): Promise<void> {
   await send(ctx, c, userId, "agent.request", `agent.request:${requestId}`, {
     subject: "One of your tokens is waiting for your decision",
-    text: `Your token "${f.bindingName}" asked to ${describe(f)}.\n\nNothing happens unless you decide in Mosshatch. Sign in, open Account, then Connected apps. The request expires on its own after 72 hours.\n\nIf you did not expect this, use Disconnect everything in the same place.\n`,
+    text: `Your token "${f.bindingName}" asked to ${describe(f)}.\n\nNothing happens unless you decide. Sign in at mosshatch.com with your passkey: the request is waiting under Account. It expires on its own after 72 hours.\n\nIf you did not expect this, use Disconnect everything under Account, Connected apps.\n`,
   });
 }
 

@@ -43,7 +43,7 @@ export function isRpcRequest(v: unknown): v is RpcRequest {
 export interface CallMeta { era: "2026" | "legacy"; version: string }
 
 /** Results for 2026-07-28 clients carry `resultType`; list results also carry the cache fields (private, never shared). */
-const modern = (m: CallMeta, r: Record<string, unknown>, cacheable = false) => (m.era === "2026" ? { ...r, resultType: "complete", ...(cacheable ? { ttlMs: 0, cacheScope: "private" } : {}) } : r);
+export const modern = (m: CallMeta, r: Record<string, unknown>, cacheable = false) => (m.era === "2026" ? { ...r, resultType: "complete", ...(cacheable ? { ttlMs: 0, cacheScope: "private" } : {}) } : r);
 
 /** Dispatch one message. Returns null for a notification (the route answers 202 with no result). */
 export async function dispatch(ctx: AppContext, caller: Caller, msg: RpcRequest, meta: CallMeta): Promise<RpcResponse | null> {

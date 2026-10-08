@@ -4,6 +4,7 @@ import { useUi } from "../store";
 import { handle } from "../world/handle";
 import { useAnchor } from "./Chips";
 import { eggFacts, stateOf, type DomainSummary } from "../lib/groveState";
+import { openWaiting } from "./Waiting";
 
 const STATE_COLOR: Record<CreatureState, string> = {
   thriving: "var(--st-healthy)", drowsy: "var(--st-drowsy)", sleeping: "var(--st-sleeping)", shedding: "var(--st-shedding)",
@@ -39,7 +40,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 interface Live { key: string; fqdn: string; id?: string; state: CreatureState; age: number }
 
 export function Grove() {
-  const { groveNames, set, apiReady, account, groveRev } = useUi();
+  const { groveNames, set, apiReady, account, groveRev, waiting } = useUi();
   const real = !!(apiReady && account);
   const [live, setLive] = useState<Live[]>([]);
   const [loadErr, setLoadErr] = useState(false);
@@ -47,7 +48,9 @@ export function Grove() {
   void sample;
   const w = handle.world;
   const mine = w?.groveCreatures() ?? [];
-  const names = real ? live.map((l) => ({ domain: l.fqdn, state: l.state })) : mine.map((c) => ({ domain: c.id, state: c.state }));
+  // A name with a request or a plan waiting for the owner shows "needs you" until it is decided (the request travels with the creature).
+  const asks = new Set(waiting.map((x) => x.fqdn).filter((f): f is string => !!f));
+  const names = real ? live.map((l) => ({ domain: l.fqdn, state: asks.has(l.fqdn) ? "attention" as CreatureState : l.state })) : mine.map((c) => ({ domain: c.id, state: c.state }));
 
   // Bound to the account's real domains when a backend is connected and someone is signed in. Otherwise this stays the Phase 1 practice grove.
   useEffect(() => {
@@ -79,6 +82,16 @@ export function Grove() {
     })();
     return () => { dead = true; };
   }, [real, groveRev]);
+
+  // The creatures follow: "needs you" while something waits for the name, back to their own state after.
+  useEffect(() => {
+    const wd = handle.world;
+    if (!real || !wd) return;
+    for (const c of wd.groveCreatures()) {
+      const l = live.find((x) => x.fqdn === c.id);
+      if (l) c.setState(asks.has(l.fqdn) ? "attention" : l.state);
+    }
+  }, [real, live, waiting]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     handle.world?.setView("grove");
@@ -121,6 +134,12 @@ export function Grove() {
       ) : (
         <div className="panel grove-bar" role="status">
           <span>{parts.join(", ")}.</span>
+          {real && waiting.length > 0 && (
+            <span className="row-actions" style={{ marginTop: 0 }}>
+              <span>{waiting.length === 1 ? "1 request waits for you." : `${waiting.length} requests wait for you.`}</span>
+              <button type="button" className="btn primary small" onClick={() => openWaiting(waiting[0]!)}>Review</button>
+            </span>
+          )}
           {!real && groveNames.length > 0 && names.some((n) => SAMPLES.some((s) => s.domain === n.domain)) && <span className="notice"><span className="sample-tag">Sample grove.</span> These are not your domains.</span>}
         </div>
       )}

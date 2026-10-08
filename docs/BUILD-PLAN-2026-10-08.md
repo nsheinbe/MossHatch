@@ -83,6 +83,41 @@ What the Account panel, the DNS tab and Connected apps showed, what was wrong, a
 Not changed, noted: the record table in Connected apps (a wide panel) is fine as a table; the contact form still asks for the phone and
 address again on every change (the server returns only name, email and country by design).
 
+### 2b. Connected apps and assistants (owner's review, 2026-10-08)
+
+The owner asked what "Claude" meant in the token form and who pays for it. Nobody: a token or a connection is a key for the person's own
+assistant or program, and Mosshatch is an MCP server it calls. The review found the agent features built and invisible. What changed:
+
+| Item | Change |
+|---|---|
+| Front door | Connected apps opens with "Connect Claude or another assistant": the address to paste, steps for Claude, Claude Code, ChatGPT and Cursor, and what it can do. Public page /assistants with the same steps, linked from Find, How it works and Connected apps |
+| Search with no account | `POST /mcp/search` (mcp/public.ts): `search_names` and `get_quote` only, no token accepted. While the shop is invite-only it answers from the public registries with the page's lookup limits and the published prices, plus the waitlist link; once open, from the registrar under the anonymous search limits. Buy links carry the name in the URL fragment (V1) and open Find on it |
+| Recipes for people | A Connect tab on each name: paste a scoped provider token, preview exactly what the recipe changes, approve with the passkey when it is sensitive, apply, watch it finish, disconnect (which removes the records it wrote) |
+| Recipes for assistants | MCP tools `list_recipes`, `plan_recipe`, `apply_recipe` (answers `pending_human_approval` when the passkey is needed) and `get_recipe_application`; the plan waits on the name's Connect tab and on the Account button |
+| What waits for you | One list (`lib/waiting.ts`): token requests and recipe plans. A count on the Account button, a notice at the bottom of the page, the grove bar, and the name's creature shows "needs you"; a tap opens the request |
+| Approval email | Still no link (threat row 43, and session.test.ts checks these mails carry no URL): it now says to sign in at mosshatch.com and that the request waits under Account. A link straight to the card was the first recommendation; it would loosen row 43, so it is the owner's call |
+| Pause | One click stops a token or connected app (`POST /bindings/:id/pause`); Resume is the existing widen behind the passkey, whose summary now reads "Resume the token" |
+| Activity | Per app: what it did, in words (the tool it ran and how it ended, the domain) |
+| Consent screen | The same choices as the token form, one-name option, a required cap when buying is ticked, 7, 30 or 90 days with 90 the default; the server's default for connected apps is now 90 days |
+| Tokens for people | "Which names: all, or only one"; a recipes choice; after creation, Copy and ready lines for Claude Code, Cursor and curl that fill in the token only when copied |
+| Safety copy | "How we keep this safe" on Connected apps and the public page: only claims the code enforces |
+
+Found and fixed while verifying (each has a test): a buy link on a first visit was overwritten by the arrival demo 1.5 s later (the
+link is now read before the first render); the consent screen dropped "Connect names" when an app asked for every choice, because two
+choices share `dns.write` (choices are now matched against the whole request, and `choices.test.ts` parses every choice with the server's
+grammar); the recipes choice lacked `recipes.plan`, so a script could not plan over REST; a paused or revoked token's plan still showed as
+waiting after Disconnect everything (only a live token's plan waits now); the page's notice could cover an open panel's buttons. Initial JS
+after this work: 109.0 kB gzip (target 110).
+
+Owner actions from this review:
+
+- Try the front door once: Claude, Settings, Connectors, Add custom connector, `https://mosshatch.com/mcp`. The discovery documents and the 401
+  challenge answer correctly in production (checked 2026-10-08); a full sign-in from claude.ai has not been run.
+- GitHub secret scanning: the webhook (`/api/v1/hooks/github-secret-scanning`) is built but Mosshatch is not enrolled in GitHub's partner program,
+  so leaked tokens are not reported yet and the pages do not claim it. Apply at GitHub, then add the claim.
+- The site menu and the security policy do not link /assistants: both are versioned legal documents (account/documents.ts hashes the files),
+  so a link there needs the go-live-db workflow to publish the new versions. Do it with the next document change.
+
 ## 3. Improvements (next two weeks)
 
 | # | Improvement | Why | Size |

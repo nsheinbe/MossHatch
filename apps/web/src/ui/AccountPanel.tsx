@@ -4,6 +4,8 @@ import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI 
 import { RecoverAccount, RecoveryNotice } from "./Recovery";
 import { currentInvite, openWaitlist } from "../lib/waitlist";
 import { buildSiteMode } from "../lib/site";
+import { sayWaiting } from "../lib/waiting";
+import { openWaiting } from "./Waiting";
 
 type Step = "choose" | "code" | "codes" | "recover";
 
@@ -30,7 +32,7 @@ const Passkeys = lazy(() => import("./Passkeys"));
 
 /** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the account view. No passwords anywhere. */
 export function AccountPanel() {
-  const { accountOpen, account, accountNotice, set } = useUi();
+  const { accountOpen, account, accountNotice, waiting, set } = useUi();
   const [step, setStep] = useState<Step>("choose");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -78,8 +80,14 @@ export function AccountPanel() {
                 <Suspense fallback={<p role="status">Loading.</p>}><Passkeys account={account} onChanged={refresh} say={setMsg} /></Suspense>
               </section>
               <section className="section" aria-labelledby="apps-h">
-                <h3 id="apps-h">Apps and tools</h3>
-                <p className="notice">Tokens, AI agents and command-line sign-ins that act for you, and the requests waiting for your approval.</p>
+                <h3 id="apps-h">Apps and assistants</h3>
+                {waiting.length > 0 && (
+                  <div className="banner" role="status">
+                    <p><strong>{waiting.length === 1 ? "Waiting for your decision." : `${waiting.length} requests are waiting for your decision.`}</strong> {sayWaiting(waiting[0]!)}</p>
+                    <div className="row-actions"><button type="button" className="btn primary" onClick={() => openWaiting(waiting[0]!)}>Review</button></div>
+                  </div>
+                )}
+                <p className="notice">Connect Claude or another assistant, and manage the tokens and apps that act for you.</p>
                 <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ visitorsOpen: true, accountOpen: false })}>Connected apps</button></div>
               </section>
               <section className="section" aria-labelledby="data-h">

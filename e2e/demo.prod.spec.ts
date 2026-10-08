@@ -160,7 +160,7 @@ test("no JavaScript: the banner is on the home page and the static pages, and th
 test("axe: the waitlist pages at desktop and phone sizes, and the banner with no WebGL", async ({ page, browser }) => {
   for (const size of [{ width: 1280, height: 720 }, { width: 375, height: 740 }]) {
     await page.setViewportSize(size);
-    for (const url of ["/waitlist", "/waitlist-sent", "/waitlist-privacy", "/fees.html", "/how-it-works"]) {
+    for (const url of ["/waitlist", "/waitlist-sent", "/waitlist-privacy", "/fees.html", "/how-it-works", "/assistants"]) {
       await page.goto(url);
       expect((await violations(page)).map((v) => `${url} ${v}`)).toEqual([]);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${url} no sideways scroll`).toBe(true);
@@ -229,6 +229,7 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
   for (const l of locs) expect(l).toMatch(/^https:\/\/mosshatch\.com\//);
   expect(locs).toContain("https://mosshatch.com/waitlist");
   expect(locs).toContain("https://mosshatch.com/how-it-works");
+  expect(locs).toContain("https://mosshatch.com/assistants");
   for (const l of locs) expect(l).not.toMatch(/device|checkout|invite|oauth|waitlist-sent|404|500|debug|api/);
   const robots = await (await request.get("/robots.txt")).text();
   expect(robots).toContain("Sitemap: https://mosshatch.com/sitemap.xml");

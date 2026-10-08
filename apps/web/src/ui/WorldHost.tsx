@@ -3,6 +3,7 @@ import type { World } from "../world/engine";
 import { handle } from "../world/handle";
 import { useUi } from "../store";
 import { sound } from "../audio/synth";
+import { openWaiting } from "./Waiting";
 
 /** Owns the canvas and the world's lifetime. Everything visual inside it is imperative three.js. */
 export function WorldHost({ onReady, onFail }: { onReady?: (w: World) => void; onFail?: () => void }) {
@@ -41,9 +42,12 @@ export function WorldHost({ onReady, onFail }: { onReady?: (w: World) => void; o
       const c = world.tap(e.clientX, e.clientY);
       if (!c) return;
       sound.voice(c.spec.species, c.spec.choreography.pitch);
-      // In the signed-in grove a creature is its domain: a tap opens the domain's panel, as its chip does.
+      // In the signed-in grove a creature is its domain: a tap opens what waits for it if anything does, else the domain's panel.
       const st = useUi.getState();
-      const id = st.view === "grove" ? st.groveIndex[c.id] : undefined;
+      if (st.view !== "grove") return;
+      const asks = st.waiting.find((w) => w.fqdn === c.id);
+      if (asks) { openWaiting(asks); return; }
+      const id = st.groveIndex[c.id];
       if (id) st.set({ domainPanel: { id, fqdn: c.id } });
     };
     if (import.meta.env.DEV) {

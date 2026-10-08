@@ -3,7 +3,11 @@ import type { AppContext } from "../ports.ts";
 import { HttpError, json, type Router } from "../http/router.ts";
 import type { HandlerReq, HandlerResult, Route } from "../http/types.ts";
 import { callerOf } from "../agents/common.ts";
-import { dispatch, isRpcRequest, LATEST, RPC, SUPPORTED, type CallMeta } from "./server.ts";
+import { dispatch, LATEST, RPC } from "./server.ts";
+import { deny, originAllowed, readRpc } from "./transport.ts";
+import { publicMcpRoutes } from "./public.ts";
+
+export { originAllowed } from "./transport.ts";
 
 /**
  * `POST /mcp` (Streamable HTTP, one endpoint, JSON responses; the router answers GET and DELETE with 405 as the 2026-07-28
@@ -19,13 +23,6 @@ export const mcpResource = (ctx: Pick<AppContext, "config">) => `${ctx.config.or
 export const prmUrl = (ctx: Pick<AppContext, "config">) => `${ctx.config.origin}/.well-known/oauth-protected-resource${MCP_PATH}`;
 export const mcpChallenge = (ctx: Pick<AppContext, "config">, error?: string) => `Bearer realm="mosshatch"${error ? `, error="${error}"` : ""}, resource_metadata="${prmUrl(ctx)}"`;
 
-/** Browsers send Origin; server-side MCP clients usually do not. A present Origin must be the app's own. */
-export function originAllowed(ctx: AppContext, origin: string | null): boolean {
-  if (origin === null) return true;
-  return ctx.config.allowedOrigins.includes(origin) || origin === ctx.config.origin;
-}
-
-const deny = (status: number, code: string, headers?: Record<string, string>): HandlerResult => ({ status, json: { error: { code } }, headers });
 
 export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
@@ -36,21 +33,9 @@ export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
   // Audience: a token minted by our OAuth server for another resource is not a token for /mcp (RFC 8707, MCP authorization).
   const b = (await withUser(ctx.runtime, caller.userId, (c) => c.query("select audience from bindings where id = $1 and user_id = $2", [caller.bindingId, caller.userId]))).rows[0];
   if (!b || (b.audience !== null && b.audience !== mcpResource(ctx))) return deny(401, "invalid_token", { "WWW-Authenticate": mcpChallenge(ctx, "invalid_token") });
-  // The token is never read from the query string (MCP authorization: header only).
-  if (req.url.searchParams.has("access_token")) return deny(400, "token_in_query");
-  const pv = req.request.headers.get("mcp-protocol-version");
-  if (pv !== null && !(SUPPORTED as readonly string[]).includes(pv)) return deny(400, "unsupported_protocol_version");
-  const meta: CallMeta = pv === LATEST ? { era: "2026", version: LATEST } : { era: "legacy", version: pv ?? SUPPORTED[1] };
-  const msg = req.body;
-  if (Array.isArray(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Batches are not supported" } }, 400);
-  if (!isRpcRequest(msg)) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Invalid request" } }, 400);
-  // A request's id is never null (MCP), and a message without an id is a notification: only `notifications/*` methods are
-  // accepted as one, so a tool never runs from a message the protocol says gets no answer.
-  if (msg.id === null || (msg.id === undefined && !msg.method.startsWith("notifications/"))) return json({ jsonrpc: "2.0", id: null, error: { code: RPC.invalidRequest, message: "Invalid request" } }, 400);
-  // 2026-07-28 method headers, when sent, must agree with the body (a proxy may route on them).
-  const hm = req.request.headers.get("mcp-method"), hn = req.request.headers.get("mcp-name");
-  if (hm !== null && hm !== msg.method) return json({ jsonrpc: "2.0", id: msg.id ?? null, error: { code: RPC.invalidRequest, message: "Mcp-Method does not match" } }, 400);
-  if (hn !== null && msg.method === "tools/call" && hn !== msg.params?.name) return json({ jsonrpc: "2.0", id: msg.id ?? null, error: { code: RPC.invalidRequest, message: "Mcp-Name does not match" } }, 400);
+  const rpc = readRpc(req);
+  if (!rpc.ok) return rpc.res;
+  const { msg, meta } = rpc;
   let out;
   try { out = await dispatch(ctx, caller, msg, meta); }
   catch (e) {
@@ -67,6 +52,6 @@ export const mcpRoutes: Route[] = [
 ];
 
 export function registerMcpRoutes(router: Router): Router {
-  router.add(...mcpRoutes);
+  router.add(...mcpRoutes, ...publicMcpRoutes);
   return router;
 }
