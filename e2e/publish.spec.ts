@@ -32,7 +32,7 @@ async function buy(page: Page, request: import("@playwright/test").APIRequestCon
   const chip = page.locator("button.chip", { hasText: ".com" });
   await expect(chip).toBeVisible({ timeout: 20_000 });
   await chip.click();
-  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone, like +1.5555550100", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(l).fill(value);
+  for (const [l, value] of [["Full name", "Ada Moss"], ["Phone", "+1.5555550100"], ["Street address", "1 Fern Lane"], ["City", "Portland"], ["State or region", "OR"], ["Postal code", "97201"]] as const) await page.getByLabel(l).fill(value);
   await page.getByRole("button", { name: "Save contact" }).click();
   const pay = page.getByRole("button", { name: /Buy domain & hatch/ });
   const shown = (await pay.textContent())!.match(/\$([\d.]+)/)![1]!;

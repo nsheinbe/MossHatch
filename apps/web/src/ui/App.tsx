@@ -14,6 +14,7 @@ import { CheckoutResume } from "./CheckoutResume";
 import { pendingCheckout } from "../lib/orders";
 import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
+import { useSessionKeepalive } from "../lib/session";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
 import { applySiteChrome, buildSiteMode, liveFor } from "../lib/site";
@@ -50,6 +51,8 @@ export function App() {
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
   const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, accountOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
+  // While someone signed in is active on the page, their session's idle clock is renewed (ST-52 ends an abandoned one).
+  useSessionKeepalive(!!account);
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {

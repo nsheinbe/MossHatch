@@ -1,25 +1,13 @@
-import { z } from "zod";
 import { withUser } from "@mosshatch/db";
 import { HttpError, json, type Router } from "../http/router.ts";
 import type { HandlerReq } from "../http/types.ts";
 import { hit } from "../ratelimit.ts";
 import { appendAudit } from "../audit.ts";
-import { loadRegistrant, storeRegistrant } from "../orders/registrant.ts";
+import { loadRegistrant, RegistrantBody, storeRegistrant } from "../orders/registrant.ts";
 import { authRoutes } from "../auth/routes.ts";
 import { liveAccessFor } from "../waitlist/gate.ts";
 
 const UID = (r: HandlerReq) => { if (!r.principal.userId) throw new HttpError(401, "unauthorized"); return r.principal.userId; };
-
-const ContactBody = z.strictObject({
-  name: z.string().trim().min(2).max(120),
-  email: z.string().trim().toLowerCase().email().max(254),
-  phone: z.string().trim().regex(/^\+\d{1,3}\.\d{4,14}$/, "phone"),          // EPP format +CC.number
-  street: z.string().trim().min(3).max(200),
-  city: z.string().trim().min(1).max(100),
-  region: z.string().trim().min(1).max(100),
-  postalCode: z.string().trim().min(2).max(20),
-  country: z.string().trim().length(2).toUpperCase(),
-});
 
 export function registerAccountRoutes(router: Router): Router {
   const meRoute = authRoutes.find((r) => r.method === "GET" && r.path === "/api/v1/me");
@@ -61,10 +49,11 @@ export function registerAccountRoutes(router: Router): Router {
     },
     {
       // The registrant contact (C-15). The email must be one of the person's verified addresses, so ICANN verification has a real mailbox behind it.
+      // The phone is read in any usual form and stored as `+CC.number` (orders/registrant.ts RegistrantBody).
       method: "POST", path: "/api/v1/contact", principals: ["session"], tag: "account",
       async handler(r) {
         const userId = UID(r);
-        const parsed = ContactBody.safeParse(r.body);
+        const parsed = RegistrantBody.safeParse(r.body);
         if (!parsed.success) throw new HttpError(422, "invalid_contact");
         const c = parsed.data;
         await withUser(r.ctx.runtime, userId, async (db) => {
