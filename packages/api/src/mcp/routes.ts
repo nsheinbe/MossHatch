@@ -5,7 +5,7 @@ import type { HandlerReq, HandlerResult, Route } from "../http/types.ts";
 import { callerOf } from "../agents/common.ts";
 import { dispatch, LATEST, RPC } from "./server.ts";
 import { deny, originAllowed, readRpc } from "./transport.ts";
-import { publicMcpRoutes } from "./public.ts";
+import { PUBLIC_MCP_PATH, publicMcpRoutes } from "./public.ts";
 
 export { originAllowed } from "./transport.ts";
 
@@ -46,9 +46,20 @@ export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
   return json(out, 200, { headers: { "Cache-Control": "no-store, private", ...(meta.era === "2026" ? { "MCP-Protocol-Version": LATEST } : {}) } });
 }
 
+/**
+ * GET on either MCP address: a person who pastes the address into a browser (Accept: text/html) lands on the instructions page;
+ * an MCP client opening a GET stream gets the 405 the transport allows for a server without one (Allow: POST).
+ */
+async function mcpGet(req: HandlerReq): Promise<HandlerResult> {
+  if ((req.request.headers.get("accept") ?? "").includes("text/html")) return { status: 302, json: {}, headers: { Location: `${req.ctx.config.origin}/assistants`, "Cache-Control": "no-store" } };
+  throw new HttpError(405, "method_not_allowed", "method_not_allowed", { Allow: "POST" });
+}
+
 export const mcpRoutes: Route[] = [
   // `anonymous` is admitted only so the handler can answer 401 with the metadata challenge; every tool needs a binding.
   { method: "POST", path: MCP_PATH, principals: ["binding", "anonymous"], handler: mcpHandler, challenge: (ctx) => mcpChallenge(ctx, "invalid_token"), resource: mcpResource, tag: "mcp" },
+  { method: "GET", path: MCP_PATH, principals: ["binding", "anonymous"], handler: mcpGet, challenge: (ctx) => mcpChallenge(ctx, "invalid_token"), resource: mcpResource, tag: "mcp" },
+  { method: "GET", path: PUBLIC_MCP_PATH, principals: ["anonymous"], handler: mcpGet, tag: "mcp" },
 ];
 
 export function registerMcpRoutes(router: Router): Router {
