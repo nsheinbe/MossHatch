@@ -28,6 +28,17 @@ function clientAddress(r: Request): string {
  * Anonymous callers: per address and per /24. Verified signed-in users (session or agent/CLI binding): 300 an hour per user.
  * Counter keys are HMACs (see `hit`); nothing here stores the address or the searched text.
  */
+/** The anonymous half of the limits, for any anonymous caller of search (the REST routes here, the public MCP search). */
+export async function enforceAnonymousSearchLimits(ctx: HandlerReq["ctx"], request: Request, ipPrefix: string): Promise<void> {
+  const checks = await withNoUser(ctx.runtime, async (c) => {
+    const ip = await hit(ctx, c, `search:ip:${clientAddress(request)}`, LIMIT_ANON_IP);
+    if (!ip.allowed) return [ip];
+    return [ip, await hit(ctx, c, `search:net:${ipPrefix}`, LIMIT_ANON_NET)];
+  });
+  const blocked = checks.find((x) => !x.allowed);
+  if (blocked) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(blocked.retryAfterSeconds) });
+}
+
 async function enforceLimits(req: HandlerReq): Promise<void> {
   const { ctx } = req;
   let userId: string | undefined;
@@ -35,14 +46,10 @@ async function enforceLimits(req: HandlerReq): Promise<void> {
     const verified = await withUser(ctx.runtime, req.principal.userId, async (c) => (await c.query("select email_verified_at is not null as v from users where id = $1", [req.principal.userId])).rows[0]?.v === true);
     if (verified) userId = req.principal.userId;
   }
-  const checks = await withNoUser(ctx.runtime, async (c) => {
-    if (userId) return [await hit(ctx, c, `search:user:${userId}`, LIMIT_USER)];
-    const ip = await hit(ctx, c, `search:ip:${clientAddress(req.request)}`, LIMIT_ANON_IP);
-    if (!ip.allowed) return [ip];
-    return [ip, await hit(ctx, c, `search:net:${req.ipPrefix}`, LIMIT_ANON_NET)];
-  });
-  const blocked = checks.find((x) => !x.allowed);
-  if (blocked) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(blocked.retryAfterSeconds) });
+  if (!userId) return enforceAnonymousSearchLimits(ctx, req.request, req.ipPrefix);
+  const uid = userId;
+  const r = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `search:user:${uid}`, LIMIT_USER));
+  if (!r.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(r.retryAfterSeconds) });
 }
 
 function registrarOf(req: HandlerReq, fixed?: RegistrarPort): RegistrarPort {

@@ -11,7 +11,7 @@ import { markExecuted, requireAction } from "../stepup/gate.ts";
 import type { ActionSpec } from "../stepup/specs.ts";
 import { ownedDomainMap, parseScope, scopeString, type Scope } from "../bindings/scopes.ts";
 import { canonical, NAME_RE, parseForUser } from "../bindings/specs.ts";
-import { AGENT_DEFAULT_MS, AGENT_MAX_MS, DAY } from "../bindings/tokens.ts";
+import { AGENT_MAX_MS, DAY } from "../bindings/tokens.ts";
 import { grantNotice } from "../bindings/notice.ts";
 import { registerRoutedSpec } from "../agents/specs.ts";
 import { notFound, sessionUserOf, UUID } from "../agents/common.ts";
@@ -101,7 +101,8 @@ export async function consentViewHandler(req: HandlerReq): Promise<HandlerResult
     // What the client says about itself: never shown as fact.
     reported: { client_name: client.client_name },
     suggested_scopes: suggested, ignored_scopes: ignored, domains: [...owned.keys()].sort(),
-    defaults: { name: "Connected app", expires_in_days: AGENT_DEFAULT_MS / DAY, spend_cap_minor: 0 },
+    // Connected apps default to the longest grant (90 days): a monthly reconnect was the cost of the old 30-day default.
+    defaults: { name: "Connected app", expires_in_days: AGENT_MAX_MS / DAY, spend_cap_minor: 0 },
   }, 200, { headers: { "Cache-Control": "no-store, private" } });
 }
 
@@ -125,7 +126,7 @@ export const oauthConsentSpec: ActionSpec<z.infer<typeof consentInput>> = {
     return {
       params: {
         route: "oauth", oauth_request_id: row.id, client_ref: row.client_ref, redirect_uri: row.redirect_uri, redirect_host: hostOf(row.redirect_uri), resource: row.resource ?? mcpResource(ctx),
-        name: input.name, scopes: canonical(scopes), spend_cap_minor: input.spend_cap_minor ?? 0, expires_in_days: input.expires_in_days ?? AGENT_DEFAULT_MS / DAY,
+        name: input.name, scopes: canonical(scopes), spend_cap_minor: input.spend_cap_minor ?? 0, expires_in_days: input.expires_in_days ?? AGENT_MAX_MS / DAY,
       },
       resourceId: row.id,
     };

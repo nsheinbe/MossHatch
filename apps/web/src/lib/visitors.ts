@@ -46,6 +46,34 @@ export const sendHome = () => api<{ revoked: number }>("POST", "/api/v1/visitors
 export const revokeVisitor = (id: string) => api("DELETE", `/api/v1/bindings/${encodeURIComponent(id)}`);
 export const createToken = (actionId: string) => api<{ id: string; token: string; prefix: string; expires_at: string; scopes: string[] }>("POST", "/api/v1/bindings", {}, gated(actionId));
 export const widenToken = (id: string, actionId: string) => api("POST", `/api/v1/bindings/${encodeURIComponent(id)}/widen`, {}, gated(actionId));
+/** Stops a token at once (no passkey: it only takes access away). Resuming is a widen with the same access, behind the passkey. */
+export const pauseToken = (id: string) => api<{ binding: { paused: boolean } }>("POST", `/api/v1/bindings/${encodeURIComponent(id)}/pause`, {});
+export interface ActivityEntry { at: string; actor: string; action: string; resource_kind: string | null; resource_id: string | null; domain: string | null; op: string | null; outcome: string | null }
+export const getActivity = async (id: string) => (await api<{ activity: ActivityEntry[] }>("GET", `/api/v1/bindings/${encodeURIComponent(id)}/activity`)).activity;
+
+const OP: Record<string, string> = {
+  search_names: "searched names", get_quote: "asked for a price", list_domains: "listed your names", get_domain: "read a name", dns_list: "read DNS records",
+  dns_upsert: "changed DNS records", nest_names: "listed secret names", secrets_get: "read a secret", secrets_set: "stored a secret",
+  propose_registration: "suggested a name to buy", propose: "suggested a name to buy", propose_renewal: "suggested a renewal", request_scope: "asked for more access",
+  get_proposal: "checked a request", transfer_status: "checked a transfer", list_recipes: "listed recipes", plan_recipe: "planned a recipe",
+  apply_recipe: "applied a recipe", get_recipe_application: "checked a recipe",
+};
+const ACTION: Record<string, string> = {
+  "binding.created": "Created", "binding.granted": "Created", "binding.widened": "Given more access, or resumed", "binding.narrowed": "Given less access", "binding.paused": "Paused",
+  "binding.revoked": "Revoked", "binding.refreshed": "Signed in again", "binding.leak_reported": "Reported as published, and revoked", "mcp.client_seen": "Connected",
+  "agent.request.created": "Asked for your decision", "agent.request.approved": "You approved its request", "agent.request.declined": "Its request was declined",
+  "agent.request.void": "Its request was cancelled", "agent.scope_denied": "Tried something it may not do", "secret.read": "Read a secret", "secret.write": "Stored a secret",
+  "recipe.planned": "Planned a recipe", "recipe.apply_requested": "Started a recipe", "recipe.applied": "A recipe finished", "recipe.failed": "A recipe failed",
+};
+/** One line of a token's activity, in words. Unknown entries keep their code, so nothing is hidden. */
+export function describeActivity(a: ActivityEntry): string {
+  if ((a.action === "mcp.tool_call" || a.action === "agent.call") && a.op) {
+    const did = OP[a.op] ?? a.op;
+    const how = a.outcome === "ok" ? "" : a.outcome === "scope_denied" ? " (not allowed)" : " (refused)";
+    return `${did[0]!.toUpperCase()}${did.slice(1)}${a.domain ? ` on ${a.domain}` : ""}${a.action === "mcp.tool_call" ? " through MCP" : ""}${how}`;
+  }
+  return `${ACTION[a.action] ?? a.action}${a.domain ? `: ${a.domain}` : ""}`;
+}
 export const getConsent = (id: string) => api<Consent>("GET", `/api/v1/oauth/requests/${encodeURIComponent(id)}`);
 export const approveConsent = (id: string, actionId: string) => api<{ redirect_to: string }>("POST", `/api/v1/oauth/requests/${encodeURIComponent(id)}/approve`, {}, gated(actionId));
 export const denyConsent = (id: string) => api<{ redirect_to: string }>("POST", `/api/v1/oauth/requests/${encodeURIComponent(id)}/deny`, {});

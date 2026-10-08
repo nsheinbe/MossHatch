@@ -83,6 +83,14 @@ export interface UiState {
   groveIndex: Record<string, string>;
   /** Bumped when a change in the panel means the grove should re-read the domains. */
   groveRev: number;
+  /** Requests and recipe plans waiting for the owner's decision (lib/waiting.ts): ids, names and words from the server. Never persisted. */
+  waiting: import("../lib/waiting").Waiting[];
+  /** Bumped after a decision, so the waiting list is read again. */
+  waitingRev: number;
+  /** A request to open when Connected apps opens (from the Account button, the page, the grove), then cleared. */
+  visitorsCard: string | null;
+  /** A tab to open when the domain panel opens (a recipe plan opens on Connect), then cleared. */
+  domainTab: "overview" | "dns" | "nest" | "gate" | "connect" | null;
   /** The Rescue (transfer in) panel: the name typed in Find and, once started, the transfer's opaque ids. Never a code. */
   rescue: { fqdn: string; transferId: string | null; orderId?: string } | null;
   calm: boolean;
@@ -119,7 +127,7 @@ export const useUi = create<UiState>()(
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
       hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveIndex: {}, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
-      rescue: null, resume: null,
+      rescue: null, resume: null, waiting: [], waitingRev: 0, visitorsCard: null, domainTab: null,
       set: (p) => set(p),
     }),
     {

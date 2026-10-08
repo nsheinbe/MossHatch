@@ -445,3 +445,23 @@ dialog.waitlist a { color: var(--lantern); }
 /* Your account: the passkey list. */
 .passkeys li { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .passkeys li span { overflow-wrap: anywhere; }
+/* What waits for a decision: the count on the Account button and the notice at the bottom of the page. */
+.count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; margin-left: 6px; padding: 0 6px; border-radius: 10px; background: var(--st-attention); color: var(--ink); font-size: .78rem; font-weight: 700; }
+.waiting-notice { position: fixed; z-index: 16; left: 50%; transform: translateX(-50%); bottom: 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; padding: 10px 16px; max-width: min(640px, calc(100vw - 32px)); }
+.waiting-notice .row-actions { margin-top: 0; }
+@media (max-width: 720px) { .waiting-notice { bottom: calc(72px + env(safe-area-inset-bottom)); } }
+/* Connected apps: copyable lines, the actions column, activity and the safety list. */
+code.use-line { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: rgba(11,18,33,.5); overflow-wrap: anywhere; user-select: all; }
+.copy-row { align-items: center; }
+.copy-row code.use-line { flex: 1 1 260px; margin: 0; }
+.token-uses li { display: grid; gap: 4px; }
+td.row-buttons { white-space: nowrap; }
+td.row-buttons .btn { margin: 0 4px 4px 0; }
+.activity { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: 12px; }
+.safe-list { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+/* The Connect tab: one card per recipe, and the preview of what it will change. */
+.recipe-card { margin: 14px 0 0; padding: 12px 14px; border: 1px solid var(--glass-border); border-radius: 12px; }
+.recipe-card h4 { font-family: var(--display); font-weight: 400; font-size: 1.05rem; margin: 0 0 6px; }
+.plan-box { margin: 10px 0; padding: 10px 12px; border-radius: 10px; background: rgba(11,18,33,.4); }
+.plan-box h5 { margin: 8px 0 4px; font-size: .95rem; }
+.plan-box code { overflow-wrap: anywhere; font-size: .85rem; }

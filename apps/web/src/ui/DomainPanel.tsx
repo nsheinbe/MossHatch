@@ -9,12 +9,14 @@ import { DomainChecklist } from "./DomainChecklist";
 // The Nest (secrets) and the Gate (transfer away) load only when their tab opens.
 const NestTab = lazy(() => import("./NestTab"));
 const GateTab = lazy(() => import("./GateTab"));
+// Recipes (Vercel, Resend, Neon) load only when the Connect tab opens.
+const ConnectTab = lazy(() => import("./ConnectTab"));
 
-type Tab = "overview" | "dns" | "nest" | "gate";
+type Tab = "overview" | "dns" | "connect" | "nest" | "gate";
 
 /** One domain: Overview, DNS, Nest and Gate tabs. Lazy chunk; nothing here is kept in the store except which domain is open. */
 export default function DomainPanel() {
-  const { domainPanel, set } = useUi();
+  const { domainPanel, domainTab, set } = useUi();
   const [tab, setTab] = useState<Tab>("overview");
   const [d, setD] = useState<DomainDetail | null>(null);
   const [sec, setSec] = useState<Security | null>(null);
@@ -33,7 +35,9 @@ export default function DomainPanel() {
       set({ groveRev: useUi.getState().groveRev + 1 });
     })();
   }, [id, fqdn, set]);
-  useEffect(() => { setD(null); setSec(null); setXfer(null); setTab("overview"); reload(); }, [reload]);
+  useEffect(() => { setD(null); setSec(null); setXfer(null); setTab(useUi.getState().domainTab ?? "overview"); set({ domainTab: null }); reload(); }, [reload, set]);
+  // Asked to open on a tab while already open (a plan waiting on Connect): switch to it.
+  useEffect(() => { if (domainTab) { setTab(domainTab); set({ domainTab: null }); } }, [domainTab, set]);
   useEffect(() => { if (id) head.current?.focus(); }, [id]);
   useEffect(() => {
     if (!id) return;
@@ -43,7 +47,7 @@ export default function DomainPanel() {
   }, [id, set]);
   if (!domainPanel) return null;
 
-  const tabs: [Tab, string][] = [["overview", "Overview"], ["dns", "DNS"], ...(d?.released ? [] : [["nest", "Nest"] as [Tab, string]]), ["gate", "Gate"]];
+  const tabs: [Tab, string][] = [["overview", "Overview"], ["dns", "DNS"], ...(d?.released ? [] : [["connect", "Connect"], ["nest", "Nest"]] as [Tab, string][]), ["gate", "Gate"]];
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     const i = Math.max(0, tabs.findIndex(([k]) => k === tab));
@@ -68,6 +72,7 @@ export default function DomainPanel() {
           {d && tab === "overview" && <DomainOverview d={d} sec={sec} xfer={xfer} reload={reload} />}
           {d && tab === "overview" && !d.released && <CardSection domainId={d.id} fqdn={domainPanel.fqdn} />}
           {d && tab === "dns" && <DnsTab d={d} sec={sec} reloadAll={reload} />}
+          {d && tab === "connect" && !d.released && <Suspense fallback={<p role="status">Loading.</p>}><ConnectTab key={d.id} d={d} reloadAll={reload} /></Suspense>}
           {d && tab === "nest" && !d.released && <Suspense fallback={<p role="status">Loading.</p>}><NestTab key={d.id} fqdn={d.fqdn} /></Suspense>}
           {d && tab === "gate" && <Suspense fallback={<p role="status">Loading.</p>}><GateTab key={d.id} d={d} reloadAll={reload} /></Suspense>}
         </div>

@@ -18,6 +18,7 @@ import { useSessionKeepalive } from "../lib/session";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
 import { applySiteChrome, buildSiteMode, liveFor } from "../lib/site";
+import { useWaiting, WaitingNotice } from "./Waiting";
 
 const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
@@ -30,6 +31,21 @@ const OAuthConsent = lazy(() => import("./OAuthConsent"));
 const Rescue = lazy(() => import("./Rescue"));
 
 /** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
+/**
+ * A buy link from an assistant (the public MCP search) names the domain in the fragment, which never reaches a server log
+ * (AUDIT-2026-10-07 V1). It is read before the first render: Find then searches the name, and the arrival demo, which would type
+ * its own word over it, never starts. The fragment is dropped from the address bar.
+ */
+function takeFindLink(): void {
+  const m = /^#find=([A-Za-z0-9.%-]{1,300})$/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  let name = "";
+  try { name = decodeURIComponent(m[1]!).toLowerCase(); } catch { return; }
+  if (/^[a-z0-9-]{1,63}(\.[a-z0-9-]{2,24})?$/.test(name)) useUi.getState().set({ view: "find", query: name, demo: "done" });
+}
+if (typeof window !== "undefined") takeFindLink();
+
 function noindexAppRoutes() {
   if (!["/device", "/checkout/return", "/checkout/cancelled", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
   const m = document.createElement("meta");
@@ -53,6 +69,8 @@ export function App() {
   const rescue = useUi((s) => s.rescue);
   // While someone signed in is active on the page, their session's idle clock is renewed (ST-52 ends an abandoned one).
   useSessionKeepalive(!!account);
+  // Requests and recipe plans waiting for a decision: the count on Account, the page's notice, the grove.
+  useWaiting();
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -111,6 +129,7 @@ export function App() {
       <OrderReturn />
       <CheckoutResume />
       <WaitlistHost source="app" />
+      <WaitingNotice />
       <div key={flash} className={`flash${flash ? " on" : ""}`} aria-hidden="true" />
     </>
   );
