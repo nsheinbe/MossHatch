@@ -10,6 +10,7 @@ import { registerOrderRoutes } from "./routes.ts";
 import { registerOrderJobs } from "./jobs.ts";
 import { installOrders } from "./wiring.ts";
 import { storeRegistrant } from "./registrant.ts";
+import { feePerYearMinor } from "../pricing/fee.ts";
 import { advance, machine } from "./machine.ts";
 import type { OrdersServices } from "./types.ts";
 import type { Config } from "../ports.ts";
@@ -50,7 +51,7 @@ export async function makeHarness(opts: { config?: Partial<Config>; taxBps?: num
   await app.db.owner.query(
     "insert into document_versions (kind, version_hash, effective_at) values ('terms','termshash0123456789abcdef','2026-01-01'),('registration_agreement','agreementhash0123456789','2026-01-01'),"
     + "('tld_addendum_ai','aiaddendumhash0123456789','2026-01-01'),('tld_addendum_io','ioaddendumhash0123456789','2026-01-01')");
-  const subtotal = (tld: string, years = 1) => (wholesale[tld]! + (wholesale[tld]! < 5000n ? 400n : wholesale[tld]! < 10000n ? 900n : 1000n)) * BigInt(years);
+  const subtotal = (tld: string, years = 1) => (wholesale[tld]! + feePerYearMinor(wholesale[tld]!)) * BigInt(years);
   const h: OrdersHarness = {
     app, stripe, registrar, svc, waited, secrets, subtotal,
     // A fresh registrar (no faults, no maintenance windows, no domains): the mock has no way to end a long window early.

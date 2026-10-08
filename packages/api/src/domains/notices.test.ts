@@ -28,7 +28,7 @@ describe("renewal notices at E-43, E-32, C-8 and E+1 are sent from the jobs tabl
     const e43 = mailOf(h, "renewal_notice")[0]!;
     expect(e43.subject).toContain("expires on");
     expect(e43.text).toContain("Auto-renew is off");
-    expect(e43.text).toContain("USD 21.00");                       // .dev renewal: 17.00 wholesale + 4.00 fee
+    expect(e43.text).toContain("USD 20.00");                       // .dev renewal: 17.00 wholesale + 3.00 fee
     expect(e43.to).toEqual(["reminder@example.com"]);
 
     await goto(h, new Date(E.getTime() - days(32)));
@@ -83,7 +83,7 @@ describe("renewal notices at E-43, E-32, C-8 and E+1 are sent from the jobs tabl
     await goto(h, new Date(E.getTime() - days(18)));
     const c8 = mailOf(h, "renewal_notice")[2]!;
     expect(c8.text).toContain("In 8 days");
-    expect(c8.text).toContain("we charge USD 21.00 to your saved card");
+    expect(c8.text).toContain("we charge USD 20.00 to your saved card");
     expect(await renewOrders(h, dom.id)).toHaveLength(0);          // eight days before the charge, nothing has been charged yet
 
     await goto(h, new Date(E.getTime() - days(10)));

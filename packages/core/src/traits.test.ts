@@ -87,7 +87,7 @@ describe("deriveCreatureState", () => {
 
 describe("money", () => {
   it("applies the D-003 fee bands", () => {
-    expect(feePerYear(usd(1450)).cents).toBe(400);
+    expect(feePerYear(usd(1450)).cents).toBe(300);
     expect(feePerYear(usd(6000)).cents).toBe(900);
     expect(feePerYear(usd(11100)).cents).toBe(1000);
     expect(formatUsd(usd(1925))).toBe("$19.25");

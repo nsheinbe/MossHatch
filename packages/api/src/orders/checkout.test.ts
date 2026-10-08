@@ -2,12 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mintToken } from "../util/token.ts";
 import { buyAndPay, deliverAll, drain, getOrder, makeBuyer, makeHarness, orderRow, postOrder, REGISTRANT, type Buyer, type OrdersHarness } from "./testkit.ts";
 import { storeRegistrant } from "./registrant.ts";
+import { FEE_LOW_MINOR } from "../pricing/fee.ts";
 import { withUser } from "@mosshatch/db";
 
 let h: OrdersHarness; let W = 0n; let ada: Buyer; let bo: Buyer;
 beforeAll(async () => {
   h = await makeHarness();
-  W = h.subtotal("com") - 400n;             // wholesale of a .com year
+  W = h.subtotal("com") - FEE_LOW_MINOR;    // wholesale of a .com year
   ada = await makeBuyer(h, "ada@example.com");
   bo = await makeBuyer(h, "bo@example.com");
 }, 90_000);

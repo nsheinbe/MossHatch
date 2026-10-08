@@ -16,5 +16,5 @@ export function formatUsd(m: Money): string {
 /** D-003: flat fee per domain-year by wholesale band (USD cents). */
 export function feePerYear(wholesale: Money): Money {
   const w = wholesale.cents;
-  return usd(w < 5000 ? 400 : w < 10000 ? 900 : 1000);
+  return usd(w < 5000 ? 300 : w < 10000 ? 900 : 1000);
 }
