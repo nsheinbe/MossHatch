@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RegistrarError } from "@mosshatch/registrar/port";
+import { dsFromDnskey } from "@mosshatch/registrar/dnssec";
+import { DS_NOTE, dsNote } from "./security.ts";
 import { call, everythingStored, makeDomain, makeKit, makePerson, refreshSession, resetFuse, resetPrepareLimit, stepUp, tick, type Kit, type Person } from "./testkit.ts";
 
 let k: Kit; let alice: Person; let bob: Person;
@@ -260,5 +262,37 @@ describe("ST-115 (route level): the velocity fuse", () => {
       const r = await call(k, p, "POST", `/api/v1/domains/${d.fqdn}/unlock`, {}, id);
       expect(r.status, `unlock ${i}`).toBe(i <= 10 ? 200 : 429);
     }
+  });
+});
+
+describe("DNSSEC: the list says who signs and how keys are added; a key is accepted beside a DS record", () => {
+  it("a DNSKEY add on a registrar that takes DS records derives the record at prepare and adds that; both or neither input is refused", async () => {
+    const d = await makeDomain(k, alice, "st122-dnskey.com");
+    const before = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/ds`);
+    expect(before.status).toBe(200);
+    expect(before.json).toMatchObject({ supported: true, key_input: "ds", auto_signed: false, records: [] });
+    expect(typeof before.json.hosted_here).toBe("boolean");
+    const key = { flags: 257, algorithm: 13, publicKey: "GojIhhXUN/u4v54ZQqGSnyhWJwaubCvTmeexv7bR6edbkrSqQpF64cYbcB7wNcP+e+MAnLr+Wi9xMWyQLc8NAA==" };
+    const want = dsFromDnskey(d.fqdn, { ...key, protocol: 3 }, 2);
+    const prep = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "ds_add", dnskey: key } });
+    expect(prep.status, prep.text).toBe(200);
+    expect(prep.json.summary).toContain(`key tag ${want.keyTag}`);
+    const id = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "ds_add", dnskey: key });
+    const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/ds`, {}, id);
+    expect(res.status, res.text).toBe(200);
+    const after = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/ds`);
+    expect(after.json.records).toEqual([{ keyTag: want.keyTag, algorithm: 13, digestType: 2, digest: want.digest }]);
+    expect(after.json.ds_present).toBe(true);
+    const both = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "ds_add", dnskey: key, ds: { keyTag: 1, algorithm: 13, digestType: 2, digest: "ab".repeat(32) } } });
+    expect(both.status).toBe(422);
+    const neither = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "ds_add" } });
+    expect(neither.status).toBe(422);
+  });
+  it("the note follows the situation: a managed key means our nameservers sign; a key-taking registrar asks for the public key", () => {
+    expect(dsNote({ supported: true, hostedHere: true, managed: true, keyInput: "dnskey" })).toMatch(/^Our nameservers sign this name/);
+    expect(dsNote({ supported: true, hostedHere: true, managed: false, keyInput: "dnskey" })).toMatch(/^DNSSEC is off for this name/);
+    expect(dsNote({ supported: true, hostedHere: false, managed: false, keyInput: "dnskey" })).toMatch(/public key \(DNSKEY\)/);
+    expect(dsNote({ supported: true, hostedHere: false, managed: false, keyInput: "ds" })).toBe(DS_NOTE);
+    expect(dsNote({ supported: false, hostedHere: false, managed: false, keyInput: "ds" })).toMatch(/not available for \.io/);
   });
 });

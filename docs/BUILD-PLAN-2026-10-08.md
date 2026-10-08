@@ -16,8 +16,11 @@ real inbox. The order flow has; almost nothing after the hatch has.
 | Session keepalive, phone normalization, funding pre-check, Stripe refusal alerts, Openprovider no-effect codes | Fixed, live or in PR 39 | PRs 36, 37, 38, 39 |
 | Receipt and registrant-verification emails | Sent and delivered, but land in Junk at iCloud | Resend log, owner's inbox |
 | Registrant verification (registrar side) | Verified by the owner through Openprovider's link | Openprovider confirmation 16:23 |
-| Registrant verification (app side), DNS, auto-renew, Gate, Nest, refund, renewal, transfer | Never run live | Getting-started list reads 0 of 3 |
-| Hatch card portrait, grove chip, creature tap | Fixed in the portrait change (unmerged) | owner's screenshots |
+| Registrant verification (app side) | Mirrors the registrar's check since the panel audit change (F1): the owner's link click clears the notice on the next open of the DNS tab | `verificationSource` = provider |
+| DNS | Run live: `A @ 76.76.21.21` and `CNAME www` on untilwow.com, https://untilwow.com serves the test page | owner's screenshot 2026-10-08 17:04 UTC |
+| DNSSEC section | Said "we do not offer DNSSEC signing" under a registry DS record: Openprovider's nameservers sign every zone they host, and the add form could never succeed there (DS in, DNSKEY wanted). Fixed in the panel audit change | public DNS: DS 56056/8/2, DNSKEY in zone |
+| Auto-renew, Gate, Nest, refund, renewal, transfer | Never run live | Getting-started list reads 1 of 3 |
+| Hatch card portrait, grove chip, creature tap | PR 40 | owner's screenshots |
 | Root-domain SPF and DMARC, CAA | Missing; seven `external.email_dns` warnings open since 2026-10-03 | Namecheap zone read 2026-10-08 |
 
 ## 1. Live verification pass (this week, owner clicks, operator watches)
@@ -25,7 +28,8 @@ real inbox. The order flow has; almost nothing after the hatch has.
 Run on untilwow.com, in this order. Each step has a pass condition the database or a log can confirm; the operator reads it after each
 click and records the result in AUDIT-2026-10-08 §6.
 
-1. **App-side registrant verification.** Email me a code, Verify. Pass: `registrant_verifications.state = 'verified'`, the
+1. **Registrant verification.** The owner used the registrar's link on 2026-10-08 16:23. Open the DNS tab once the panel audit change
+   is live. Pass: the notice is gone, `registrant_verifications.state = 'verified'` with audit detail `via: registrar`, the
    Getting-started item ticks, no `domain.registrant_*` alert.
 2. **DNS: connect the Vercel test site.** Add `A @ 76.76.21.21` and `CNAME www cname.vercel-dns.com` (both are sensitive names, so
    each asks for the passkey). Pass: the records appear at Openprovider's nameservers, https://untilwow.com serves the test page with a
@@ -51,14 +55,33 @@ Anything that fails here becomes a fix PR with the same shape as PRs 36–39: ro
 
 | # | Fix | Why | Size |
 |---|---|---|---|
-| F1 | Read Openprovider's `email_verification_status` for the registrant and mark the app's verification done when the registrar's is | Two verifications confuse customers; the registrar's is the one that suspends | S |
+| F1 | Provider mode for registrant verification: the registrar's check (`GET /customers/verifications/emails/domains`) is read when the DNS tab opens and by the hourly sweep; verified there verifies here, an open check there sets our deadline, only a suspension there is mirrored; "Send the email again" restarts the registrar's email; our code flow stays for registrars that leave verification to us | Two verifications confused the first owner, and at day 15 we would have "put on hold" a name the registrar had verified | done, panel audit change |
 | F2 | "Check your Junk folder" line under Email me a code and on the hatch card's receipt note | The owner's first two app emails went to Junk | XS |
 | F3 | Ledger refund button shows "until <date>" and hides after the window; the server already refuses | The owner asked why the button exists | S |
 | F4 | Root SPF `v=spf1 -all` and DMARC `v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:dmarc@mosshatch.com` at Namecheap; CAA `0 issue "letsencrypt.org"` once Vercel's issuer is confirmed | Closes the `external.email_dns` warnings; helps reputation | owner, XS |
 | F5 | Dated `.com` price rows effective 2026-11-01 (Verisign 10.26 → 10.97; member price expected 11.17) | The price guard refuses every .com order from that morning otherwise | XS, needs the number |
 | F6 | Operator action to retry or cancel one order (an ops route, audited), replacing today's SQL surgery | Needed within the first hour of live traffic | M |
 | F7 | Page when an hourly balance snapshot drops more than the hour's orders explain | The 170/180 auto-reload means a leaked key would be refilled | S |
-| F8 | Portrait card, grove chip anchor, creature tap (in the portrait change) | Owner's review of the first card | done, unmerged |
+| F8 | Portrait card, grove chip anchor, creature tap (in the portrait change) | Owner's review of the first card | done, PR 40 |
+| F9 | Panel audit from the owner's screenshots (section 2a): DNSSEC truth and a public-key form, the records list in the side panel, History lines in local time, the sensitive warning after a keystroke, the nameserver guard, passkeys on the account panel, the token form's cap, copy button and labels | The three screenshots of 2026-10-08 | done, panel audit change |
+
+### 2a. Panel audit (owner's screenshots, 2026-10-08)
+
+What the Account panel, the DNS tab and Connected apps showed, what was wrong, and what changed.
+
+| Where | Finding | Change |
+|---|---|---|
+| DNS tab, DNSSEC | The note said we do not sign; the registry held DS 56056 (algorithm 8) because Openprovider's nameservers sign every hosted zone. The add form took DS fields, but Openprovider takes DNSKEY material, so the form failed after the passkey every time | `GET /ds` reports `auto_signed`, `key_input` and a note per situation; a managed key reads "Signed by our nameservers" with "Turn DNSSEC off"; the form is a DS form or a public-key form by registrar, with checks before the passkey; hidden while our key stands |
+| DNS tab, Nameservers | A signed name moved to unsigned nameservers would stop resolving; the only hint was a 409 after the passkey | With our key at the registry the box is replaced by the order of operations; with a key of the owner's the box carries a one-line explanation |
+| DNS tab, Records | Five columns in a 380-pixel panel: `76.76.21.21` broke into three lines | Each record is a block (type, name, button; value; note). The table roles are explicit so it stays a table for assistive technology |
+| DNS tab, History | "4:59 PM UTC: before a change, 1 added, 0 removed, 1 sensitive" to someone whose morning it was | Local time with the zone named; "1 record added (1 sensitive)" |
+| DNS tab, Add a record | The red sensitive warning showed before a keystroke (an empty name is the domain itself) | Shown once something is typed, or for MX and SRV |
+| DNS tab, Contact and registrant | "Verify within 15 days or the registry puts the name on hold" after the owner had used the registrar's link; our code would not have satisfied the registrar, and our sweep would have suspended on its own at day 15 | F1: provider mode. The banner names the registrar's email and offers "Send the email again"; a hold reads as a hold |
+| Account panel | Six buttons in a row; "Add a second passkey" with no way to add one (the API had `POST /passkeys` since 4.5) | Sections: Passkeys (list, Add a passkey through the step-up then the browser's ceremony from its own click, Remove with the last-passkey confirmation), Apps and tools, Your data, Signed in |
+| Connected apps, New token | Spend cap defaulted to 0, so a spending token could suggest nothing; no copy button for a token shown once; the threshold and command-line settings had no explanation | Cap required and explained; Copy; labels and hints; days bounded 1 to 90 |
+
+Not changed, noted: the record table in Connected apps (a wide panel) is fine as a table; the contact form still asks for the phone and
+address again on every change (the server returns only name, email and country by design).
 
 ## 3. Improvements (next two weeks)
 

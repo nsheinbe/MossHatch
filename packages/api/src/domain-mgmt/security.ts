@@ -1,5 +1,5 @@
 import { withUser, type PoolClient } from "@mosshatch/db";
-import { RegistrarError } from "@mosshatch/registrar/port";
+import { RegistrarError, type DnskeyInput, type DsRecord } from "@mosshatch/registrar/port";
 import type { AppContext } from "../ports.ts";
 import { HttpError, json } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
@@ -174,21 +174,44 @@ export async function nameserversHandler(req: HandlerReq): Promise<HandlerResult
   } catch (e) { throw mapRegistrarError(e); }
 }
 
-export const DS_NOTE = "DNSSEC records are relayed to the registry as you enter them. We do not offer DNSSEC signing, and it is not available for .io. Nameserver addresses (glue records, IPv4 or IPv6) are not supported yet: use nameservers under another domain.";
+const GLUE_NOTE = "Nameserver addresses (glue records, IPv4 or IPv6) are not supported yet: use nameservers under another domain.";
+/** The DS-only wording, kept for callers and tests that know it by name. */
+export const DS_NOTE = `DNSSEC records are relayed to the registry as you enter them. ${GLUE_NOTE}`;
+
+/**
+ * What the DNSSEC section says, by situation (2026-10-08: the first live name showed a registry DS record under a note that said we do not sign;
+ * Openprovider's nameservers sign every zone they host). Never a record value.
+ */
+export function dsNote(o: { supported: boolean; hostedHere: boolean; managed: boolean; keyInput: "ds" | "dnskey" }): string {
+  if (!o.supported) return `DNSSEC is not available for .io. ${GLUE_NOTE}`;
+  if (o.managed) return "Our nameservers sign this name and keep its DNSSEC record at the registry, so there is nothing to set up. To move the name to nameservers that do not sign, turn DNSSEC off here first and wait until the record is gone (it can take a day), then change the nameservers.";
+  if (o.hostedHere) return `DNSSEC is off for this name. ${GLUE_NOTE}`;
+  if (o.keyInput === "dnskey") return `DNSSEC records are relayed to the registry as you enter them: paste the public key (DNSKEY) your DNS provider shows for the zone, and the registry derives the record from it. ${GLUE_NOTE}`;
+  return DS_NOTE;
+}
 
 export async function dsListHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req; const userId = userIdOf(req);
   const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
   const supported = d.tld !== "io";
-  let records: unknown[] = [];
-  if (supported) { try { records = await registrarOf(ctx).getDs(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); } }
-  return json({ supported, glue_supported: false, note: supported ? DS_NOTE : "DNSSEC is not available for .io. " + DS_NOTE, records, ds_present: d.ds_present });
+  const port = registrarOf(ctx);
+  let keyInput: "ds" | "dnskey" = "ds";
+  try { keyInput = port.capabilities().dnssecKeyInput === "dnskey" ? "dnskey" : "ds"; } catch { keyInput = "ds"; }
+  let records: DsRecord[] = [];
+  if (supported) { try { records = await port.getDs(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); } }
+  const managed = records.some((r) => r.managed === true);
+  const hostedHere = d.dns_hosted_here === true;
+  return json({
+    supported, glue_supported: false, note: dsNote({ supported, hostedHere, managed, keyInput }), records, ds_present: d.ds_present,
+    key_input: keyInput, auto_signed: managed, hosted_here: hostedHere,
+  });
 }
 
 export async function dsChangeHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req; const userId = userIdOf(req);
   const p = actionParams(req, ["ds_add", "ds_remove"]);
-  const ds = p.ds as { keyTag: number; algorithm: number; digestType: number; digest: string };
+  const ds = p.ds as DsRecord;
+  const dnskey = p.dnskey as DnskeyInput | undefined;
   await takeFuse(ctx, "ns_change");
   try {
     return await withUser(ctx.runtime, userId, async (c) => {
@@ -197,7 +220,9 @@ export async function dsChangeHandler(req: HandlerReq): Promise<HandlerResult> {
       if (d.id !== p.domain_id) throw new HttpError(403, "step_up_required");
       await markExecuted(c, actionOf(req));
       const port = registrarOf(ctx);
-      if (p.op === "ds_add") await port.addDs(d.fqdn_ascii, ds); else await port.removeDs(d.fqdn_ascii, ds);
+      // A key goes to a registrar that takes keys; elsewhere the DS derived from it at prepare is what gets added.
+      if (p.op === "ds_add") { if (dnskey && typeof port.addDnskey === "function") await port.addDnskey(d.fqdn_ascii, dnskey); else await port.addDs(d.fqdn_ascii, ds); }
+      else await port.removeDs(d.fqdn_ascii, ds);
       const now = (await port.getDs(d.fqdn_ascii)).length > 0;
       await c.query("update domains set ds_present = $2 where id = $1", [d.id, now]);
       await audit(ctx, c, userId, p.op === "ds_add" ? "domain.ds_added" : "domain.ds_removed", { resourceKind: "domain", resourceId: d.id, detail: { ds_present: now } });

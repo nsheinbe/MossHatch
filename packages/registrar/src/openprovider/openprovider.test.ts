@@ -265,3 +265,53 @@ describe("registrar selection (MH_REGISTRAR_PROVIDER)", () => {
     expect(() => selectRegistrar({ MH_REGISTRAR_MODE: "sandbox", MH_REGISTRAR_PROVIDER: "openprovider" }, { opensrs: () => a })).toThrow(RegistrarError);
   });
 });
+
+describe("Openprovider registrant email verification (ICANN) and managed DNSSEC", () => {
+  const verif = (rows: Record<string, unknown>[]) => ok({ results: rows, total: rows.length });
+  const KEY_A = "GojIhhXUN/u4v54ZQqGSnyhWJwaubCvTmeexv7bR6edbkrSqQpF64cYbcB7wNcP+e+MAnLr+Wi9xMWyQLc8NAA==";
+  const KEY_B = "AwEAAbfDDKc1SGEw3pBXhwsLIyWSsJD5ugf0d0H7HHfYd+LFPw2Vfzvk7H1w9Yp3RcBBPDky1AzPIlSZaeLhN2lhbxLRj9j0fgrlU3ze0OgX8jTKUm3qKqry/RqQh39J50fNStSryt3V+fyEwtIxVs2GaMs+0pZhKZf7bzG9K450XMyp";
+  it("reads the provider's check by domain: an open check outranks an old verified one, a suspension outranks everything, another name's check is ignored", async () => {
+    const r = rig([
+      verif([{ domain: "abc.com", email: "old@example.test", handle: "H1", status: "verified", description: "", is_suspended: false, expiration_date: "" }]),
+      verif([{ domain: "abc.com", email: "old@example.test", status: "verified", is_suspended: false }, { domain: "abc.com", email: "new@example.test", status: "in progress", is_suspended: false, expiration_date: "2026-10-23 14:30:00" }]),
+      verif([{ domain: "abc.com", email: "x@example.test", status: "verified", is_suspended: false }, { domain: "abc.com", email: "y@example.test", status: "failed", description: "bounced", is_suspended: true }]),
+      verif([{ domain: "other.com", email: "x@example.test", status: "verified", is_suspended: false }]),
+    ]);
+    expect(await r.adapter.getRegistrantVerification("abc.com")).toEqual({ status: "verified", suspended: false });
+    const open = await r.adapter.getRegistrantVerification("abc.com");
+    expect(open).toMatchObject({ status: "pending", suspended: false }); expect(open!.expiresAt).toBeInstanceOf(Date);
+    expect(await r.adapter.getRegistrantVerification("abc.com")).toEqual({ status: "failed", reason: "bounced", suspended: true });
+    expect(await r.adapter.getRegistrantVerification("abc.com")).toBeNull();
+    const q = new URL(r.transport.sent.find((x) => x.url.includes("/customers/verifications/emails/domains"))!.url);
+    expect(q.searchParams.get("domain")).toBe("abc.com");
+    expect(r.adapter.capabilities().registrantVerification).toBe("provider");
+    expect(r.logs.every((l) => !JSON.stringify(l).includes("example.test"))).toBe(true); // addresses stay out of the log
+  });
+  it("sends the provider's email again to the address of the open check, and sends nothing when every check is verified", async () => {
+    const r = rig([
+      verif([{ domain: "abc.com", email: "new@example.test", status: "not verified", is_suspended: false }]),
+      ok({ success: true }),
+      verif([{ domain: "abc.com", email: "old@example.test", status: "verified", is_suspended: false }]),
+    ]);
+    expect(await r.adapter.resendRegistrantVerification("abc.com")).toEqual({ sent: true });
+    const restart = r.transport.sent.find((x) => x.url.endsWith("/customers/verifications/emails/restart"))!;
+    expect(restart.method).toBe("POST"); expect(JSON.parse(restart.body!)).toEqual({ email: "new@example.test" });
+    expect(await r.adapter.resendRegistrantVerification("abc.com")).toEqual({ sent: false });
+    expect(r.transport.sent.filter((x) => x.url.endsWith("/restart"))).toHaveLength(1);
+  });
+  it("the allow-list admits only the domain filter and paging on the list, and only the address on the restart", () => {
+    const refused = (f: () => unknown) => { try { f(); return null; } catch (e) { return (e as RegistrarError).code; } };
+    expect(refused(() => checkOperation("LIST_EMAIL_VERIFICATIONS", { query: { domain: "abc.com", email: "x@example.test" } }))).toBe("query_key_not_allowed");
+    expect(refused(() => checkOperation("RESTART_EMAIL_VERIFICATION", { body: { email: "x@example.test", tag: "t" } }))).toBe("body_key_not_allowed");
+    expect(refused(() => checkOperation("RESTART_EMAIL_VERIFICATION", { body: {} }))).toBe("body_key_missing");
+    expect(refused(() => checkOperation("LIST_EMAIL_VERIFICATIONS", { query: { domain: "abc.com", limit: "10" } }))).toBeNull();
+  });
+  it("marks the key Openprovider's own DNS manages, and says keys are added as DNSKEY material", async () => {
+    const r = rig([listHit(7, "abc", "com"), ok({ id: 7, domain: { name: "abc", extension: "com" }, status: "ACT", dnssec_keys: [{ flags: 257, protocol: 3, alg: 13, pub_key: KEY_A, readonly: 1 }, { flags: 257, protocol: 3, alg: 8, pub_key: KEY_B }] })]);
+    const ds = await r.adapter.getDs("abc.com");
+    expect(ds).toHaveLength(2);
+    expect(ds[0]!.managed).toBe(true); expect(ds[1]!.managed).toBeUndefined();
+    expect(ds[0]).toMatchObject(dsFromDnskey("abc.com", { flags: 257, protocol: 3, algorithm: 13, publicKey: KEY_A }, 2));
+    expect(r.adapter.capabilities().dnssecKeyInput).toBe("dnskey");
+  });
+});

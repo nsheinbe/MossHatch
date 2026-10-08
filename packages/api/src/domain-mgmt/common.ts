@@ -68,7 +68,8 @@ const REJECTED: Record<string, [number, string]> = {
   dnssec_would_break: [409, "dnssec_would_break"], bad_nameservers: [422, "bad_nameservers"], code_by_support: [409, "code_by_support"],
   dns_readback_mismatch: [502, "dns_write_failed"], txt_too_long: [422, "txt_too_long"], unsupported_record_type: [422, "unsupported_record_type"],
   empty_value: [422, "empty_value"], not_found: [404, "not_found"], dnssec_unsupported: [409, "dnssec_unsupported"], bad_ds: [422, "bad_ds"],
-  dns_not_hosted: [409, "dns_not_hosted"],
+  dns_not_hosted: [409, "dns_not_hosted"], dnssec_dnskey_required: [422, "dnssec_dnskey_required"], bad_dnskey: [422, "bad_dnskey"],
+  dnssec_key_not_applied: [409, "dnssec_key_not_applied"], not_supported: [409, "not_supported"],
 };
 export function mapRegistrarError(e: unknown): HttpError {
   if (e instanceof HttpError) return e;
