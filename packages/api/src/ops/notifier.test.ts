@@ -26,6 +26,20 @@ describe("AUD-F10: pages reach a person (docs/AUDIT-2026-10-07.md)", () => {
     expect(lines).toEqual(["alert warn outcome_unknown", "alert page tick.stale"]);
   });
 
+  it("a warning raised with `email` is emailed once with its guidance and no auto-safe line; a plain warning is not", async () => {
+    const email = new FakeEmail(); const lines: string[] = [];
+    const n = createAlertNotifier({ email, to: "ops@example.org", log: (l) => lines.push(l) });
+    await n.notify({ id, severity: "warn", kind: "registrar_balance_underfunded", subject: "registrar", email: true });
+    await n.notify({ id, severity: "warn", kind: "registrar_balance_underfunded", subject: "registrar", email: true });
+    await n.notify({ id: "01a10233-f82c-7f7f-96c8-e7a5af9bfc40", severity: "warn", kind: "registrar_balance_low", subject: "registrar" });
+    expect(email.sent).toHaveLength(1);
+    expect(email.sent[0]!.subject).toBe("Mosshatch warning: registrar_balance_underfunded");
+    expect(email.sent[0]!.text).toContain("no longer covers one registration above the sell-gate floor");
+    expect(email.sent[0]!.text).toContain(`update alerts set acked_at = now() where id = '${id}';`);
+    expect(email.sent[0]!.text).not.toContain("auto-safe");
+    expect(lines).toEqual(["alert warn registrar_balance_underfunded", "alert warn registrar_balance_underfunded", "alert warn registrar_balance_low"]);
+  });
+
   it("an id that is not a UUID never lands in the SQL line", async () => {
     const email = new FakeEmail();
     await createAlertNotifier({ email, to: "ops@example.org", log: () => undefined }).notify({ id: "x'; drop table alerts; --", severity: "page", kind: "k", subject: null });

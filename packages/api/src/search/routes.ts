@@ -13,6 +13,7 @@ import { registrarOfRecord } from "@mosshatch/core";
 import { priceTableFor } from "../pricing/registrar.ts";
 import { salesPaused } from "../orders/create.ts";
 import { refundWindow } from "../domains/refunds.ts";
+import { fundingOpenFor } from "../domains/gate.ts";
 
 /** Rate limits (PLAN.md 4.5 table row "Search and quote"; own targets, tuned after OpenSRS answers). */
 export const LIMIT_ANON_IP: Limit = { bucket: "search:ip", max: 30, windowSeconds: 600 };
@@ -114,11 +115,15 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
     // (orders or registrar writes paused refuse checkout), the registrar of record (D-024 row 12) and the refund window (row 9).
     const table = priceTableFor(fq.tld);
     const facts = await withNoUser(req.ctx.runtime, async (c) => ({ paused: await salesPaused(c), refund: await refundWindow(c, table, fq.tld) }));
+    // The sell gate's own arithmetic (domains/gate.ts), answered before the click: a registrar balance that cannot fund this registration
+    // above the floor closes sales here, not only at POST /orders (2026-10-08). `null` (the registrar cannot say) leaves sales open.
+    const funded = purchasable && !facts.paused ? await fundingOpenFor(req.ctx, registrar, quote.wholesaleMinor) : null;
+    const closed = facts.paused ? "paused" : funded === false ? "funding" : null;
     const rec = registrarOfRecord(table);
     // C-58: the HTTPS notice for .dev and .app travels with the quote (closure/tld-https.ts), so every client shows it before checkout.
     return json({
       availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, notices: tldNotices(a.fqdn),
-      sales_open: !facts.paused,
+      sales_open: closed === null, sales_closed_reason: closed,
       registrar: { name: rec.name, short: rec.short, iana_id: rec.ianaId },
       refund: { refundable: facts.refund.refundable, window_days: facts.refund.refundable ? Math.min(5, facts.refund.windowDays ?? 5) : 0 },
     });

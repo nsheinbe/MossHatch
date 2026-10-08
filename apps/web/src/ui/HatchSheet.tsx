@@ -35,6 +35,7 @@ function CheckoutSheet({ r }: { r: Result }) {
   const { apiReady, account, accountOpen, set } = useUi();
   const live = apiReady === true;
   const head = useRef<HTMLHeadingElement>(null);
+  const errRef = useRef<HTMLParagraphElement>(null);
   const inFlight = useRef(false);
   const attempt = useRef<{ signature: string; key: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,6 +51,8 @@ function CheckoutSheet({ r }: { r: Result }) {
   const [expired, setExpired] = useState(false);
   const tld = r.tld;
   const years = r.years ?? 1;
+  // A refusal is written above the sticky button bar, which a long sheet scrolls out of view: bring it into view (2026-10-08, the sell-gate refusal went unseen).
+  useEffect(() => { if (error) errRef.current?.scrollIntoView({ block: "nearest" }); }, [error]);
   useEffect(() => { head.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !inFlight.current) set({ hatchPhase: "none", selected: null }); }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [set]);
   // Back from Stripe can restore this page from the back-forward cache with the button still "Opening secure checkout…": release it.
   useEffect(() => { const show = (e: PageTransitionEvent) => { if (e.persisted) { inFlight.current = false; setBusy(false); } }; window.addEventListener("pageshow", show); return () => window.removeEventListener("pageshow", show); }, []);
@@ -152,7 +155,7 @@ function CheckoutSheet({ r }: { r: Result }) {
       {live && <p className="fineprint">No add-ons. Nothing is pre-checked.</p>}
       <OwnershipPreview domain={r.domain} />
       {live && <p className="fineprint">Questions before you buy? <a href={supportHref()}>Email support</a> · <a href="/how-it-works" target="_blank" rel="noreferrer">How ownership works</a></p>}
-      {error && <p role="alert" className="notice">{error}</p>}
+      {error && <p ref={errRef} role="alert" className="notice">{error}</p>}
       <div className="checkout-actions">
         {!live && <button type="button" className="btn primary" onClick={() => { if (handle.world) void runHatch(r.domain); else setError('Your domain preview is shown above. The animated hatch needs a browser with WebGL; purchasing does not.'); }}>Preview creature</button>}
         {live && account && <button type="button" className="btn primary" disabled={busy || !accepted || !docsReady || !quoteReady || !hasContact || !salesOpen} onClick={() => void pay()}>{busy ? 'Opening secure checkout…' : `Buy domain & hatch${total ? ` · ${total}` : ''}`}</button>}
