@@ -17,7 +17,10 @@ export function sessionOperation(i: CreateSessionInput): StripeOperation {
  * - the price is a server-computed `price_data` line, never a client price id, on the operation's own Product (C-44), and the
  *   domain and term the customer is paying for are shown in `custom_text.submit`;
  * - `payment_intent_data.statement_descriptor_suffix` per operation after the account's static prefix (C-40);
- * - `payment_intent_data.setup_future_usage=off_session` only when the person opted into auto-renew at checkout (C-31, C-38).
+ * - `payment_intent_data.setup_future_usage=off_session` only when the person opted into auto-renew at checkout (C-31, C-38);
+ * - `managed_payments.enabled=false`: Mosshatch is the merchant of record (its own Stripe Tax registrations, receipts, refund policy and
+ *   descriptors). Stripe enables Managed Payments by default on a new account, and that mode refuses `custom_text` among other things;
+ *   the first live Checkout on 2026-10-08 was refused exactly so. Pinned here, so a Dashboard default can never change who the merchant is.
  */
 export function toStripeSessionParams(i: CreateSessionInput) {
   const op = sessionOperation(i);
@@ -33,6 +36,7 @@ export function toStripeSessionParams(i: CreateSessionInput) {
     billing_address_collection: "required" as const,
     customer_update: { address: "auto" as const, name: "auto" as const },
     automatic_tax: { enabled: true },
+    managed_payments: { enabled: false },
     line_items: [{ quantity: 1, price_data: { currency: i.lineItem.currency, unit_amount: i.lineItem.unitAmount, tax_behavior: "exclusive" as const, product: CATALOG[op].id } }],
     custom_text: { submit: { message: i.lineItem.name.slice(0, 1200) } },
     // `setup_future_usage` is sent only for the opt-in, so an order without it can never be charged off-session later (C-31).

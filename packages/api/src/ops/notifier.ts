@@ -11,6 +11,7 @@ export function alertAddressFromEnv(env: Record<string, string | undefined>): st
 
 /** One line of what to do, for the warnings that are emailed (alerts.ts `email`). Operator facts only, never a customer value. */
 const GUIDANCE: Record<string, string> = {
+  "stripe.checkout_refused": "Stripe refused to create a Checkout Session, so the buyer saw that secure checkout could not open and nothing was charged. The exact reason is in the Stripe Dashboard under Developers, Logs (the failed POST /v1/checkout/sessions). Causes seen on 2026-10-08: Managed Payments enabled by default on the account (the app now pins it off per request), and no tax code on the Products with no default tax code in Tax settings (set the preset product tax code under Settings, Tax).",
   registrar_balance_underfunded: "The registrar's available balance, less what is reserved, no longer covers one registration above the sell-gate floor. Checkout refuses every new order (sell_gate) until the balance is topped up at the registrar, or the floor is lowered (flags.sell_gate.min_funds_minor). The hourly balance job closes this alert by itself once funds cover a registration.",
 };
 

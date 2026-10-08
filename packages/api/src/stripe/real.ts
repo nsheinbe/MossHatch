@@ -136,7 +136,7 @@ function mapPi(p: any): PaymentIntent {
 
 export function mapError(e: unknown): StripeError {
   if (e instanceof StripeError) return e;
-  const err = e as { type?: string; statusCode?: number; code?: string; message?: string };
+  const err = e as { type?: string; statusCode?: number; code?: string; message?: string; param?: string };
   const status = err.statusCode ?? null;
   switch (err.type) {
     case "StripeConnectionError": return new StripeError("timeout", null, "connection");
@@ -144,7 +144,7 @@ export function mapError(e: unknown): StripeError {
     case "StripeAuthenticationError": return new StripeError("authentication", 401, err.code);
     case "StripeCardError": return new StripeError("card_error", status ?? 402, err.code);
     case "StripeIdempotencyError": return new StripeError(status === 409 ? "idempotency_in_progress" : "idempotency_error", status, err.code);
-    case "StripeInvalidRequestError": return new StripeError("invalid_request", status ?? 400, err.code);
+    case "StripeInvalidRequestError": return new StripeError("invalid_request", status ?? 400, err.code, undefined, typeof err.param === "string" ? err.param.slice(0, 80) : undefined);
     default: return new StripeError("api_error", status ?? 500, err.code);
   }
 }
