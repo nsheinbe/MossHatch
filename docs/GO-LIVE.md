@@ -41,8 +41,12 @@ code (only the money codes from steps 3 to 6 remain).
 2. Account currency **USD**. The adapter refuses any price that is not USD (`currency_mismatch`), so a EUR account cannot sell.
 3. API access enabled for the user whose login you will give the registrar project. If the panel offers an API IP allow-list, leave it
    **off** for now (no fixed egress yet, see above).
-4. Balance: USD 20 is enough for one .com (10.46 member) above the USD 5 sell-gate floor. Top up before inviting anyone else (see the
-   balance note under "What the customer pays").
+4. Balance: the sell gate refuses an order unless the available balance, less what is reserved, still covers the floor (step 4, USD 5)
+   **after** that order's wholesale. With the member .com at USD 10.46 that means at least USD 15.46 in the account for one .com; keep
+   USD 20 to 25 so the first purchase and a renewal test both clear it. (2026-10-08: USD 15.01 was USD 0.45 short, and every order was
+   refused with "paused for a little while".) When the balance drops to where one registration would close the gate, the hourly balance
+   job emails `MH_ALERT_EMAIL` (`registrar_balance_underfunded`) and the checkout sheet says registrations are paused before anyone pays.
+   Do not add more until the rehearsal is done.
 5. Membership: Basic S, bought 2026-10-07 (expires 2027-10-08, auto-renew on; D-062). Prices below are member prices (migration 1220).
    If the membership lapses, the price guard refuses orders and renewals until new dated rows are added.
 

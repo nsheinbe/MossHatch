@@ -231,8 +231,19 @@ describe("quote route", () => {
     const ai = await get("/api/v1/quote?domain=free-y.ai");
     expect(ai.json.refund).toEqual({ refundable: false, window_days: 0 });
     await app.db.owner.query("update flags set value = 'true' where name = 'registrar_writes_paused'");
-    try { expect((await get("/api/v1/quote?domain=moonfern.com", ip(2))).json.sales_open).toBe(false); }
-    finally { await app.db.owner.query("update flags set value = 'false' where name = 'registrar_writes_paused'"); }
+    try {
+      const paused = (await get("/api/v1/quote?domain=moonfern.com", ip(2))).json;
+      expect([paused.sales_open, paused.sales_closed_reason]).toEqual([false, "paused"]);
+    } finally { await app.db.owner.query("update flags set value = 'false' where name = 'registrar_writes_paused'"); }
+    expect(r.json.sales_closed_reason).toBeNull();
+    // A registrar balance that cannot fund this registration above the floor closes sales before the click (2026-10-08).
+    const floor = BigInt((await app.db.owner.query("select value from flags where name = 'sell_gate.min_funds_minor'")).rows[0]?.value ?? 25000);
+    const wholesale = BigInt(r.json.quote.wholesale_minor);
+    mock.setBalance(floor + wholesale - 1n);
+    const short = (await get("/api/v1/quote?domain=moonfern.com", ip(3))).json;
+    expect([short.sales_open, short.sales_closed_reason]).toEqual([false, "funding"]);
+    mock.setBalance(floor + wholesale);
+    expect((await get("/api/v1/quote?domain=moonfern.com", ip(4))).json.sales_open).toBe(true);
   });
   it("refuses a one-year .ai, an unsupported extension, and any client-supplied price or unknown parameter", async () => {
     expect((await get("/api/v1/quote?domain=free-y.ai&years=1")).json.error.code).toBe("invalid_term");

@@ -134,6 +134,40 @@ describe("ST-109: the sell gate refuses below the threshold, renewals rank ahead
     expect(snaps.map((s) => s.gate_open)).toEqual([true, true, false, false, true]);
   });
 
+  // 2026-10-08: with USD 15.01 at the registrar, a USD 10.46 .com and a USD 5 floor the gate read open while every order was refused.
+  it("the balance job warns, by email, when the gate is open but the cheapest registration would close it; the quote says sales are closed", async () => {
+    const h = await per.make();
+    const { runBalanceCheck } = await import("./balance.ts");
+    const { cheapestRegisterWholesale, floorMinor } = await import("./gate.ts");
+    const notified: { kind: string; severity: string; email?: boolean }[] = [];
+    (h.app.ctx.services as Record<string, unknown>).alertNotifier = { notify: async (a: { kind: string; severity: string; email?: boolean }) => { notified.push(a); } };
+    const now = h.app.clock.now();
+    const floor = await floorMinor(h.app.ctx.cron);
+    const cheapest = (await cheapestRegisterWholesale(h.app.ctx.cron, now))!;
+    expect(cheapest).toBeGreaterThan(0n);
+    h.registrar.setBalance(floor + cheapest - 1n);                 // the gate is open, one registration short
+    const r = (await runBalanceCheck(h.app.ctx))!;
+    expect([r.gateOpen, r.underfunded]).toEqual([true, true]);
+    expect((await alertRows(h, "registrar_balance_underfunded")).map((a) => a.severity)).toEqual(["warn"]);
+    expect(notified).toEqual([{ id: expect.any(String), kind: "registrar_balance_underfunded", severity: "warn", subject: "registrar", email: true }]);
+    expect(await alertRows(h, "sell_gate_closed")).toHaveLength(0);
+    // The quote (what the checkout sheet shows) closes sales from the snapshot the job just wrote, without a registrar call.
+    const { registerSearchRoutes } = await import("../search/routes.ts");
+    const { Router } = await import("../http/router.ts");
+    const router = new Router(); registerSearchRoutes(router, { registrar: h.registrar });
+    const before = h.registrar.calls.getBalance;
+    const q = await router.dispatch(h.app.ctx, h.app.req("GET", "/api/v1/quote?domain=free-underfunded.com", { headers: { "x-forwarded-for": "10.9.9.9" } }));
+    const body = await q.json() as { sales_open: boolean; sales_closed_reason: string | null; quote: { wholesale_minor: string } };
+    expect(q.status).toBe(200);
+    expect([body.sales_open, body.sales_closed_reason]).toEqual([false, "funding"]);
+    expect(h.registrar.calls.getBalance - before).toBe(1);        // the snapshot said no, so the registrar was asked once, live
+    h.registrar.setBalance(floor + cheapest);                      // a top-up shows at once, before the next hourly snapshot
+    const q2 = await router.dispatch(h.app.ctx, h.app.req("GET", "/api/v1/quote?domain=free-underfunded.com", { headers: { "x-forwarded-for": "10.9.9.10" } }));
+    expect(((await q2.json()) as { sales_open: boolean }).sales_open).toBe(true);
+    await runBalanceCheck(h.app.ctx);
+    expect(await alertRows(h, "registrar_balance_underfunded")).toHaveLength(0);
+  });
+
   it("a voided order leaves no pending upstream order (the registration that was held for funds, then voided)", async () => {
     const h = await per.make();
     const o = await makeOwner(h, "st109e@example.com");

@@ -1,6 +1,7 @@
-import { RegistrarError } from "@mosshatch/registrar/port";
+import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import type { AppContext } from "../ports.ts";
 import { SELL_GATE_MIN_FUNDS_MINOR } from "../orders/types.ts";
+import { defaultPriceTable } from "../pricing/registrar.ts";
 import { DAY_MS, flagNumber, registrarOf, type Q } from "./common.ts";
 
 /**
@@ -38,6 +39,41 @@ export async function availableFunds(ctx: AppContext): Promise<bigint | null> {
   const r = registrarOf(ctx);
   if (!r.capabilities().funding) return null;
   return (await r.getBalance()).available.minor;
+}
+
+/** The lowest register wholesale in force across the extensions sold at the live registrar: what one registration needs at the least. Null when no row. */
+export async function cheapestRegisterWholesale(q: Q, now: Date, registrar: string = defaultPriceTable()): Promise<bigint | null> {
+  const r = (await q.query(
+    `select min(amount_minor)::text as m from (select distinct on (tld) amount_minor from wholesale_prices where registrar = $1 and kind = 'register' and effective_from <= $2::date order by tld, effective_from desc) x`,
+    [registrar, now])).rows[0]?.m as string | null | undefined;
+  return r ? BigInt(r) : null;
+}
+
+/** The balance snapshot the hourly job wrote within the last two hours, or null. */
+const SNAPSHOT_FRESH_MS = 2 * 3600_000;
+export async function fundingSnapshot(q: Q, now: Date): Promise<{ availableMinor: bigint; reservedMinor: bigint } | null> {
+  const s = (await q.query("select available_minor, reserved_renewals_minor, reserved_registrations_minor from registrar_balance_snapshots where at > $1 order by at desc limit 1", [new Date(now.getTime() - SNAPSHOT_FRESH_MS)])).rows[0];
+  return s ? { availableMinor: BigInt(s.available_minor), reservedMinor: BigInt(s.reserved_renewals_minor) + BigInt(s.reserved_registrations_minor) } : null;
+}
+
+/**
+ * Before checkout (the quote): can this registration be funded now, by the same arithmetic as `sellGate`? The hourly snapshot answers
+ * first, with no registrar call; only when it says no is the registrar read live, so a top-up shows at once and an open gate costs
+ * nothing. Null when the registrar cannot say (no funding capability, or a read that failed): the order path's own gate decides then.
+ * 2026-10-08: the first live buyer reached Pay with USD 15.01 at the registrar, a USD 10.46 wholesale and a USD 5 floor; the sheet
+ * had said nothing, and the refusal text sat below the fold.
+ */
+export async function fundingOpenFor(ctx: AppContext, registrar: RegistrarPort, wholesaleMinor: bigint): Promise<boolean | null> {
+  if (!registrar.capabilities().funding) return null;
+  const now = ctx.clock.now();
+  const floor = await floorMinor(ctx.cron);
+  const snap = await fundingSnapshot(ctx.cron, now);
+  if (snap && snap.availableMinor - snap.reservedMinor - wholesaleMinor >= floor) return true;
+  let funds: bigint;
+  try { funds = (await registrar.getBalance()).available.minor; }
+  catch (e) { if (e instanceof RegistrarError) return null; throw e; }
+  const left = funds - await reservedRenewalsMinor(ctx.cron, now) - await reservedRegistrationsMinor(ctx.cron) - wholesaleMinor;
+  return left >= floor;
 }
 
 export async function sellGate(ctx: AppContext, kind: "register" | "renew", wholesaleMinor: bigint, opts: { excludeTermId?: string } = {}): Promise<GateVerdict> {

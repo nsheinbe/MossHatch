@@ -96,12 +96,14 @@ export interface LiveQuote {
   renewalLevel: string | null;
   fee: string; taxCeiling: string;
   salesOpen: boolean;
+  /** Why sales are closed: the operator paused them, or the registrar balance cannot fund this registration (the sheet's text is the same). */
+  salesClosedReason: "paused" | "funding" | null;
   registrar: { name: string; short: string; ianaId: number } | null;
   refund: { refundable: boolean; windowDays: number };
 }
 interface QuoteJson { fqdn: string; expires_at: string; quoted_at?: string; subtotal_minor: string; wholesale_minor: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
+  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; sales_closed_reason?: "paused" | "funding" | null; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
   if (!out.quote || out.quote.fqdn !== fqdn || out.availability?.kind !== "available" || out.availability.unconfirmed) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
   const level = BigInt(out.quote.renewal_level_minor ?? "0");
@@ -109,6 +111,7 @@ export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote 
     domain: out.quote.fqdn, expiresAt: out.quote.expires_at, quotedAt: out.quote.quoted_at ?? new Date().toISOString(), subtotal: f(out.quote.subtotal_minor), years: out.quote.years,
     registrarNow: f(out.quote.wholesale_minor), renewalLevel: level > 0n ? f(level.toString()) : null, fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor),
     salesOpen: out.sales_open !== false,
+    salesClosedReason: out.sales_open === false ? out.sales_closed_reason ?? "paused" : null,
     registrar: out.registrar ? { name: out.registrar.name, short: out.registrar.short, ianaId: out.registrar.iana_id } : null,
     refund: { refundable: out.refund?.refundable ?? false, windowDays: out.refund?.window_days ?? 0 },
   };
