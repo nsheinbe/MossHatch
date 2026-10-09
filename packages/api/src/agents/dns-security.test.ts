@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import pg from "pg";
 import { RegistrarError, type DnsRecord } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
 import { ACTION_HEADER } from "../stepup/gate.ts";
@@ -97,6 +98,22 @@ describe("ST-201 DNS: complete-state plans and owner consent", () => {
     expect(k.h.registrar.calls.replaceZone).toBe(writes + 1);
   });
 
+  it("approved owner DNS requests settle with one runtime connection and dispatch the action only once", async () => {
+    const x = await setup();
+    const action = await prepareOwner(x.ownerPath, txt());
+    const original = k.app.ctx.runtime;
+    // Bound acquisition time so a nested checkout fails this regression instead of hanging the suite.
+    const single = new pg.Pool({ connectionString: k.app.db.urlFor("runtime"), max: 1, connectionTimeoutMillis: 1000 });
+    const writes = k.h.registrar.calls.replaceZone;
+    k.app.ctx.runtime = single;
+    try {
+      const responses = await Promise.all(Array.from({ length: 3 }, () => web(k, ada, "POST", x.ownerPath, txt(), { [ACTION_HEADER]: action })));
+      expect(responses.filter((r) => r.status === 200), JSON.stringify(responses)).toHaveLength(1);
+      expect(responses.every((r) => [200, 403, 409].includes(r.status))).toBe(true);
+      expect(k.h.registrar.calls.replaceZone).toBe(writes + 1);
+    } finally { k.app.ctx.runtime = original; await single.end(); }
+  });
+
   it("stale approval detects an out-of-band TTL-only change", async () => {
     const x = await setup();
     const old: DnsRecord = { type: "A", name: "stage", value: "192.0.2.1", ttl: 60 };
@@ -176,6 +193,45 @@ describe("ST-202 DNS: durable outcomes and grant races", () => {
       await web(k, ada, "GET", `/api/v1/domains/${x.d.fqdn}/dns-snapshots`);
       expect(attempts).toBe(1);
     } finally { k.h.registrar.replaceZone = orig; }
+  });
+
+  it.each(["rate_limited", "rejected", "unavailable"] as const)("a %s read failure after accepted replacement preserves the receipt and approval until reconciliation", async (kind) => {
+    const x = await setup();
+    const proposed = await bearer(k, x.t.token, "POST", x.path, txt());
+    const id = proposed.json.approval_id;
+    const s = await stepUp(k, ada, "dns.sensitive.approve", `ar_${id}`);
+    expect(s.status, JSON.stringify(s.json)).toBe(200);
+    const originalWrite = k.h.registrar.replaceZone.bind(k.h.registrar);
+    const originalRead = k.h.registrar.getDns.bind(k.h.registrar);
+    let accepted = false, readFailure = true, writes = 0;
+    k.h.registrar.replaceZone = async (...args) => {
+      writes++;
+      const result = await originalWrite(...args);
+      accepted = true;
+      return result;
+    };
+    k.h.registrar.getDns = async (fqdn) => {
+      if (fqdn === x.d.fqdn && accepted && readFailure) throw new RegistrarError(kind, "private-read-canary", { outcomeUnknown: false, retryable: true });
+      return originalRead(fqdn);
+    };
+    try {
+      const failed = await web(k, ada, "POST", `/api/v1/approvals/${id}/approve-dns`, {}, { [ACTION_HEADER]: s.actionId });
+      expect(failed.status, failed.text).toBe(502);
+      expect(failed.json.error).toMatchObject({ code: "outcome_unknown", operation_id: expect.any(String) });
+      expect(failed.text).not.toContain("private-read-canary");
+      expect((await snapshots(x.d.id))[0]).toMatchObject({ id: failed.json.error.operation_id, write_state: "unknown" });
+      expect((await requestRow(k, id)).state).toBe("approved");
+      const unresolved = await web(k, ada, "GET", `/api/v1/domains/${x.d.fqdn}/dns-snapshots`);
+      expect(unresolved.json.snapshots).toHaveLength(1);
+      expect(unresolved.json.snapshots[0].write_state).toBe("unknown");
+      readFailure = false;
+      const reconciled = await web(k, ada, "GET", `/api/v1/domains/${x.d.fqdn}/dns-snapshots`);
+      expect(reconciled.json.snapshots[0]).toMatchObject({ write_state: "applied", reconciliation_state: "desired_observed" });
+      expect((await requestRow(k, id)).state).toBe("completed");
+      const retry = await web(k, ada, "POST", `/api/v1/approvals/${id}/approve-dns`, {}, { [ACTION_HEADER]: s.actionId });
+      expect([403, 409]).toContain(retry.status);
+      expect(writes).toBe(1);
+    } finally { k.h.registrar.replaceZone = originalWrite; k.h.registrar.getDns = originalRead; }
   });
 
   it.each(["revoked", "paused", "expired", "scope removed"])("rechecks a %s grant after the locked authoritative read before sending", async (state) => {

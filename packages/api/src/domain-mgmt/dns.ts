@@ -197,8 +197,10 @@ async function takeSnapshot(ctx: AppContext, c: PoolClient, userId: string, d: D
  */
 async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: DomainRow, live: DnsRecord[], target: DnsRecord[], snapId: string, sensitive: Sensitive[], w: ZoneWriter = sessionWriter(userId), failed?: ZoneFailed): Promise<{ hash: string }> {
   const port = registrarOf(ctx);
+  let replacementAccepted = false;
   try {
     const accepted = await port.replaceZone(d.fqdn_ascii, target, { expectedHash: zoneHash(live) });
+    replacementAccepted = true;
     // Independently verify complete state even when an adapter only acknowledged acceptance.
     const observed = await liveZone(ctx, d);
     if (zoneHash(observed.records) !== zoneHash(target) || accepted.hash !== zoneHash(target)) {
@@ -207,7 +209,8 @@ async function sendZone(ctx: AppContext, s: ZoneSession, userId: string, d: Doma
     return { hash: zoneHash(observed.records) };
   }
   catch (e) {
-    const refused = e instanceof RegistrarError && !e.outcomeUnknown && e.kind !== "unknown" && e.code !== "dns_readback_mismatch";
+    // A refused read after acceptance says nothing about the preceding write's effects.
+    const refused = !replacementAccepted && e instanceof RegistrarError && !e.outcomeUnknown && e.kind !== "unknown" && e.code !== "dns_readback_mismatch";
     await s.step(async (c) => {
       if (failed) await failed(c, refused ? "refused" : "unknown");
       if (refused) {

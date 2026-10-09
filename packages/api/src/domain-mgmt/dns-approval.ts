@@ -58,7 +58,7 @@ export async function approveSessionDns(req: HandlerReq, c: PoolClient, d: Domai
     type: "dns.sensitive.approve", target_id: `dz_${d.id}`, user_input: { desired: change.desired, before_hash: zoneHash(live) },
     added: change.diff.added, removed: change.diff.removed, sensitive_records: change.sensitive,
   });
-  const action = await createStepUpGate()(req, "dns.sensitive.approve");
+  const action = await createStepUpGate(c)(req, "dns.sensitive.approve");
   const p = action.params as Record<string, unknown>;
   if (p.route !== "dns_session" || p.user_id !== d.user_id || p.domain_id !== d.id || p.fqdn !== d.fqdn_ascii) throw new HttpError(409, "params_changed");
   if (p.before_hash !== zoneHash(live)) throw new HttpError(409, "zone_changed");
