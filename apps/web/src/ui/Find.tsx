@@ -161,7 +161,14 @@ export function Find({ simple = false }: { simple?: boolean }) {
       <div className="shop-intro">
         <span className="eyebrow">A home for your next idea</span>
         <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>
-        <p>A name you own. A creature that's yours. A little world waiting to begin.</p>
+        <p>{preview ? "Try a domain search and preview its creature. Join for an early-access invite." : "A name you own. A creature that's yours. A little world waiting to begin."}</p>
+        {preview && <div className="intro-access">
+          <div className="row-actions">
+            <a className="btn primary" href="/waitlist" data-waitlist="intro">Join the waitlist</a>
+            <a className="btn secondary" href="/fees.html#prices">View test prices</a>
+          </div>
+          <p className="fineprint">Joining does not reserve or register a domain. Public launch prices may change.</p>
+        </div>}
         <div className="shop-promises"><span>Clear renewal pricing</span><span>No preselected extras</span><span>Your domain, your control</span></div>
       </div>
       {simple && <p className="notice">You're using the lightweight view. Search and checkout work without the animated grove.</p>}

@@ -293,6 +293,9 @@ dialog.waitlist a { color: var(--lantern); }
 .shop-intro h1 { font-size: clamp(1.8rem, 2.9vw, 2.65rem); line-height: 1.16; letter-spacing: -.035em; }
 .shop-intro h1 em { font-style: normal; color: #e9cf93; }
 .shop-intro > p { color: #c8d2c7; margin: 16px 0; max-width: 40ch; }
+.intro-access { margin: 16px 0; }
+.intro-access .row-actions { margin-top: 0; }
+.intro-access .fineprint { margin: 8px 0 0; }
 .shop-promises { display: flex; flex-wrap: wrap; gap: 7px 16px; font-size: .75rem; color: #c7d7b6; margin-bottom: 24px; }
 .shop-promises span::before { content: '✓'; margin-right: 5px; color: #bcd78b; }
 .search-modes { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--glass-border); border-radius: 14px; margin: 18px 0; background: rgba(0,0,0,.16); }
