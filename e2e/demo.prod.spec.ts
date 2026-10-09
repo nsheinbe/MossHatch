@@ -102,7 +102,9 @@ test("waitlist dialog: consent unticked and required, says it reserves nothing, 
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await cancelDemo(page);
-  const open = page.getByRole("link", { name: "Join the waitlist" });
+  const open = page.getByRole("main").getByRole("link", { name: "Join the waitlist" });
+  await expect(open).toHaveAttribute("href", "/waitlist");
+  await expect(page.getByRole("link", { name: "View test prices" })).toHaveAttribute("href", "/fees.html#prices");
   await open.click();
   const dialog = page.locator("dialog.waitlist");
   await expect(page.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();
@@ -186,7 +188,7 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
   await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · test price may change");
   expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/simulated/));
   expect(await violations(fb)).toEqual([]);
-  await fb.getByRole("link", { name: "Join the waitlist" }).click();
+  await fb.getByRole("main").getByRole("link", { name: "Join the waitlist" }).click();
   await expect(fb.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();
   expect(await violations(fb, "dialog.waitlist")).toEqual([]);
   expect(bad).toEqual([]);
