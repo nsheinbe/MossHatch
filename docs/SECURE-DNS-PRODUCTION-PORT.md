@@ -24,11 +24,11 @@ The port preserves main's shipped behavior rather than restoring older implement
 | Account | Current invite/session state, recovery holds, suspended credentials, 30-day recovery undo, retry ticket, last-passkey confirmation and two-step passkey creation retained. Added cancellation/repetition protection. |
 | Connected apps | Pause/resume, activity, one-domain choices, manual-token 30-day and OAuth 90-day defaults retained. Added explicit domain-only nameserver proposal choice; refresh still cannot extend the approved grant. |
 | MCP | Public read-only `/mcp/search`, transport/read RPC and private recipe tools retained. Direct `dns_upsert` now accepts TTL, matching REST. |
-| Recipes | Main shared planning/apply/history/waiting functions and Connect UI retained. Both agent entry points and queued dispatch block DNS recipes until grant-bound queued approval is implemented. Owner status/recovery holds are rechecked at dispatch. |
+| Recipes | Main shared planning/apply/history/waiting functions and Connect UI retained. Both agent entry points and queued dispatch block DNS recipes until grant-bound queued approval is implemented. Queued provider recipes bind and recheck both planner and executor grants, tenant, owner, domain, connection and required scopes before effects, including after asynchronous credential/secret work. |
 | Registrar/RPC | Openprovider login caching, no-effect response handling, member prices, settlement fallback, verification extras and managed DNSSEC metadata retained. RPC funding admission, shared nonces, paid lease and daily cap preserved. Added complete DNS state/expected hash/capability transport and redaction. |
 | Money/release | Funding, order, Stripe, boot and public-sales policy modules are unchanged. Waitlist/launch gates remain. Main's 40-minute CI timeout and already-patched lockfile are retained. |
 
-Independent agent review inspected those preservation boundaries and found no new blocking defect in its reviewed scope. It is not an independent provider/security certification. A pre-existing queued non-DNS recipe limitation is explicitly retained as a separate gate below.
+Independent agent review inspected those preservation boundaries and found no new blocking defect in its reviewed scope. It is not an independent provider/security certification. A separate follow-up commit closes the previously documented queued non-DNS authorization gap, described below.
 
 ## Migration and old-state handling
 
@@ -37,6 +37,8 @@ New migrations are `0998_nameserver_proposals.sql` and `1130_dns_reconciliation.
 Migration 1130 adds a nullable `state_format` marker without a default or backfill. Only newly complete snapshots receive `complete-v1`; main's old snapshots lacked TTL/opaque records and remain untrusted. Legacy snapshots cannot authorize rollback or clear unknown operations, even if an old desired hash matches. Old approvals lack the new exact/grant binding and must be voided/reissued after a fresh complete provider read. The upgrade regression actually applies the migration to an isolated temporary main-format schema.
 
 This migration deliberately differs from the never-deployed PR 45 version. Do not mix migration artifacts from the two drafts or mark one version as having applied the other. Before any authorized rollout, inventory pending approvals and unresolved snapshots, rehearse the upgrade on synthetic copies, and explicitly resolve legacy unknown work using provider-terminal evidence. No automatic write retry or mass hash conversion is a rollout step.
+
+The queued-recipe follow-up adds no migration: authorization snapshots use the existing plan and job JSON. The creator's grant fingerprint is covered by the immutable plan hash and any owner approval; the queue additionally binds the applying identity, tenant, domain and exact plan. Existing plans/jobs without these snapshots fail closed and require a fresh plan and any required approval. Do not backfill authority into old work or automatically retry failed/uncertain effects.
 
 ## Verification and evidence
 
@@ -48,6 +50,7 @@ Final commands and results are maintained in the scoped draft PR and its GitHub 
 | Partial/timeout writes, duplicate apply, read-only reconciliation, upstream changes | Registrar fidelity; domain DNS; agent DNS security/write/upgrade suites |
 | Tenant/domain/audience/PKCE/refresh reuse and grant lifetime | Security/scope matrices; bindings, OAuth and MCP suites |
 | Paused/revoked/expired/narrowed grant during execution | DNS provider-read races and nameserver paused-during-read regression |
+| Queued provider grant changes, cross-tenant jobs, retry and valid execution | `recipes/queued-authorization.test.ts`: both actors, normal OAuth rotation, credential-decrypt and vault-encryption/signing barriers, partial completed effects |
 | Stale/wrong-agent approvals and legacy upgrade | DNS security, recipe and new `agents/dns-upgrade.test.ts` |
 | DNSSEC/NS parity, denied legacy bypass | Nameserver, management, security and registrar tests |
 | Owner replay, credential race, secret redaction | Auth/recovery/step-up/RPC suites |
@@ -59,7 +62,9 @@ Local provider evidence uses documented or historical fixtures. Live sandbox tes
 
 Keep the waitlist and public-sales gates in place. [Production release gates](PRODUCTION-RELEASE-GATES.md) carries the retail findings, contribution-floor design and bounded owner/provider validation steps. Real-provider validation requires separate authorization for a disposable, designated sandbox domain and an explicit action list; no authorization is inferred from this coding task.
 
-There is also a **pre-existing queued `postgres-neon` grant limitation**: a job accepted before pause/revocation/expiry/scope narrowing can still create a Neon project or copy its database connection URL to previously planned Nest/Vercel targets using the owner's saved provider connection. Initial scope checks precede enqueue, but non-DNS dispatch does not recheck the originating binding. DNS recipes are blocked and direct DNS/nameserver proposals recheck grants. Treat non-DNS queued recipe revalidation as a separate hardening/release gate; do not promise that revocation cancels every already queued operation.
+The formerly documented queued `postgres-neon` authorization gap is fixed in this branch's source. Execution rechecks the originating planning grant and the applying grant independently, including pause/revocation, effective grant expiry, scopes and their saved fingerprints. A plan-only agent can still propose work that its owner explicitly applies. Tenant and owner/domain/connection checks precede provider effects; authorization is checked inside credential callbacks after decryption, before each target, and before a Nest transaction commits after encryption and pointer/audit signing. A rejected final check rolls back the value, pointer and audit together. Normal access-token rotation remains valid because the fingerprint binds the grant rather than its rotating bearer token.
+
+This does not make revocation and remote provider calls atomic. A call already dispatched may complete; its known results remain recorded, while subsequent effects stop at the next failed check. The existing one-attempt job policy remains; terminal failed/completed applications cannot repeat their effects on redelivery. Live provider outcome handling and controlled rollout validation remain separate gates in the release checklist.
 
 Real-device passkeys/recovery, external MCP OAuth round trips, registrar inventory/TTL behavior, provider-terminal reconciliation and supported DNSSEC/delegation transitions remain unproven against live services. No global propagation, atomic upstream update or completed live integration claim is made.
 

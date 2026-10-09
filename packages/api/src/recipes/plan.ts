@@ -1,4 +1,5 @@
 import type { PoolClient } from "@mosshatch/db";
+import { z } from "zod";
 import type { DnsRecord, DnsZone } from "@mosshatch/registrar/port";
 import { canonicalZone, normalizeRecord, validateZone, withDnsTtl, zoneHash } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
@@ -9,6 +10,7 @@ import { mapRegistrarError, registrarOf, type DomainRow } from "../domain-mgmt/c
 import { checkShape, diffZones, sensitiveOf, type Sensitive } from "../domain-mgmt/dns.ts";
 import { normalizeSecretName, type NameRejection } from "../vault/names.ts";
 import { allows, lintScopes, storedScopes } from "../bindings/scopes.ts";
+import { liveBinding } from "../agents/common.ts";
 import { recipeById, type ConnFacts, type Env, type PlanParts, type Recipe, type Service } from "./registry.ts";
 
 /**
@@ -30,6 +32,52 @@ export interface Plan extends PlanParts {
   connections: { service: Service; id: string; external_ref: string | null }[];
   sensitive: Sensitive[];
   touched: { dns: boolean; envs: Env[] };
+  /** Identity and grant version that originated this plan, covered by plan_hash and any owner approval. */
+  authorization?: { v: 1; creator: RecipeActor };
+}
+
+const actor = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("user"), id: z.uuid(), session_hash: z.string().regex(/^[a-f0-9]{64}$/).optional() }),
+  z.strictObject({ kind: z.literal("agent"), id: z.uuid(), grant_hash: z.string().regex(/^[a-f0-9]{64}$/) }),
+  z.strictObject({ kind: z.literal("cli"), id: z.uuid(), grant_hash: z.string().regex(/^[a-f0-9]{64}$/) }),
+]);
+export type RecipeActor = z.infer<typeof actor>;
+export const recipeAuthorization = z.strictObject({ v: z.literal(1), application_id: z.uuid(), user_id: z.uuid(), domain_id: z.uuid(),
+  plan_hash: z.string().regex(/^[a-f0-9]{64}$/), creator: actor, applier: actor });
+export type RecipeAuthorization = z.infer<typeof recipeAuthorization>;
+
+/** Access-token rotation keeps the same grant; changes to its scope, client, audience or final lifetime do not. */
+const grantHash = (b: Record<string, any>) => hashOf({ id: b.id, user_id: b.user_id, kind: b.kind, scopes: storedScopes(b.scopes),
+  expires_at: new Date(b.family_expires_at ?? b.expires_at).toISOString(), audience: b.audience ?? null, client_id: b.oauth_client_id ?? null }).toString("hex");
+
+export async function captureRecipeActor(ctx: AppContext, c: PoolClient, userId: string, principal: Principal, p: Plan, purpose: "plan" | "apply"): Promise<RecipeActor> {
+  if (principal.userId !== userId) throw new HttpError(403, "recipe_authorization_changed");
+  if (principal.kind === "session") {
+    if (purpose === "apply" && !principal.sessionIdHash) throw new HttpError(403, "session_unavailable");
+    return { kind: "user", id: userId, ...(purpose === "apply" ? { session_hash: principal.sessionIdHash!.toString("hex") } : {}) };
+  }
+  if (principal.kind !== "binding" || !principal.bindingId || !principal.bindingKind) throw new HttpError(403, "recipe_authorization_missing");
+  const b = await liveBinding(c, userId, principal.bindingId, ctx.clock.now());
+  if (!b || b.kind !== principal.bindingKind) throw new HttpError(409, "binding_unavailable");
+  const current: Principal = { kind: "binding", userId, bindingId: b.id, bindingKind: b.kind, scopes: b.scopes };
+  if (purpose === "plan") assertPlanScopes(current, p.domain_id); else assertApplyScopes(current, p);
+  return { kind: b.kind, id: b.id, grant_hash: grantHash(b) };
+}
+
+/** Both the plan's creator and its applying actor must still authorize their respective role. */
+export async function assertRecipeActor(ctx: AppContext, c: PoolClient, userId: string, expected: unknown, p: Plan, purpose: "plan" | "apply"): Promise<void> {
+  const parsed = actor.safeParse(expected);
+  if (!parsed.success) throw new HttpError(409, "recipe_authorization_missing");
+  const a = parsed.data;
+  if (a.kind === "user") {
+    if (a.id !== userId) throw new HttpError(403, "recipe_authorization_changed");
+    return;
+  }
+  const b = await liveBinding(c, userId, a.id, ctx.clock.now());
+  if (!b || b.kind !== a.kind) throw new HttpError(409, "binding_unavailable");
+  const principal: Principal = { kind: "binding", userId, bindingId: b.id, bindingKind: b.kind, scopes: b.scopes };
+  if (purpose === "plan") assertPlanScopes(principal, p.domain_id); else assertApplyScopes(principal, p);
+  if (grantHash(b) !== a.grant_hash) throw new HttpError(409, "recipe_authorization_changed");
 }
 
 const keyOf = (r: DnsRecord) => JSON.stringify(normalizeRecord(r));
@@ -53,7 +101,7 @@ export async function liveZoneOrNull(ctx: AppContext, d: Pick<DomainRow, "fqdn_a
 }
 
 /** Compute the plan from current state. Pure given its inputs; called at plan time, at apply and again inside the job. */
-export async function computePlan(ctx: AppContext, c: PoolClient, userId: string, d: Pick<DomainRow, "id" | "fqdn_ascii">, recipe: Recipe, rawInput: unknown): Promise<Plan> {
+export async function computePlan(ctx: AppContext, c: PoolClient, userId: string, d: Pick<DomainRow, "id" | "fqdn_ascii">, recipe: Recipe, rawInput: unknown, authorization?: Plan["authorization"]): Promise<Plan> {
   const parsed = recipe.input.safeParse(rawInput ?? {});
   if (!parsed.success) throw new HttpError(422, "invalid_input");
   const conns = await loadConnections(c, userId, d.id);
@@ -80,6 +128,7 @@ export async function computePlan(ctx: AppContext, c: PoolClient, userId: string
     // The provider object is bound too: a connection moved to another project (a Neon project.create) voids older plans.
     connections: services.map((s) => ({ service: s, id: conns.get(s)!.id, external_ref: conns.get(s)!.externalRef ?? null })),
     sensitive,
+    ...(authorization ? { authorization } : {}),
     touched: { dns: add.length + remove.length > 0, envs: [...envs].sort() },
   };
 }

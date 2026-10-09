@@ -96,7 +96,7 @@ export async function sealVersion(ctx: AppContext, userId: string, n: NextVersio
  * by compare-and-set with a fresh single-use MAC (migration 0805 refuses any MAC the database has held before), then the audit row.
  * Anything other than what step 1 read means a concurrent writer got there first: 409, and the caller's transaction rolls back.
  */
-export async function commitVersion(ctx: AppContext, c: PoolClient, userId: string, actor: WriteActor, n: NextVersion, sealed: Sealed): Promise<{ versionId: string }> {
+export async function commitVersion(ctx: AppContext, c: PoolClient, userId: string, actor: WriteActor, n: NextVersion, sealed: Sealed, authorize?: () => Promise<void>): Promise<{ versionId: string }> {
   const cur = (await c.query("select current_version from secrets where id = $1 and user_id = $2 and deleted_at is null for update", [n.id, userId])).rows[0];
   if (!cur || (cur.current_version === null ? null : Number(cur.current_version)) !== n.current) throw new HttpError(409, "write_conflict");
   const vid = (await c.query(
@@ -109,6 +109,9 @@ export async function commitVersion(ctx: AppContext, c: PoolClient, userId: stri
     [n.id, n.version, vid, mac, n.current]);
   if (up.rowCount !== 1) throw new HttpError(409, "write_conflict");
   await appendAudit(ctx, c, { chainId: userId, actorKind: actor.kind, actorId: actor.id, action: "secret.write", resourceKind: "secret", resourceId: n.id, detail: { domain_id: n.domainId, env: n.env, version: n.version, created: n.created } });
+  // Pointer and audit HMACs also await KMS. Refuse before COMMIT if a deferred writer lost authority there.
+  // A rejection rolls back the version, pointer and audit together; other vault writers keep their existing policy.
+  if (authorize) await authorize();
   return { versionId: vid };
 }
 
@@ -118,7 +121,8 @@ export async function commitVersion(ctx: AppContext, c: PoolClient, userId: stri
  * moved it first makes this one the loser: 409). A failed KMS call leaves an identity row with no version, which no
  * list shows and the next write reuses.
  */
-export async function writeSecret(ctx: AppContext, userId: string, actor: WriteActor, domainId: string, env: SecretEnv, name: string, value: Buffer): Promise<{ id: string; version: number; created: boolean }> {
+export async function writeSecret(ctx: AppContext, userId: string, actor: WriteActor, domainId: string, env: SecretEnv, name: string, value: Buffer, authorize?: () => Promise<void>): Promise<{ id: string; version: number; created: boolean }> {
+  if (authorize) await authorize();
   const v = vaultOf(ctx);
   const pre = await withUser(v.pool, userId, async (c) => {
     const ins = await c.query(
@@ -132,7 +136,11 @@ export async function writeSecret(ctx: AppContext, userId: string, actor: WriteA
   });
   const next: NextVersion = { id: pre.id, domainId, name, env, version: pre.maxv + 1, current: pre.current, created: pre.created };
   const sealed = await sealVersion(ctx, userId, next, value);
-  try { await withUser(v.pool, userId, (c) => commitVersion(ctx, c, userId, actor, next, sealed)); }
+  try { await withUser(v.pool, userId, async (c) => {
+    // A deferred writer may lose its grant while KMS seals. Check again before any value is committed.
+    if (authorize) await authorize();
+    return commitVersion(ctx, c, userId, actor, next, sealed, authorize);
+  }); }
   finally { sealed.ciphertext.fill(0); }
   return { id: pre.id, version: next.version, created: pre.created };
 }

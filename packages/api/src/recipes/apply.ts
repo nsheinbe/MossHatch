@@ -8,7 +8,7 @@ import { assertNotHeld } from "../stepup/holds-port.ts";
 import { approveSessionDns, assertDnsOwnerSession } from "../domain-mgmt/dns-approval.ts";
 import type { DomainRow } from "../domain-mgmt/common.ts";
 import { appendAudit } from "../audit.ts";
-import { safeEqual } from "../util/bytes.ts";
+import { hashOf, safeEqual } from "../util/bytes.ts";
 import { enqueue, getJobDef, registerJob, type JobRow } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import { raiseAlert } from "../ops/alerts.ts";
@@ -17,7 +17,7 @@ import { checkShape, diffZones, sensitiveOf, writeZoneLocked, type ZoneChange, t
 import { withConnectionCredential } from "../vault/connections.ts";
 import { writeSecret } from "../vault/secrets.ts";
 import { prodWriteNotice } from "../agents/notices.ts";
-import { checkVariableNames, computePlan, planHash, needsApproval, type Plan } from "./plan.ts";
+import { assertRecipeActor, checkVariableNames, computePlan, planHash, needsApproval, recipeAuthorization, type Plan, type RecipeAuthorization } from "./plan.ts";
 import { recipeById, type Service } from "./registry.ts";
 import { isProviderNotFound, providersOf } from "./providers.ts";
 
@@ -31,14 +31,25 @@ import { isProviderNotFound, providersOf } from "./providers.ts";
 export class RecipeFail extends Error { constructor(public code: string) { super(code); } }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function credentialOf(ctx: AppContext, connectionId: string): Promise<string> {
-  const r = (await ctx.cron.query("select id from connection_credentials where connection_id = $1 and revoked_at is null", [connectionId])).rows[0];
+interface CredentialScope { userId: string; domainId: string; service: Service }
+async function credentialOf(ctx: AppContext, connectionId: string, scope?: CredentialScope): Promise<string> {
+  const r = scope ? (await ctx.cron.query(`select k.id from connection_credentials k join connections n on n.id=k.connection_id
+    where k.connection_id=$1 and k.revoked_at is null and k.user_id=$2 and n.user_id=$2 and n.domain_id=$3 and n.service=$4 and n.ended_at is null and n.status='active'`,
+  [connectionId, scope.userId, scope.domainId, scope.service])).rows[0]
+    : (await ctx.cron.query("select id from connection_credentials where connection_id = $1 and revoked_at is null", [connectionId])).rows[0];
   if (!r) throw new RecipeFail("credential_missing");
   return r.id as string;
 }
 
-async function withCred<T>(ctx: AppContext, connectionId: string, purpose: "recipe.apply" | "connection.check", fn: (credential: string) => Promise<T>): Promise<T> {
-  try { return await withConnectionCredential(ctx, await credentialOf(ctx, connectionId), purpose, fn); }
+async function withCred<T>(ctx: AppContext, connectionId: string, purpose: "recipe.apply" | "connection.check", fn: (credential: string) => Promise<T>, scope?: CredentialScope): Promise<T> {
+  try {
+    const id = await credentialOf(ctx, connectionId, scope);
+    return await withConnectionCredential(ctx, id, purpose, async (credential) => {
+      // The credential itself, not merely its connection, must still belong to this tenant after KMS returns.
+      if (scope && await credentialOf(ctx, connectionId, scope) !== id) throw new RecipeFail("credential_missing");
+      return fn(credential);
+    });
+  }
   catch (e) {
     if (e instanceof RecipeFail) throw e;
     if (e instanceof HttpError) throw new RecipeFail(e.code === "not_found" ? "credential_missing" : e.code);
@@ -114,11 +125,41 @@ async function assertRecipeConsent(ctx: AppContext, c: PoolClient, userId: strin
   await assertDnsOwnerSession(ctx, c, userId, action.session_id_hash);
 }
 
+/** A short authorization checkpoint; no grant locks are held while KMS or a provider is running. */
+async function assertRecipeExecution(ctx: AppContext, c: PoolClient, userId: string, appId: string, authorization: RecipeAuthorization): Promise<void> {
+  await assertRecipeConsent(ctx, c, userId, appId);
+  const app = (await c.query("select * from recipe_applications where id=$1 and user_id=$2 and state='applying'", [appId, userId])).rows[0];
+  if (!app) throw new RecipeFail("state_changed");
+  const p = app.plan as Plan;
+  if (p.authorization?.v !== 1) throw new RecipeFail("recipe_authorization_missing");
+  if (authorization.application_id !== app.id || authorization.user_id !== userId || authorization.domain_id !== app.domain_id ||
+    authorization.plan_hash !== Buffer.from(app.plan_hash).toString("hex") || !safeEqual(planHash(p), Buffer.from(app.plan_hash)) ||
+    !safeEqual(hashOf(authorization.creator), hashOf(p.authorization.creator)) ||
+    authorization.creator.kind !== app.created_by_kind || authorization.creator.id !== app.created_by_id || p.domain_id !== app.domain_id) throw new RecipeFail("recipe_authorization_changed");
+  const d = (await c.query("select fqdn_ascii from domains where id=$1 and user_id=$2 and released_at is null", [app.domain_id, userId])).rows[0];
+  if (!d || d.fqdn_ascii !== p.fqdn) throw new RecipeFail("domain_gone");
+  await assertRecipeActor(ctx, c, userId, authorization.creator, p, "plan");
+  await assertRecipeActor(ctx, c, userId, authorization.applier, p, "apply");
+  if (authorization.applier.kind === "user") {
+    if (!authorization.applier.session_hash) throw new RecipeFail("recipe_authorization_missing");
+    await assertDnsOwnerSession(ctx, c, userId, Buffer.from(authorization.applier.session_hash, "hex"));
+  }
+  // A credential lookup uses the cron role later. Establish its tenant/domain/service here each time first.
+  for (const expected of p.connections) {
+    const connection = (await c.query("select * from connections where id=$1 and user_id=$2 and domain_id=$3 and service=$4 and ended_at is null and status='active'", [expected.id, userId, app.domain_id, expected.service])).rows[0];
+    if (!connection) throw new RecipeFail("connection_missing");
+    const createdHere = expected.service === "neon" && p.steps.some((s) => s.service === "neon" && s.op === "project.create") && connection.provider_facts?.created_by_application === app.id;
+    if (!createdHere && connection.external_ref !== expected.external_ref) throw new RecipeFail("plan_changed");
+  }
+}
+
 // ---- recipe.apply ------------------------------------------------------------------------------------------------------------
 
 export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void> {
   const appId = String(job.payload.application_id ?? "");
-  const userId = String(job.payload.user_id ?? job.user_id ?? "");
+  // The queue's tenant is authoritative. A payload cannot redirect a job to another owner.
+  const userId = job.user_id;
+  if (!userId || !UUID.test(userId) || !UUID.test(appId)) throw new RecipeFail("recipe_authorization_missing");
   const app = await withUser(ctx.runtime, userId, async (c) => (await c.query("select * from recipe_applications where id = $1 and user_id = $2 and state = 'applying'", [appId, userId])).rows[0]);
   if (!app) return;
   const fail = async (code: string) => {
@@ -131,17 +172,22 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
     const recipe = recipeById(app.recipe_id);
     if (!recipe || recipe.version !== app.recipe_version) throw new RecipeFail("recipe_changed");
     if (recipe.touchesDns && (job.payload.by_kind !== "user" || app.created_by_kind !== "user")) throw new RecipeFail("agent_dns_recipe_requires_owner");
-    await withUser(ctx.runtime, userId, (c) => assertRecipeConsent(ctx, c, userId, appId));
+    const parsed = recipeAuthorization.safeParse(job.payload.authorization);
+    if (!parsed.success) throw new RecipeFail("recipe_authorization_missing");
+    const authorization = parsed.data;
+    if (job.payload.user_id !== userId || job.payload.by_kind !== authorization.applier.kind || job.payload.by_id !== authorization.applier.id) throw new RecipeFail("recipe_authorization_changed");
+    const authorize = () => withUser(ctx.runtime, userId, (c) => assertRecipeExecution(ctx, c, userId, appId, authorization));
+    await authorize();
     const d = await withUser(ctx.runtime, userId, async (c) => (await c.query("select id, fqdn_ascii from domains where id = $1 and user_id = $2 and released_at is null", [app.domain_id, userId])).rows[0]);
     if (!d) throw new RecipeFail("domain_gone");
     // Recompute and compare: what runs is exactly what was previewed and approved.
-    const plan = await withUser(ctx.runtime, userId, (c) => computePlan(ctx, c, userId, d, recipe, app.input));
+    const plan = await withUser(ctx.runtime, userId, (c) => computePlan(ctx, c, userId, d, recipe, app.input, (app.plan as Plan).authorization));
     if (!safeEqual(planHash(plan), Buffer.from(app.plan_hash))) throw new RecipeFail("plan_changed");
     if (!checkVariableNames(plan).ok) throw new RecipeFail("invalid_name");
     // ST-35: when an agent token planned or applied this, its writes to prod are mailed at once, as its own writes are.
     const byKind = String(job.payload.by_kind ?? ""), byId = String(job.payload.by_id ?? "");
     const agent = byKind === "agent" && UUID.test(byId) ? byId : app.created_by_kind === "agent" && UUID.test(String(app.created_by_id ?? "")) ? String(app.created_by_id) : null;
-    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan, agent);
+    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan, agent, authorize);
     await withUser(ctx.runtime, userId, async (c) => {
       const r = await c.query("update recipe_applications set state = 'applied', applied_records = $3, applied_at = $4 where id = $1 and user_id = $2 and state = 'applying'", [appId, userId, JSON.stringify(plan.dns.add), ctx.clock.now()]);
       if (r.rowCount !== 1) throw new RecipeFail("state_changed");
@@ -153,9 +199,17 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
   }
 }
 
-async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan, agent: string | null): Promise<void> {
+async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan, agent: string | null, authorize: () => Promise<void>): Promise<void> {
   const pv = providersOf(ctx);
   const conn = (s: Service) => { const c = plan.connections.find((x) => x.service === s); if (!c) throw new RecipeFail("connection_missing"); return c.id; };
+  const useCredential = async <T>(service: Service, effect: (credential: string) => Promise<T>): Promise<T> => {
+    await authorize();
+    return withCred(ctx, conn(service), "recipe.apply", async (credential) => {
+      // Revocation may have happened while the vault awaited KMS. Recheck at the actual provider dispatch.
+      await authorize();
+      return effect(credential);
+    }, { userId, domainId: d.id, service });
+  };
   const refOf = async (s: Service) => (await ctx.cron.query("select external_ref, provider_facts from connections where id = $1 and ended_at is null", [conn(s)])).rows[0] as { external_ref: string | null; provider_facts: Record<string, unknown> } | undefined;
   // The provider objects are the ones the hash-checked plan names, never re-read: only this plan's own project.create moves one.
   const refs = new Map<Service, string | null>(plan.connections.map((c) => [c.service, c.external_ref ?? null]));
@@ -167,20 +221,20 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
       if (step.service === "vercel" && step.op === "project.domain.add") {
         const ref = refs.get("vercel");
         if (!ref) throw new RecipeFail("connection_unchecked");
-        await withCred(ctx, conn("vercel"), "recipe.apply", (cred) => pv.vercel.addProjectDomain(cred, ref, step.target));
+        await useCredential("vercel", (cred) => pv.vercel.addProjectDomain(cred, ref, step.target));
       } else if (step.service === "neon" && step.op === "project.create") {
         const f = await refOf("neon");
         if (f?.provider_facts?.created_by_application === appId) { refs.set("neon", f.external_ref); continue; }   // a retried job never creates twice
-        const p = await withCred(ctx, conn("neon"), "recipe.apply", (cred) => pv.neon.createProject(cred, d.fqdn));
+        const p = await useCredential("neon", (cred) => pv.neon.createProject(cred, d.fqdn));
         await mergeFacts(ctx, conn("neon"), { project_id: p.id, branch: p.branch, database: p.database, role: p.role, host: p.host, pooler_host: p.poolerHost, created_by_application: appId }, p.id);
         refs.set("neon", p.id);
       } else if (step.service === "resend" && step.op === "domain.create") {
-        const dom = await withCred(ctx, conn("resend"), "recipe.apply", (cred) => pv.resend.createDomain(cred, d.fqdn, String((plan.input as { region?: string }).region ?? "us-east-1")));
+        const dom = await useCredential("resend", (cred) => pv.resend.createDomain(cred, d.fqdn, String((plan.input as { region?: string }).region ?? "us-east-1")));
         await mergeFacts(ctx, conn("resend"), { domain_id: dom.id, region: dom.region, records: dom.records });
       } else if (step.service === "resend" && step.op === "api_key.create") {
         const f = (await refOf("resend"))?.provider_facts ?? {};
         if (typeof f.domain_id !== "string") throw new RecipeFail("connection_unchecked");
-        const k = await withCred(ctx, conn("resend"), "recipe.apply", (cred) => pv.resend.createSendingKey(cred, f.domain_id as string, `mosshatch-${d.fqdn}`.slice(0, 50)));
+        const k = await useCredential("resend", (cred) => pv.resend.createSendingKey(cred, f.domain_id as string, `mosshatch-${d.fqdn}`.slice(0, 50)));
         held.set("resend.sending_key", Buffer.from(k.token, "utf8"));
         await mergeFacts(ctx, conn("resend"), { sending_key_id: k.id });
       }
@@ -190,20 +244,21 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
       if (!value && (v.source === "neon.pooled" || v.source === "neon.direct")) {
         const ref = refs.get("neon");
         if (!ref) throw new RecipeFail("connection_unchecked");
-        value = Buffer.from(await withCred(ctx, conn("neon"), "recipe.apply", (cred) => pv.neon.connectionUri(cred, ref, { pooled: v.source === "neon.pooled" })), "utf8");
+        value = Buffer.from(await useCredential("neon", (cred) => pv.neon.connectionUri(cred, ref, { pooled: v.source === "neon.pooled" })), "utf8");
         held.set(v.source, value);
       }
       if (!value) throw new RecipeFail("value_unavailable");
       for (const t of v.targets) {
+        await authorize();
         if (t.kind === "nest") {
-          const w = await writeSecret(ctx, userId, { kind: "system", id: appId }, d.id, t.env, v.name, value);
+          const w = await writeSecret(ctx, userId, { kind: "system", id: appId }, d.id, t.env, v.name, value, authorize);
           if (t.env === "prod") prodWrites.push({ id: w.id, version: w.version, name: v.name });
         } else {
           const ref = refs.get("vercel");
           if (!ref) throw new RecipeFail("connection_unchecked");
           const plain = value.toString("utf8");
           // Sensitive variables are write-only at Vercel, but cannot target development (documented).
-          await withCred(ctx, conn("vercel"), "recipe.apply", (cred) => pv.vercel.upsertEnv(cred, ref, { key: v.name, value: plain, type: t.target === "development" ? "encrypted" : "sensitive", target: [t.target] }));
+          await useCredential("vercel", (cred) => pv.vercel.upsertEnv(cred, ref, { key: v.name, value: plain, type: t.target === "development" ? "encrypted" : "sensitive", target: [t.target] }));
         }
       }
     }
