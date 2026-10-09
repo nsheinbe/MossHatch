@@ -223,7 +223,7 @@ describe("Openprovider DNS writes", () => {
     const after = [soa, { name: zone, type: "TXT", value: '"v=spf1 -all"', ttl: 900 }, { name: zone, type: "A", value: "192.0.2.9", ttl: 900 }];
     const r = rig([listHit(7), dom, recs(before), ok({ success: true }), ok({ success: true }), dom, recs(after)]);
     const out = await r.adapter.replaceZone(zone, [{ type: "TXT", name: "", value: "v=spf1 -all" }, { type: "A", name: "", value: "192.0.2.9" }]);
-    expect(out.records).toEqual([{ type: "A", name: "", value: "192.0.2.9" }, { type: "TXT", name: "", value: "v=spf1 -all" }]);
+    expect(out.records).toEqual([{ type: "A", name: "", value: "192.0.2.9", ttl: 900 }, { type: "TXT", name: "", value: "v=spf1 -all", ttl: 900 }]);
     const puts = r.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
     expect(puts).toEqual([
       { remove: [{ name: "", type: "MX", value: "mail.example.net", ttl: 900, prio: 10 }, { name: "www", type: "A", value: "192.0.2.2", ttl: 900 }] },

@@ -15,7 +15,14 @@ export async function connectRegistrarRpc(o: { secret: string; send: RpcSend; cl
   const call = async <T>(name: RpcCommandName, args: unknown[] = []): Promise<T> => {
     const path = RPC_PATH_PREFIX + name; const body = encodeJson({ args });
     const timestamp = String(Math.floor(clock.now().getTime() / 1000)); const n = nonce();
-    const res = await o.send({ method: "POST", path, body, headers: { "content-type": "application/json", [RPC_HEADERS.timestamp]: timestamp, [RPC_HEADERS.nonce]: n, [RPC_HEADERS.signature]: sign(o.secret, { method: "POST", path, body, timestamp, nonce: n }) } });
+    let res: Awaited<ReturnType<RpcSend>>;
+    try {
+      res = await o.send({ method: "POST", path, body, headers: { "content-type": "application/json", [RPC_HEADERS.timestamp]: timestamp, [RPC_HEADERS.nonce]: n, [RPC_HEADERS.signature]: sign(o.secret, { method: "POST", path, body, timestamp, nonce: n }) } });
+    } catch {
+      // A transport exception cannot prove the signed request was not submitted.
+      // Neither arbitrary transport messages nor their claimed outcome flags cross this boundary.
+      throw new RegistrarError("unknown", "registrar call failed", { retryable: false, outcomeUnknown: true, code: "rpc_transport" });
+    }
     let parsed: { result?: T; error?: { code?: string; kind?: RegistrarError["kind"]; retryable?: boolean; outcomeUnknown?: boolean } };
     try { parsed = decodeJson(res.body) as typeof parsed; } catch { throw new RegistrarError("unknown", "registrar call failed", { retryable: false, outcomeUnknown: true, code: `rpc_http_${res.status}` }); }
     if (res.status === 200 && parsed && "result" in parsed) return (parsed.result === null ? undefined : parsed.result) as T;
@@ -42,8 +49,9 @@ export async function connectRegistrarRpc(o: { secret: string; send: RpcSend; cl
     issueAuthCode: (f) => call("issueAuthCode", [f]),
     rerandomizeAuthCode: (f) => call("rerandomizeAuthCode", [f]),
     getDns: (f) => call("getDns", [f]),
-    replaceZone: (f, r) => call("replaceZone", [f, r]),
+    replaceZone: (f, r, opts) => call("replaceZone", opts ? [f, r, opts] : [f, r]),
     getDs: (f) => call("getDs", [f]),
+    getDnssecCapabilities: (f) => call("getDnssecCapabilities", [f]),
     addDs: (f, d) => call("addDs", [f, d]),
     removeDs: (f, d) => call("removeDs", [f, d]),
     updateContact: (f, r) => call("updateContact", [f, r]),

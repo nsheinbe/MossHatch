@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { StepUpType } from "../lib/domains";
-import { ago, approveDns, decide, decline, explainVisitor, getCard, payNow, resolveScope, scopesToSign, usd, when, widenToken, type Card } from "../lib/visitors";
+import { ago, approveDns, decide, decline, explainVisitor, getCard, payNow, resolveScope, scopesToSign, usd, when, widenToken, type Card, type DnsLine } from "../lib/visitors";
 import { ApiError } from "../lib/api";
+import { dnsReviewText } from "../lib/dns-display";
 import { StepUp, type StepUpRequest } from "./StepUp";
 
 const REASON: Record<string, string> = {
@@ -9,6 +10,12 @@ const REASON: Record<string, string> = {
   first_approval: "this is the first request you approve for this token",
   new_extension: "you have not bought this extension before",
 };
+
+function DnsChangeLine({ record: r }: { record: DnsLine }) {
+  return <li><code style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{dnsReviewText(r.type)} {dnsReviewText(r.name || "@")} {dnsReviewText(r.value)}</code>
+    {r.priority !== undefined && <span> · Priority {r.priority}</span>}{r.weight !== undefined && <span> · Weight {r.weight}</span>}{r.port !== undefined && <span> · Port {r.port}</span>}
+    <span> · TTL {r.ttl === undefined ? "not recorded" : `${r.ttl} seconds`}</span></li>;
+}
 
 /**
  * The approval card (threat row 18). Everything here comes from the server as plain values and is rendered as text: the
@@ -38,7 +45,7 @@ export default function ApprovalCard({ id, onClose, onDone }: { id: string; onCl
         run: async (actionId) => { const r = await decide(card.id, actionId); if (r.checkout_url) location.assign(r.checkout_url); else onDone("Approved. Pay from the list when you are ready."); },
       });
     } else if (card.kind === "dns_change") {
-      setReq({ type: "dns.sensitive.approve" as StepUpType, target: `ar_${card.id}`, run: async (actionId) => { await approveDns(card.id, actionId); onDone("Approved. The DNS change is written."); } });
+      setReq({ type: "dns.sensitive.approve" as StepUpType, target: `ar_${card.id}`, run: async (actionId) => { await approveDns(card.id, actionId); onDone("Change accepted; the provider read-back matches. Authoritative visibility and propagation have not been checked."); } });
     } else {
       setBusy(true);
       try {
@@ -54,7 +61,7 @@ export default function ApprovalCard({ id, onClose, onDone }: { id: string; onCl
   const no = async () => { try { await decline(card.id); onDone("Declined. Nothing happens."); } catch (e) { setMsg(explainVisitor(e)); } };
   const pay = async () => { try { const r = await payNow(card.id); if (r.checkout_url) location.assign(r.checkout_url); else setMsg("This payment is already under way."); } catch (e) { setMsg(explainVisitor(e)); } };
 
-  const title = card.kind === "register" ? "Register a name" : card.kind === "renew" ? "Renew a name" : card.kind === "dns_change" ? "Change DNS records" : "Give a token more access";
+  const title = card.kind === "register" ? "Register a name" : card.kind === "renew" ? "Renew a name" : card.kind === "nameservers_change" ? "Review registry nameservers" : card.kind === "dns_change" ? "Change DNS records" : "Give a token more access";
   return (
     <section className="section approval-card" aria-labelledby="card-h">
       <h3 id="card-h" ref={head} tabIndex={-1}>{title}</h3>
@@ -71,12 +78,14 @@ export default function ApprovalCard({ id, onClose, onDone }: { id: string; onCl
         <div><dt>Asked</dt><dd>{ago(card.age_seconds)}{card.new_network ? ", from a network this token has not used before" : ""}</dd></div>
         <div><dt>Request expires</dt><dd>{when(card.expires_at)}</dd></div>
       </dl>
+      {card.delegation && <div className="notice"><p>Current registry nameservers: {card.delegation.before.join(", ")}.</p><p>Requested nameservers: {card.delegation.nameservers.join(", ")}.</p><p>This request cannot execute until destination authorization, complete source inventory and DNSSEC transition verification are supported. Source records remain intact.</p></div>}
       {card.dns && (
         <>
+          <p>Exact record text is shown in quotes. Escapes such as \\u202e identify invisible characters; values are not shortened or normalized.</p>
           <h4>Records it adds</h4>
-          <ul className="plain">{card.dns.added.map((r, i) => <li key={`a${i}`}><code>{r.type} {r.name} {r.priority ?? ""} {r.value}</code></li>)}</ul>
+          <ul className="plain">{card.dns.added.map((r, i) => <DnsChangeLine key={`a${i}`} record={r} />)}</ul>
           <h4>Records it removes</h4>
-          {card.dns.removed.length ? <ul className="plain">{card.dns.removed.map((r, i) => <li key={`r${i}`}><code>{r.type} {r.name} {r.value}</code></li>)}</ul> : <p>None.</p>}
+          {card.dns.removed.length ? <ul className="plain">{card.dns.removed.map((r, i) => <DnsChangeLine key={`r${i}`} record={r} />)}</ul> : <p>None.</p>}
           <p>These records control mail, certificates or where the name points: {card.dns.sensitive.map((s) => `${s.type} ${s.name}`).join(", ")}.</p>
         </>
       )}
@@ -93,7 +102,7 @@ export default function ApprovalCard({ id, onClose, onDone }: { id: string; onCl
           )}
           {(card.kind === "register" || card.kind === "renew") && <p>You pay on Stripe next. Nothing is charged until you do.</p>}
           <div className="row-actions">
-            <button type="button" className="btn primary" disabled={busy || !typedOk || !card.requester.live} onClick={() => void approve()}>Approve</button>
+            <button type="button" className="btn primary" disabled={busy || !typedOk || !card.requester.live || card.kind === "nameservers_change"} onClick={() => void approve()}>Approve</button>
             <button type="button" className="btn secondary" onClick={() => void no()}>Decline</button>
             <button type="button" className="btn secondary" onClick={onClose}>Back</button>
           </div>

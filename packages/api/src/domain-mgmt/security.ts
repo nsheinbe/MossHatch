@@ -8,10 +8,11 @@ import { enqueue, type JobRow } from "../jobs/registry.ts";
 import { withLease } from "../jobs/engine.ts";
 import { appendAudit } from "../audit.ts";
 import {
-  addBusinessDays, assertWritesOpen, audit, CODE_LIFETIME_MS, DAY_MS, ensureSecurityRow, isHostedNs, mapRegistrarError, normalizeFqdn, notifyDomainEvent,
+  addBusinessDays, assertWritesOpen, audit, CODE_LIFETIME_MS, DAY_MS, ensureSecurityRow, mapRegistrarError, normalizeFqdn, notifyDomainEvent,
   ownedDomain, registrarOf, takeFuse, userIdOf, type DomainRow,
 } from "./common.ts";
 import { assertTransferAllowed } from "./specs.ts";
+import { assertDelegationExecutable } from "./nameservers.ts";
 import { registrarWords } from "../transfers/registrar-words.ts";
 
 type Params = Record<string, unknown>;
@@ -150,64 +151,35 @@ export async function codeRerandomizeJob(ctx: AppContext, job: JobRow): Promise<
 // ---- nameservers and DS ------------------------------------------------------------------------------------------------------------
 
 export async function nameserversHandler(req: HandlerReq): Promise<HandlerResult> {
-  const { ctx } = req; const userId = userIdOf(req);
+  const userId = userIdOf(req);
   const p = actionParams(req, "nameservers");
-  await takeFuse(ctx, "ns_change");
-  const ns = p.nameservers as string[];
-  try {
-    return await withUser(ctx.runtime, userId, async (c) => {
-      await assertWritesOpen(c);
-      const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
-      if (d.id !== p.domain_id) throw new HttpError(403, "step_up_required");
-      await markExecuted(c, actionOf(req));
-      // The registrar refuses too (`dnssec_would_break`); this reads the truth upstream in case our copy of ds_present is stale.
-      const port = registrarOf(ctx);
-      await port.setNameservers(d.fqdn_ascii, ns, { targetSigned: p.target_signed === true });
-      await c.query("update domains set nameservers = $2, dns_hosted_here = $3 where id = $1", [d.id, ns, isHostedNs(ns)]);
-      await audit(ctx, c, userId, "domain.nameservers_changed", { resourceKind: "domain", resourceId: d.id, detail: { count: ns.length, hosted_here: isHostedNs(ns) } });
-      await notifyDomainEvent(ctx, c, userId, {
-        kind: "domain.nameservers_changed", domainId: d.id, subject: "The nameservers of a domain on your Mosshatch account changed",
-        text: `The nameservers of ${d.fqdn_ascii} were changed to ${ns.join(", ")} with your passkey.`,
-      });
-      return json({ domain: d.fqdn_ascii, nameservers: ns, dns_hosted_here: isHostedNs(ns) });
-    });
-  } catch (e) { throw mapRegistrarError(e); }
+  const d = await withUser(req.ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
+  if (d.id !== p.domain_id) throw new HttpError(403, "step_up_required");
+  // Also blocks already committed pre-upgrade actions. Never call an upstream writer without a supported transition.
+  return assertDelegationExecutable();
 }
 
-export const DS_NOTE = "DNSSEC records are relayed to the registry as you enter them. We do not offer DNSSEC signing, and it is not available for .io. Nameserver addresses (glue records, IPv4 or IPv6) are not supported yet: use nameservers under another domain.";
+export const DS_NOTE = "DNSSEC editing is currently unavailable. DNSSEC data shown here comes from the registrar; it does not prove the parent zone currently publishes it. Nameserver migration and custom IPv4/IPv6 glue stay blocked until destination authorization, complete source inventory and DNSSEC transition verification are supported.";
 
 export async function dsListHandler(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req; const userId = userIdOf(req);
   const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
-  const supported = d.tld !== "io";
+  const port = registrarOf(ctx);
+  const caps = await port.getDnssecCapabilities?.(d.fqdn_ascii) ?? { supported: false, addMode: "unsupported", removeSupported: false, managedSigning: false };
+  const supported = caps.supported;
   let records: unknown[] = [];
   if (supported) { try { records = await registrarOf(ctx).getDs(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); } }
-  return json({ supported, glue_supported: false, note: supported ? DS_NOTE : "DNSSEC is not available for .io. " + DS_NOTE, records, ds_present: d.ds_present });
+  return json({ supported, add_mode: caps.addMode, remove_supported: false, changes_supported: false, managed_signing: caps.managedSigning, glue_supported: false, delegation_changes_supported: false, note: (caps.addMode === "dnskey" ? "This provider requires DNSKEY material. DNSSEC changes are unavailable here until a verified, durable DNSKEY workflow is supported. " : "") + DS_NOTE, records, ds_present: records.length > 0 });
 }
 
 export async function dsChangeHandler(req: HandlerReq): Promise<HandlerResult> {
-  const { ctx } = req; const userId = userIdOf(req);
+  const userId = userIdOf(req);
   const p = actionParams(req, ["ds_add", "ds_remove"]);
-  const ds = p.ds as { keyTag: number; algorithm: number; digestType: number; digest: string };
-  await takeFuse(ctx, "ns_change");
-  try {
-    return await withUser(ctx.runtime, userId, async (c) => {
-      await assertWritesOpen(c);
-      const d = await ownedDomain(c, userId, req.params.fqdn ?? "");
-      if (d.id !== p.domain_id) throw new HttpError(403, "step_up_required");
-      await markExecuted(c, actionOf(req));
-      const port = registrarOf(ctx);
-      if (p.op === "ds_add") await port.addDs(d.fqdn_ascii, ds); else await port.removeDs(d.fqdn_ascii, ds);
-      const now = (await port.getDs(d.fqdn_ascii)).length > 0;
-      await c.query("update domains set ds_present = $2 where id = $1", [d.id, now]);
-      await audit(ctx, c, userId, p.op === "ds_add" ? "domain.ds_added" : "domain.ds_removed", { resourceKind: "domain", resourceId: d.id, detail: { ds_present: now } });
-      await notifyDomainEvent(ctx, c, userId, {
-        kind: "domain.ds_changed", domainId: d.id, subject: "A DNSSEC record of a domain on your Mosshatch account changed",
-        text: `A DNSSEC record of ${d.fqdn_ascii} was ${p.op === "ds_add" ? "added" : "removed"} with your passkey.`,
-      });
-      return json({ domain: d.fqdn_ascii, ds_present: now });
-    });
-  } catch (e) { throw mapRegistrarError(e); }
+  const d = await withUser(req.ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
+  if (d.id !== p.domain_id) throw new HttpError(403, "step_up_required");
+  // A registrar key update requires durable unknown-outcome handling and parent/key verification too.
+  // Until that path exists, even an action committed before this upgrade cannot mutate DS or DNSKEY material.
+  throw new HttpError(409, "ds_change_unavailable");
 }
 
 // ---- read: security state ----------------------------------------------------------------------------------------------------------

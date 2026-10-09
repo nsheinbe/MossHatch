@@ -95,6 +95,8 @@ async function apply(req: HandlerReq): Promise<HandlerResult> {
   const p = await withUser(req.ctx.runtime, actor.userId, (c) => computePlan(req.ctx, c, actor.userId, d, recipe, app.input));
   if (!safeEqual(planHash(p), Buffer.from(app.plan_hash))) throw new HttpError(409, "plan_changed");
   assertApplyScopes(req.principal, p);
+  // DNS recipes predate grant-bound queue execution. Agents use the exact DNS proposal path until that policy exists.
+  if (recipe.touchesDns && (req.principal.kind === "binding" || app.created_by_kind !== "user")) throw new HttpError(403, "agent_dns_recipe_requires_owner");
   await rejectNames(req, actor, d.id, p);
   if (needsApproval(p) && app.state !== "approved") throw new HttpError(403, "approval_required", undefined, undefined, { type: "dns.sensitive.approve", application_id: app.id });
   await withUser(req.ctx.runtime, actor.userId, async (c) => {
@@ -217,14 +219,14 @@ async function deleteConnection(req: HandlerReq): Promise<HandlerResult> {
     const apps = await withUser(req.ctx.runtime, actor.userId, async (c) => (await c.query("select id, applied_records from recipe_applications where user_id = $1 and domain_id = $2 and state = 'applied' and plan->'connections' @> $3::jsonb", [actor.userId, cn.domain_id, JSON.stringify([{ id: cn.id }])])).rows);
     const records = apps.flatMap((a) => (a.applied_records ?? []) as DnsRecord[]);
     // The applications are marked removed only with a confirmed write (in its follow-up, under the zone lock): a removal whose outcome
-    // is unknown keeps its snapshot for rollback and leaves them applied, so the disconnect can be retried.
+    // is unknown keeps its snapshot and leaves them applied. A later attempt reconciles by reading before any further write.
     const done = async (c: PoolClient, n: number) => {
       if (apps.length) await c.query("update recipe_applications set state = 'removed' where id = any($1::uuid[]) and state = 'applied'", [apps.map((a) => a.id)]);
       await appendAudit(req.ctx, c, { chainId: actor.userId, actorKind: "user", actorId: actor.userId, action: "connection.records_removed", resourceKind: "connection", resourceId: cn.id, detail: { applications: apps.length, removed: n } });
       return n;
     };
     removed = records.length
-      ? (await writeRecipeZone(req.ctx, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" }, (c, w) => done(c, w.removed))).after ?? 0
+      ? (await writeRecipeZone(req.ctx, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" }, (c, w) => done(c, w.removed), req)).after ?? 0
       : await withUser(req.ctx.runtime, actor.userId, (c) => done(c, 0));
   } catch (e) { if (e instanceof RecipeFail) throw new HttpError(409, e.code); throw e; }
   await disconnect(req.ctx, actor.userId, cn.domain_id, cn.service);

@@ -190,7 +190,20 @@ export async function commitHandler(req: HandlerReq): Promise<HandlerResult> {
           fromB64u(assertion.response.clientDataJSON), fromB64u(assertion.response.authenticatorData), fromB64u(assertion.response.signature)],
       );
       if (r.rowCount !== 1) throw new HttpError(409, "action_conflict");
-      await c.query("update passkeys set sign_count = $2, backup_state = $3, last_used_at = $4 where id = $1", [cred.id, verified.newCounter, verified.backupState, now]);
+      // Verification happens outside this transaction. A revoke, recovery suspension, newer assertion or session
+      // revocation that won while verification/derivation ran must prevent the approval from committing.
+      const credential = await c.query(
+        `update passkeys p set sign_count = $2, backup_state = $3, last_used_at = $4
+          where p.id = $1 and p.user_id = $5 and p.revoked_at is null and p.suspended_at is null
+            and p.sign_count = $6 and p.backup_eligible = $7
+            and exists (select 1 from users u where u.id = p.user_id and u.status = 'active'
+              and not (u.hardened_mode and p.backup_eligible))
+            and exists (select 1 from sessions s where s.id_hash = $8 and s.user_id = p.user_id
+              and s.revoked_at is null and s.expires_at > $4 and s.idle_expires_at > $4)
+          returning p.id`,
+        [cred.id, verified.newCounter, verified.backupState, now, userId, cred.sign_count, cred.backup_eligible, sessionHash],
+      );
+      if (credential.rowCount !== 1) throw new HttpError(403, "assertion_invalid");
       const committed: CommittedAction = { id: action.id, userId, type: action.type, params: action.params, resourceId: action.resource_id, targetId: action.target_id ?? "" };
       if (spec.execute) await spec.execute(ctx, c, committed);
       await appendAudit(ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "stepup.commit", resourceKind: "action", resourceId: action.id, detail: { type: action.type, passkey_id: cred.id } });

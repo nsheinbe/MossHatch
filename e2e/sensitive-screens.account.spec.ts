@@ -185,38 +185,21 @@ test("reveal: after Hide now, focus returns to the reveal button (keyboard)", as
   await clean(page, "nest after hide now");
 });
 
-test("step-up: a new request replaces the shown one at once; the stale summary cannot be approved", async ({ page }) => {
+test("ST-NS-UI-03: provider DNSSEC records remain readable while mutations are gated", async ({ page }) => {
   const api = await boot(page);
   const ds = (keyTag: number, c: string) => ({ keyTag, algorithm: 13, digestType: 2, digest: c.repeat(64) });
   api.on("GET", `${D_FQ}/dns$`, { domain: FQDN, hosted: true, read_only: false, records: [], snapshots: 0 });
   api.on("GET", `${D_FQ}/dns-snapshots$`, { snapshots: [] });
-  api.on("GET", `${D_FQ}/ds$`, { supported: true, note: "DNSSEC records are optional.", records: [ds(11111, "a"), ds(22222, "b")], ds_present: true });
+  api.on("GET", `${D_FQ}/ds$`, { supported: true, add_mode: "ds", changes_supported: false, remove_supported: false, note: "DNSSEC editing is currently unavailable. Records shown are reported by the registrar.", records: [ds(11111, "a"), ds(22222, "b")], ds_present: true });
   api.on("GET", `${D_FQ}/registrant-verification$`, { verification: null });
-  api.on("POST", `${D_FQ}/ds$`, { changed: true });
-  const second = deferred();
-  api.prepare = async (c) => {
-    const tag = ((c.body?.user_input as { ds?: { keyTag?: number } })?.ds?.keyTag);
-    if (tag === 22222) await second.p;
-    return { summary: `Remove a DNSSEC record on ${FQDN}.` };
-  };
   const panel = await openDomain(page);
   await panel.getByRole("tab", { name: "DNS" }).click();
   const dnssec = panel.getByRole("group", { name: "DNSSEC" });
-  await dnssec.getByRole("button", { name: "Remove the DNSSEC record with key tag 11111" }).click();
-  const group = dnssec.getByRole("group", { name: "Confirm with your passkey" });
-  await expect(group.getByRole("button", { name: "Approve with passkey" })).toBeVisible({ timeout: 20_000 });
-  // The person changes their mind and asks to remove the other record. Until that is prepared, nothing can be approved.
-  await dnssec.getByRole("button", { name: "Remove the DNSSEC record with key tag 22222" }).click();
-  await expect(group.getByText("Preparing.")).toBeVisible();
-  await expect(group.getByRole("button", { name: "Approve with passkey" })).toHaveCount(0);
-  await expect(group.getByText(`Remove a DNSSEC record on ${FQDN}.`)).toHaveCount(0);
-  second.open();
-  await expect(group.getByRole("button", { name: "Approve with passkey" })).toBeVisible({ timeout: 20_000 });
-  await group.getByRole("button", { name: "Approve with passkey" }).click();
-  await expect(panel.getByText("DNSSEC record removed.")).toBeVisible({ timeout: 20_000 });
-  expect(api.actionIds()).toEqual(["act-2"]);
-  const gated = api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/ds"));
-  expect(gated.map((c) => c.headers["x-mh-action-id"])).toEqual(["act-2"]);
+  for (const key of [11111, 22222]) await expect(dnssec.getByRole("button", { name: `Remove the DNSSEC record with key tag ${key}` })).toBeDisabled();
+  await expect(dnssec.getByRole("button", { name: "Add DNSSEC record", exact: true })).toHaveCount(0);
+  await expect(dnssec.getByText(/DNSSEC editing is currently unavailable/)).toBeVisible();
+  expect(api.calls.filter((c) => c.method === "POST" && (c.path.endsWith("/ds") || c.path.endsWith("/actions/prepare")))).toHaveLength(0);
+  await clean(page, "read-only DNSSEC");
 });
 
 test("dns: rolling back an older snapshot that the server refuses (422) says why and what to do", async ({ page }) => {
@@ -226,7 +209,7 @@ test("dns: rolling back an older snapshot that the server refuses (422) says why
     { id: "0190f0f0-0000-7000-8000-0000000000f2", reason: "pre_write", added: 1, removed: 0, sensitive: 1, taken_at: "2026-09-30T10:00:00.000Z", rolled_back_at: null },
     { id: "0190f0f0-0000-7000-8000-0000000000f1", reason: "pre_write", added: 1, removed: 0, sensitive: 0, taken_at: "2026-09-29T10:00:00.000Z", rolled_back_at: null },
   ] });
-  api.on("GET", `${D_FQ}/ds$`, { supported: true, note: "DNSSEC records are optional.", records: [], ds_present: false });
+  api.on("GET", `${D_FQ}/ds$`, { supported: true, add_mode: "ds", remove_supported: true, note: "DNSSEC records are optional.", records: [], ds_present: false });
   api.on("GET", `${D_FQ}/registrant-verification$`, { verification: null });
   let code = "unrelated_delete";
   api.on("POST", `${D_FQ}/dns-snapshots/[^/]+/rollback$`, () => ({ status: 422, json: { error: { code } } }));
@@ -486,4 +469,101 @@ test("ST-72 approval card: more access signs the token's access as the server ha
   await group.getByRole("button", { name: "Approve with passkey" }).click();
   await expect(region.getByText("Approved. The token can now do that.")).toBeVisible({ timeout: 20_000 });
   expect(api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/widen")).map((c) => c.headers["x-mh-action-id"])).toEqual(api.actionIds());
+});
+
+test("ST-201 exact agent DNS approval displays full escaped values and every RR field", async ({ page }) => {
+  const api = await boot(page);
+  const BID = "0190f0f0-0000-7000-8000-00000000b0b1", RID = "0190f0f0-0000-7000-8000-00000000a0a1";
+  const at = "2026-09-30T10:00:00.000Z", until = "2026-10-30T10:00:00.000Z";
+  const value = `${"x".repeat(1800)}e\u0301\u202e<script>window.badDns=true</script>-TAIL`;
+  api.on("GET", "^/api/v1/visitors$", { visitors: [], pending_requests: 1, confirm_threshold_minor: "5000", device_login_enabled: true });
+  const summary = { id: RID, kind: "dns_change", state: "pending", domain: { ascii: FQDN, unicode: FQDN, mixed_script: false, has_unicode: false }, years: null, max_total_minor: "0", requested_at: at, expires_at: until, requester: { binding_id: BID, name: "Build bot" } };
+  api.on("GET", "^/api/v1/approvals$", (c) => ({ json: { approvals: /state=pending/.test(c.search ?? "") ? [summary] : [] } }));
+  api.on("GET", `^/api/v1/approvals/${esc(RID)}$`, {
+    ...summary, agent_state: "pending", age_seconds: 60, new_network: false, decided_at: null, decision_reason: null, order_id: null,
+    requester: { binding_id: BID, name: "Build bot", kind: "agent", connected_app: false, token_expires_at: until, live: true },
+    dns: { added: [{ type: "SRV", name: "_sip._tcp", value: "sip.example", priority: 0, weight: 9, port: 5060, ttl: 120 }], removed: [{ type: "TXT", name: "old", value, ttl: 86400 }], sensitive: [{ type: "TXT", name: "old", reasons: ["deletion"] }] },
+  });
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("button", { name: "Visitors" }).click();
+  const region = page.getByRole("region", { name: "Visitors", exact: true });
+  await region.getByRole("button", { name: "Review" }).click();
+  const card = region.locator(".approval-card");
+  await expect(card.getByRole("heading", { name: "Change DNS records" })).toBeVisible();
+  await expect(card).toContainText("Priority 0 · Weight 9 · Port 5060 · TTL 120 seconds");
+  await expect(card).toContainText("TTL 86400 seconds");
+  const text = await card.locator("code").allTextContents();
+  expect(text.join("\n")).toContain("x".repeat(1800));
+  expect(text.join("\n")).toContain("e\u0301\\u202e<script>window.badDns=true</script>-TAIL");
+  expect(text.join("\n")).not.toContain("\u202e");
+  expect(await card.locator("script").count()).toBe(0);
+  await card.getByRole("button", { name: "Approve", exact: true }).click();
+  const step = card.getByRole("group", { name: "Confirm with your passkey" });
+  await expect(step.getByRole("button", { name: "Approve with passkey" })).toBeVisible();
+  await step.getByRole("button", { name: "Cancel" }).click();
+  expect(api.calls.some((c) => c.path.endsWith("/approve-dns"))).toBe(false);
+  await clean(page, "exact DNS approval");
+});
+
+test("ST-NS-UI-01: compact DNS records fit a phone; preserved types and delegation safety stay visible", async ({ page }) => {
+  const api = await boot(page);
+  api.on("GET", `${D_FQ}/dns$`, { domain: FQDN, hosted: true, read_only: false, records: [
+    { id: "caa", type: "CAA", name: "@", value: '0 issue "letsencrypt.org"', ttl: 7200, editable: false, sensitive: true, reasons: ["type"] },
+    { id: "txt", type: "TXT", name: "_dmarc", value: "v=DMARC1; p=reject; rua=mailto:reports@example.net", ttl: 300, editable: true, sensitive: true, reasons: ["txt_value"] },
+  ], snapshots: 0 });
+  api.on("GET", `${D_FQ}/dns-snapshots$`, { snapshots: [] });
+  api.on("GET", `${D_FQ}/ds$`, { supported: true, add_mode: "dnskey", remove_supported: false, note: "This provider requires DNSKEY material; DS-only addition is unavailable.", records: [], ds_present: false });
+  api.on("GET", `${D_FQ}/registrant-verification$`, { verification: null });
+  api.on("POST", `${D_FQ}/nameserver-proposals$`, { before: detail.nameservers, nameservers: ["ns1.destination.example", "ns2.destination.example"], executable: false, blockers: ["destination_authorization_required"], plan_hash: "p", before_hash: "b" });
+  const panel = await openDomain(page);
+  await panel.getByRole("tab", { name: "DNS", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const list = panel.getByRole("list", { name: `DNS records for ${FQDN}` });
+  await expect(list.getByText('0 issue "letsencrypt.org"', { exact: true })).toBeVisible();
+  await expect(list.getByText("TTL 7200s", { exact: true })).toBeVisible();
+  await expect(list.getByRole("button", { name: "Delete the CAA record for @" })).toBeDisabled();
+  expect(await list.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(panel.getByRole("button", { name: "Add DNSSEC record", exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("checkbox", { name: /signed zone/ })).toHaveCount(0);
+  await panel.getByLabel("Nameservers One hostname per line").fill("ns1.destination.example\nns2.destination.example");
+  await panel.getByRole("button", { name: "Review nameserver request", exact: true }).click();
+  await expect(panel.getByRole("status").filter({ hasText: "Execution is blocked" })).toBeVisible();
+  expect(api.calls.filter((c) => c.path.endsWith("/nameservers"))).toHaveLength(0);
+  await clean(page, "compact DNS and gated delegation");
+});
+
+test("ST-DNS-UI-02: exact values and TTL are reviewed, cancellation writes nothing, repeated clicks execute once", async ({ page }) => {
+  const api = await boot(page);
+  const record = { type: "A", name: "", value: "192.0.2.10", ttl: 300 };
+  api.on("GET", `${D_FQ}/dns$`, { domain: FQDN, hosted: true, read_only: false, records: [{ ...record, id: "record-a", name: "@", editable: true, sensitive: true, reasons: ["apex"] }], snapshots: 0 });
+  api.on("GET", `${D_FQ}/dns-snapshots$`, { snapshots: [] });
+  api.on("GET", `${D_FQ}/ds$`, { supported: false, records: [], ds_present: false });
+  api.on("GET", `${D_FQ}/registrant-verification$`, { verification: null });
+  const wait = deferred(); let requests = 0, applied = 0;
+  api.on("DELETE", `${D_FQ}/dns/record-a$`, async (c) => {
+    requests++;
+    if (requests === 1) await wait.p;
+    if (c.headers["x-mh-action-id"]) { applied++; return { json: { changed: true, accepted: true } }; }
+    return { status: 403, json: { error: { code: "step_up_required", type: "dns.sensitive.approve", target_id: `dz_${DOMAIN_ID}`, user_input: { before_hash: "a".repeat(64), desired: [] }, added: [], removed: [record], sensitive_records: [{ type: "A", name: "", reasons: ["deletion"] }] } } };
+  });
+  const panel = await openDomain(page);
+  await panel.getByRole("tab", { name: "DNS", exact: true }).click();
+  const remove = panel.getByRole("button", { name: "Delete the A record for @" });
+  await remove.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect.poll(() => requests).toBe(1);
+  wait.open();
+  const review = panel.getByRole("region", { name: "Review exact DNS change" });
+  await expect(review.getByText(/A @.*192\.0\.2\.10/)).toBeVisible();
+  await expect(review.getByText(/TTL 300 seconds/)).toBeVisible();
+  await review.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(applied).toBe(0);
+  await remove.click();
+  const approve = review.getByRole("button", { name: "Approve with passkey", exact: true });
+  await expect(approve).toBeVisible();
+  await approve.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(panel.getByRole("status").filter({ hasText: "Change accepted" })).toContainText("Change accepted; the provider read-back matches");
+  expect(requests).toBe(3); expect(applied).toBe(1);
+  const prepares = api.calls.filter((c) => c.path.endsWith("/actions/prepare"));
+  expect(prepares.map((c) => c.body?.user_input)).toEqual([{ before_hash: "a".repeat(64), desired: [] }, { before_hash: "a".repeat(64), desired: [] }]);
+  await clean(page, "DNS exact approval complete");
 });

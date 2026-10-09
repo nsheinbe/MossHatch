@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": { "deploymentEnabled": { "codex/secure-agent-dns-owner-auth": false } },
   "framework": null,
   "installCommand": "npm install",
   "buildCommand": "npm run build",

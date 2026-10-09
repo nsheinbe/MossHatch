@@ -9,6 +9,7 @@ import { chipPrices, searchAvailability, SearchCache } from "../search/service.t
 import { hit } from "../ratelimit.ts";
 import type { Capability } from "../bindings/scopes.ts";
 import { agentDnsChange, agentDnsRead } from "../agents/dns.ts";
+import { agentNameserverPropose } from "../agents/nameservers.ts";
 import { getDomainFor, listDomainsFor, nestNamesFor, secretGetFor, secretSetFor, transferStatusFor } from "../agents/capabilities.ts";
 import { agentView, propose, requestScope } from "../agents/requests.ts";
 import { untrusted, type Caller } from "../agents/common.ts";
@@ -60,6 +61,13 @@ async function searchBudget(ctx: AppContext, caller: Caller): Promise<void> {
 }
 
 export const TOOLS: Tool[] = [
+  {
+    name: "nameservers_propose", kind: "write", capability: "nameservers.propose",
+    description: "Request an exact registry nameserver delegation change for one explicitly granted domain. This is different from a zone NS record. Nothing executes: the owner can review or decline; migration remains blocked until destination authorization, complete inventory and DNSSEC verification are supported. Existing source records stay intact.",
+    input: z.strictObject({ domain: fqdnArg, nameservers: z.array(z.string().min(4).max(253)).min(2).max(13) }),
+    annotations: { title: "Propose nameservers", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: (ctx, caller, a) => agentNameserverPropose(ctx, caller, a.domain, { nameservers: a.nameservers }),
+  },
   {
     name: "search_names", kind: "read", capability: null,
     description: "Check whether a name is available under Mosshatch's extensions and show the first-year price. Returns availability as reported by the registrar; nothing is reserved.",

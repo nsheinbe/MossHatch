@@ -93,6 +93,10 @@ export async function rotateRefresh(ctx: AppContext, presented: string): Promise
     if (row.revoked_at || new Date(row.expires_at) <= now || new Date(row.idle_expires_at) <= now) return null;
     const b = (await c.query("select id, revoked_at, paused_at, family_expires_at from bindings where id = $1 and user_id = $2 for update", [row.binding_id, row.user_id])).rows[0];
     if (!b || b.revoked_at || b.paused_at) return null;
+    // The owner can shorten a grant after this refresh token was issued. Its old expiry never overrides that decision.
+    const family = new Date(b.family_expires_at ?? row.expires_at);
+    const issuedAt = ctx.clock.now();
+    if (family <= issuedAt || new Date(row.expires_at) <= issuedAt || new Date(row.idle_expires_at) <= issuedAt) return null;
     const used = await c.query("update binding_refresh_tokens set rotated_at = $2 where id = $1 and rotated_at is null and revoked_at is null", [row.id, now]);
     if (used.rowCount !== 1) {
       // Lost a race with another use of the same token: that is reuse too.
@@ -101,14 +105,14 @@ export async function rotateRefresh(ctx: AppContext, presented: string): Promise
     }
     const access = mintToken("cli");
     const refresh = mintToken("clr");
-    const family = new Date(b.family_expires_at ?? row.expires_at);
+    const accessEnd = new Date(Math.min(issuedAt.getTime() + ACCESS_TTL_MS, family.getTime()));
     await c.query("update bindings set token_prefix = $2, token_hash = $3, expires_at = $4 where id = $1 and revoked_at is null",
-      [row.binding_id, access.prefix, access.hash, new Date(Math.min(now.getTime() + ACCESS_TTL_MS, family.getTime()))]);
+      [row.binding_id, access.prefix, access.hash, accessEnd]);
     await c.query(
       "insert into binding_refresh_tokens (binding_id, user_id, token_prefix, token_hash, created_at, idle_expires_at, expires_at) values ($1,$2,$3,$4,$5,$6,$7)",
-      [row.binding_id, row.user_id, refresh.prefix, refresh.hash, now, new Date(Math.min(now.getTime() + REFRESH_IDLE_MS, family.getTime())), family]);
+      [row.binding_id, row.user_id, refresh.prefix, refresh.hash, issuedAt, new Date(Math.min(issuedAt.getTime() + REFRESH_IDLE_MS, family.getTime())), family]);
     await appendAudit(ctx, c, { chainId: row.user_id, actorKind: "cli", actorId: row.binding_id, action: "binding.refreshed", resourceKind: "binding", resourceId: row.binding_id, detail: {} });
-    return { bindingId: row.binding_id as string, accessToken: access.token, refreshToken: refresh.token, expiresIn: ACCESS_TTL_MS / 1000 } satisfies IssuedCli;
+    return { bindingId: row.binding_id as string, accessToken: access.token, refreshToken: refresh.token, expiresIn: Math.max(1, Math.floor((accessEnd.getTime() - issuedAt.getTime()) / 1000)) } satisfies IssuedCli;
   }).then((x) => { if (!x) throw new HttpError(400, "invalid_grant"); return x; });
 }
 

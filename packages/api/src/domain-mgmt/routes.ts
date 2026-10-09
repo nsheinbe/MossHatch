@@ -7,6 +7,7 @@ import { stopHandler, transferStateHandler } from "./transfer.ts";
 import { contactChangesHandler, contactHandler, draftHandler, submitHandler } from "./contact.ts";
 import { dnsAddHandler, dnsDeleteHandler, dnsPatchHandler, dnsPutHandler, dnsReadHandler, rollbackHandler, snapshotsHandler } from "./dns.ts";
 import { verificationSendHandler, verificationStatusHandler, verificationVerifyHandler } from "./verification.ts";
+import { nameserverPreviewHandler } from "./nameservers.ts";
 
 const P = "/api/v1/domains/:fqdn";
 const base = { principals: ["session" as const], tag: "domain-mgmt" };
@@ -23,6 +24,7 @@ export const domainMgmtRoutes: Route[] = [
   { ...base, method: "POST", path: `${P}/transfer-out`, stepUp: "domain.transfer_out", handler: issueCodeHandler },
   { ...base, method: "POST", path: `${P}/transfer/stop`, handler: stopHandler },
   { ...base, method: "POST", path: `${P}/nameservers`, stepUp: "domain.nameservers.change", handler: nameserversHandler },
+  { ...base, method: "POST", path: `${P}/nameserver-proposals`, handler: nameserverPreviewHandler },
   { ...base, method: "GET", path: `${P}/ds`, handler: dsListHandler },
   { ...base, method: "POST", path: `${P}/ds`, stepUp: "domain.nameservers.change", handler: dsChangeHandler },
   { ...base, method: "GET", path: `${P}/contact`, handler: contactHandler },
