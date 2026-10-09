@@ -130,8 +130,8 @@ test("waitlist dialog: consent unticked and required, says it reserves nothing, 
   expect(bad).toEqual([]);
 });
 
-test("no JavaScript: the banner is on the home page and the static pages, and the waitlist page works as a plain form", async ({ browser }) => {
-  const ctx = await browser.newContext({ javaScriptEnabled: false, baseURL: "http://127.0.0.1:4173" });
+test("no JavaScript: the banner is on the home page and the static pages, and the waitlist page works as a plain form", async ({ browser, baseURL, request }) => {
+  const ctx = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await ctx.newPage();
   for (const url of ["/", "/fees.html", "/legal/terms.html", "/waitlist", "/no-such-page"]) {
     await page.goto(url);
@@ -153,11 +153,11 @@ test("no JavaScript: the banner is on the home page and the static pages, and th
   await page.goto("/waitlist-privacy");
   await expect(page.getByText("Draft awaiting counsel.")).toBeVisible();
   await ctx.close();
-  const r = await (await (await browser.newContext()).request.get("http://127.0.0.1:4173/__e2e/waitlist")).json();
+  const r = await (await request.get("/__e2e/waitlist")).json();
   expect(r).toMatchObject({ email: "nojs@example.com", name: "moonfern.com", answer: "yes", consent: "yes", source: "page", website: "", form: true });
 });
 
-test("axe: the waitlist pages at desktop and phone sizes, and the banner with no WebGL", async ({ page, browser }) => {
+test("axe: the waitlist pages at desktop and phone sizes, and the banner with no WebGL", async ({ page, browser, baseURL }) => {
   for (const size of [{ width: 1280, height: 720 }, { width: 375, height: 740 }]) {
     await page.setViewportSize(size);
     for (const url of ["/waitlist", "/waitlist-sent", "/waitlist-privacy", "/fees.html", "/how-it-works", "/assistants"]) {
@@ -166,7 +166,7 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${url} no sideways scroll`).toBe(true);
     }
   }
-  const ctx = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
+  const ctx = await browser.newContext({ baseURL });
   await ctx.addInitScript(() => {
     const orig = HTMLCanvasElement.prototype.getContext;
     // @ts-expect-error test shim

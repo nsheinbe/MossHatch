@@ -30,12 +30,12 @@ export interface TransferState {
   tracked?: boolean;
   transfers: { id: string; gaining_registrar: string | null; requested_at: string | null; requested_by_you: boolean }[];
 }
-export interface DnsRecordView { id: string; type: string; name: string; value: string; priority?: number; weight?: number; port?: number; sensitive: boolean; reasons: string[] }
+export interface DnsRecordView { id: string; type: string; name: string; value: string; priority?: number; weight?: number; port?: number; ttl?: number; editable?: boolean; sensitive: boolean; reasons: string[] }
 export interface DnsView { domain: string; hosted: boolean; read_only: boolean; records: DnsRecordView[]; nameservers?: string[]; message?: string; snapshots: number }
 export interface Snapshot { id: string; reason: string; added: number; removed: number; sensitive: number; taken_at: string; rolled_back_at: string | null }
 export interface DsRecordView { keyTag: number; algorithm: number; digestType: number; digest: string; managed?: boolean }
-/** `key_input` says how the registrar takes a new key (a DS record, or the DNSKEY it derives one from); `auto_signed` that our nameservers sign the name. Older servers leave them out. */
-export interface DsView { supported: boolean; note: string; records: DsRecordView[]; ds_present: boolean; key_input?: "ds" | "dnskey"; auto_signed?: boolean; hosted_here?: boolean }
+/** `key_input` says how the registrar takes a new key (a DS record, or the DNSKEY it derives one from); `auto_signed` identifies a registrar-reported managed key, not observed parent DS or signatures. Older servers leave them out. */
+export interface DsView { supported: boolean; changes_supported?: boolean; add_mode?: "ds" | "dnskey" | "unsupported"; remove_supported?: boolean; note: string; records: DsRecordView[]; ds_present: boolean; key_input?: "ds" | "dnskey"; auto_signed?: boolean; hosted_here?: boolean }
 export interface VerificationView { state: string; reason: string; deadline_at: string | null; days_left: number }
 /** The registrar's own check, where it runs the verification (`source` is then `provider`). */
 export interface ProviderVerification { status: "verified" | "pending" | "unverified" | "failed"; suspended: boolean; reason: string | null; expires_at: string | null }
@@ -62,10 +62,10 @@ export const lockDomain = (f: string) => api("POST", `${D(f)}/lock`, {});
 export const stopTransfer = (f: string) => api<{ message: string }>("POST", `${D(f)}/transfer/stop`, {});
 export const getDns = (f: string) => api<DnsView>("GET", `${D(f)}/dns`);
 export const getSnapshots = async (f: string) => (await api<{ snapshots: Snapshot[] }>("GET", `${D(f)}/dns-snapshots`)).snapshots;
-export interface NewRecord { type: string; name: string; value: string; priority?: number; weight?: number; port?: number }
-export const addRecords = (f: string, records: NewRecord[]) => api<{ changed: boolean; sensitive?: boolean }>("POST", `${D(f)}/dns`, { records });
-export const deleteRecord = (f: string, id: string) => api<{ changed: boolean; sensitive?: boolean }>("DELETE", `${D(f)}/dns/${enc(id)}`);
-export const rollback = (f: string, sid: string) => api<{ changed: boolean; sensitive?: boolean }>("POST", `${D(f)}/dns-snapshots/${enc(sid)}/rollback`, {});
+export interface NewRecord { type: string; name: string; value: string; priority?: number; weight?: number; port?: number; ttl?: number }
+export const addRecords = (f: string, records: NewRecord[], actionId?: string) => api<{ changed: boolean; sensitive?: boolean }>("POST", `${D(f)}/dns`, { records }, actionId ? gated(actionId) : {});
+export const deleteRecord = (f: string, id: string, actionId?: string) => api<{ changed: boolean; sensitive?: boolean }>("DELETE", `${D(f)}/dns/${enc(id)}`, {}, actionId ? gated(actionId) : {});
+export const rollback = (f: string, sid: string, actionId?: string) => api<{ changed: boolean; sensitive?: boolean }>("POST", `${D(f)}/dns-snapshots/${enc(sid)}/rollback`, {}, actionId ? gated(actionId) : {});
 export const getDs = (f: string) => api<DsView>("GET", `${D(f)}/ds`);
 export const getVerification = (f: string) => api<VerificationState>("GET", `${D(f)}/registrant-verification`);
 export const sendVerification = (f: string) => api<{ sent: boolean; source?: "provider" | "reseller" }>("POST", `${D(f)}/registrant-verification/send`, {});
@@ -79,7 +79,7 @@ export const authorisationDoc = async () => (await api<{ documents: { kind: stri
 // ---- step-up: prepare, passkey, commit ------------------------------------------------------------------------------------------------
 
 export interface Prepared { actionId: string; summary: string; options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }
-export type StepUpType = "card.publish" | "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change" | "device.approve";
+export type StepUpType = "passkey.add" | "dns.sensitive.approve" | "card.publish" | "mandate.sign" | "domain.unlock" | "domain.transfer_out" | "domain.nameservers.change" | "domain.contact.change" | "device.approve";
 
 /** Step one: the server works out exactly what will be signed and says it in words. Nothing is signed yet. */
 export async function prepareStepUp(type: StepUpType, target: string, userInput?: unknown): Promise<Prepared> {
@@ -125,13 +125,17 @@ export function explainDomain(e: unknown): string {
       case "contact_change_pending": return "A contact change is waiting for approval. Finish that first.";
       case "already_unlocked": return "The name is already unlocked.";
       case "domain_locked": return "Unlock the name first.";
-      case "dnssec_would_break": return "This name has a DNSSEC record at the registry, so those nameservers would stop it resolving. Turn DNSSEC off first, or tick the box if the new nameservers serve the same signed zone.";
-      case "target_not_signed": return "Our nameservers sign names themselves: leave the box unticked when moving to them.";
+      case "dnssec_would_break": return "DNSSEC compatibility has not been verified. Keep the current delegation and DNSSEC records in place.";
+      case "nameserver_migration_unavailable": return "Nameserver changes are blocked until destination authorization, complete record inventory and DNSSEC transition checks are supported.";
+      case "dns_reconciliation_required": return "A previous DNS write has an uncertain outcome. Wait for read-only reconciliation before trying another change.";
+      case "snapshot_requires_manual_review": return "This older snapshot may omit records or TTL values. It needs manual review before a safe restore; nothing was changed.";
+      case "zone_changed": return "The DNS records changed since this review. Reload them and prepare a new request.";
+      case "ds_change_unavailable": return "DNSSEC editing is unavailable until verified key transitions and durable provider receipts are supported. Existing DNSSEC records stay intact.";
+      case "dnssec_dnskey_required": return "This provider needs DNSKEY material. Adding a DS record alone is not supported.";
       case "bad_dnskey": return "Check the key. Flags are 256 or 257, the algorithm is a number, and the public key is the long text your DNS provider shows.";
-      case "dnssec_dnskey_required": return "Our registrar takes the public key (DNSKEY), not a DS record. Paste the key instead.";
-      case "dnssec_key_not_applied": return "The registrar did not take the key. If our nameservers still sign this name, turn DNSSEC off first, then try again.";
       case "not_supported": return "Our registrar cannot do that for this name.";
       case "provider_verification": return "Our registrar runs this verification itself: use the link in its email.";
+      case "target_not_signed": case "dnssec_key_not_applied": return "The DNSSEC transition is unverified. Keep the existing records and delegation in place.";
       case "glue_unsupported": case "bad_nameservers": return "Use two or more nameservers hosted under another domain.";
       case "unchanged": return "Those are already the nameservers.";
       case "bad_ds": return "Check the DNSSEC record. The digest is hex.";
@@ -141,7 +145,7 @@ export function explainDomain(e: unknown): string {
         return "Check the record. A CNAME cannot sit at the top of the domain or beside other records, and MX and SRV records need their numbers.";
       case "too_many_deletes": case "unrelated_delete": return "That change removes too much at once, so it was refused.";
       case "registrar_writes_paused": case "registrar_unavailable": return "Changes are paused while our registrar is in maintenance. Try again later.";
-      case "outcome_unknown": return "We could not confirm the change. Look again before you retry.";
+      case "outcome_unknown": return "The provider outcome is uncertain. Refresh History for read-only reconciliation. Do not repeat the change until it is resolved.";
       case "fuse_tripped": return "Too many of these changes just now. Try again in a little while.";
       case "invalid_code": return "That code did not work. Ask for a new one.";
       case "refund_cap": return "Three refunds in 30 days is the limit.";
@@ -171,3 +175,17 @@ export function money(minor: string | null | undefined): string {
   return `${neg ? "-" : ""}$${digits.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${digits.slice(-2)}`;
 }
 export const day = (iso: string | null | undefined): string => iso ? new Date(iso).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }) : "";
+
+export interface NameserverPlan { before: string[]; nameservers: string[]; before_hash: string; plan_hash: string; executable: false; blockers: string[] }
+export const previewNameservers = (f: string, nameservers: string[]) => api<NameserverPlan>("POST", `${D(f)}/nameserver-proposals`, { nameservers });
+
+/** Only exact server-derived DNS plans can open a sensitive-action approval. Never reconstruct one from the edited form. */
+export function dnsApprovalFromError(e: unknown): { target: string; input: Record<string, unknown>; added: NewRecord[]; removed: NewRecord[] } | null {
+  if (!(e instanceof ApiError) || e.code !== "step_up_required" || e.status !== 403) return null;
+  const p = e.details;
+  if (p?.type !== "dns.sensitive.approve" || typeof p.target_id !== "string" || !p.target_id.startsWith("dz_")) return null;
+  const input = p.user_input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const records = (v: unknown): NewRecord[] => Array.isArray(v) ? v.filter((r): r is NewRecord => !!r && typeof r.type === "string" && typeof r.name === "string" && typeof r.value === "string") : [];
+  return { target: p.target_id, input: input as Record<string, unknown>, added: records(p.added), removed: records(p.removed) };
+}

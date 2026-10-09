@@ -67,7 +67,9 @@ async function openDomain(page: Page, label: string) {
   await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "My grove" }).click();
   const tag = page.getByRole("button", { name: new RegExp(`${label}\\.com.*Open details`) });
   await expect(tag).toBeVisible({ timeout: 30_000 });
-  await tag.click();
+  // The grove control moves; keyboard activation exercises its accessible action.
+  await tag.focus();
+  await page.keyboard.press("Enter");
   const panel = page.getByRole("region", { name: `Details for ${label}.com` });
   await expect(panel.getByRole("heading", { name: `${label}.com` })).toBeVisible();
   return panel;

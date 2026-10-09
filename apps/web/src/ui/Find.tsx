@@ -193,7 +193,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
       </form>
       {parsed?.unsupported && results.length > 0 && <p className="notice" role="note">Mosshatch doesn't sell .{parsed.unsupported} names. Here is {parsed.label} in the extensions we do sell.</p>}
       {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
-      {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(cell)}</div>}
+      {results.length > 0 && <div className="shop-results" role="group" aria-label="Results" aria-busy={checking}>{results.map(cell)}</div>}
       {takenCom && <section className="shop-alternatives" aria-label="Alternative .com names">
         <p><strong>The .com isn't available.</strong> {freeElsewhere.length ? `${parsed?.label ?? "This name"} ${preview ? "looks unregistered" : "is free"} as ${freeElsewhere.map(r => `.${r.tld}`).join(", ")} above, or try` : "Try"} a close .com variation.</p>
         <button className="btn secondary" type="button" disabled={suggesting} onClick={() => void suggest()}>{suggesting ? "Checking alternatives…" : "Find similar .com names"}</button>

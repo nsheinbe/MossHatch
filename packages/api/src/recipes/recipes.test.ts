@@ -4,12 +4,24 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeBinding, type Person } from "../vault/testkit.ts";
 import { readSecretsForBinding } from "../vault/read.ts";
-import { prepare } from "../stepup/testkit.ts";
+import { prepare, commit } from "../stepup/testkit.ts";
 import { ACTION_HEADER } from "../stepup/gate.ts";
-import { appRow, applyReq, approvePlan, bearer, connect, makePerson, makeRecipeKit, plan, seedZone, tick, web, zone, type RecipeKit } from "./testkit.ts";
+import { appRow, applyReq, approvePlan, bearer, connect, makePerson, makeRecipeKit, plan, seedZone, tick, web as rawWeb, zone, type RecipeKit } from "./testkit.ts";
 import { resendRecordToDns } from "./registry.ts";
 import { RegistrarError } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
+
+// DNS removals, including disconnect and rollback, use the same exact-change owner ceremony.
+async function web(k: RecipeKit, p: Person, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
+  const first = await rawWeb(k, p, method, path, body, headers);
+  const e = first.json?.error;
+  if (e?.code !== "step_up_required" || !e.target_id?.startsWith("dz_")) return first;
+  const prep = await prepare(k.app, p.user, { type: e.type, target_id: e.target_id, user_input: e.user_input });
+  expect(prep.status, prep.text).toBe(200);
+  const done = await commit(k.app, p.user, prep.json.action_id, p.key.auth.get(prep.json.webauthn_options));
+  expect(done.status, done.text).toBe(200);
+  return rawWeb(k, p, method, path, body, { ...headers, [ACTION_HEADER]: prep.json.action_id });
+}
 
 let k: RecipeKit;
 beforeAll(async () => { k = await makeRecipeKit(); }, 120_000);
@@ -410,7 +422,7 @@ describe("review: a recipe's DNS write commits its snapshot and intent before th
     expect(mail[0]!.text).toMatch(/may have changed/);
     // The DNS tab lists it and its one-click rollback restores the zone the recipe saw.
     const list = await web(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/dns-snapshots`);
-    expect(list.json.snapshots.map((x: { id: string; write_state: string }) => [x.id, x.write_state])).toEqual([[s[0].id, "unknown"]]);
+    expect(list.json.snapshots.map((x: { id: string; write_state: string }) => [x.id, x.write_state])).toEqual([[s[0].id, "applied"]]);
     const rb = await web(k, p, "POST", `/api/v1/domains/${p.domain.fqdn}/dns-snapshots/${s[0].id}/rollback`);
     expect(rb.status, rb.text).toBe(200);
     expect(zoneHash(await zone(k, p.domain.fqdn))).toBe(zoneHash(before));
@@ -465,7 +477,7 @@ describe("review: a recipe's DNS write commits its snapshot and intent before th
   });
 });
 
-describe("recipes over MCP: an assistant plans, the owner approves with a passkey in the Connect tab, the assistant applies", () => {
+describe("ST-208 recipes over MCP: planning and owner lists remain available while agent DNS execution is gated", () => {
   let rpc = 0;
   const tool = async (token: string, name: string, args: Record<string, unknown>) => {
     const r = await k.app.call("POST", "/mcp", { authorization: `Bearer ${token}`, browser: false, body: { jsonrpc: "2.0", id: ++rpc, method: "tools/call", params: { name, arguments: args } }, headers: { "content-type": "application/json", accept: "application/json, text/event-stream" } });
@@ -473,7 +485,7 @@ describe("recipes over MCP: an assistant plans, the owner approves with a passke
     return r.json.result as { isError: boolean; structuredContent: { data?: any; error?: { code: string } } };
   };
 
-  it("plan, pending_human_approval, the owner's waiting list, approval, apply, applied", async () => {
+  it("planning and owner waiting/history work; REST and MCP both refuse DNS recipe execution even after approval", async () => {
     const { p } = await vercelPerson("mcprecipe");
     const scope = (capability: string) => ({ capability, domain_id: p.domain.id, env: null, label: p.domain.fqdn });
     const t = await makeBinding(k, p, [scope("recipes.apply"), scope("dns.write")], "agent");
@@ -486,7 +498,7 @@ describe("recipes over MCP: an assistant plans, the owner approves with a passke
     const { application_id, plan } = planned.structuredContent.data;
     expect(plan.needs_approval).toBe(true);
     const held = await tool(t.token, "apply_recipe", { application_id, plan_hash: plan.plan_hash });
-    expect(held.structuredContent.data).toMatchObject({ status: "pending_human_approval", application_id });
+    expect(held.structuredContent.error?.code).toBe("agent_dns_recipe_requires_owner");
 
     const waiting = await web(k, p, "GET", "/api/v1/recipe-applications/waiting");
     expect(waiting.status, waiting.text).toBe(200);
@@ -496,9 +508,13 @@ describe("recipes over MCP: an assistant plans, the owner approves with a passke
 
     await approvePlan(k, p, application_id);
     const go = await tool(t.token, "apply_recipe", { application_id, plan_hash: plan.plan_hash });
-    expect(go.structuredContent.data).toEqual({ application_id, state: "applying" });
+    expect(go.structuredContent.error?.code).toBe("agent_dns_recipe_requires_owner");
+    const rest = await bearer(k, t.token, "POST", `/api/v1/domains/${p.domain.fqdn}/recipes/hosting-vercel/apply`, { application_id, plan_hash: plan.plan_hash });
+    expect(rest.json.error.code).toBe("agent_dns_recipe_requires_owner");
+    const writes = k.registrar.calls.replaceZone;
     await tick(k);
-    expect((await tool(t.token, "get_recipe_application", { application_id })).structuredContent.data.state).toBe("applied");
+    expect(k.registrar.calls.replaceZone).toBe(writes);
+    expect((await tool(t.token, "get_recipe_application", { application_id })).structuredContent.data.state).toBe("approved");
     expect((await web(k, p, "GET", "/api/v1/recipe-applications/waiting")).json.applications).toEqual([]);
     // A token without the domain's scope sees nothing of it.
     const other = await makeBinding(k, p, [{ capability: "recipes.plan", domain_id: "00000000-0000-7000-8000-000000000001", env: null, label: "other.com" }], "agent");
@@ -523,5 +539,84 @@ describe("recipes over MCP: an assistant plans, the owner approves with a passke
 
     expect((await web(k, p, "POST", "/api/v1/visitors/send-home", {})).status).toBe(200);
     expect(await waitingIds()).toEqual([]);
+  });
+});
+
+describe("ST-203 recipe DNS shares complete state and TTL consent", () => {
+  it("preserves opaque records and binds the provider default TTL into the preview before approval", async () => {
+    const { p, connectionId } = await vercelPerson("fidelity");
+    const opaque = [{ type: "CAA", name: "", value: '0 issue "ca.example"', ttl: 86400 }, { type: "TYPE65280", name: "custom", value: "OPAQUE data", ttl: 55 }];
+    k.registrar.oob.editZone(p.domain.fqdn, opaque);
+    const orig = k.registrar.getDns.bind(k.registrar);
+    k.registrar.getDns = async (fqdn) => ({ ...await orig(fqdn), defaultTtl: 900 });
+    try {
+      const r = await plan(k, p, "hosting-vercel");
+      expect(r.status, r.text).toBe(201);
+      expect(r.json.plan.dns.add.every((record: { ttl: number }) => record.ttl === 900)).toBe(true);
+      await approvePlan(k, p, r.json.application_id);
+      expect((await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash)).status).toBe(202);
+      await tick(k);
+      expect((await appRow(k, r.json.application_id)).state).toBe("applied");
+      expect(await zone(k, p.domain.fqdn)).toEqual(expect.arrayContaining(opaque));
+      const writes = k.registrar.calls.replaceZone;
+      const prompt = await rawWeb(k, p, "DELETE", `/api/v1/connections/${connectionId}`);
+      expect(prompt.status).toBe(403);
+      expect(k.registrar.calls.replaceZone).toBe(writes);
+      expect((await web(k, p, "DELETE", `/api/v1/connections/${connectionId}`)).status).toBe(200);
+      expect(await zone(k, p.domain.fqdn)).toEqual(opaque);
+    } finally { k.registrar.getDns = orig; }
+  });
+});
+
+describe("ST-207 queued DNS recipe authorization", () => {
+  it("gates agent DNS recipe apply and refuses a legacy queued binding plan before provider writes", async () => {
+    const { p } = await vercelPerson("agentdnsgate");
+    const agent = await makeBinding(k, p, [{ capability: "recipes.apply", domain_id: p.domain.id, env: "dev" }, { capability: "dns.write", domain_id: p.domain.id, env: null }], "agent");
+    const r = await plan(k, p, "hosting-vercel");
+    await approvePlan(k, p, r.json.application_id);
+    const blocked = await bearer(k, agent.token, "POST", `/api/v1/domains/${p.domain.fqdn}/recipes/hosting-vercel/apply`, { application_id: r.json.application_id, plan_hash: r.json.plan.plan_hash });
+    expect(blocked.status).toBe(403); expect(blocked.json.error.code).toBe("agent_dns_recipe_requires_owner");
+    expect((await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash)).status).toBe(202);
+    await k.app.db.owner.query("update jobs set payload=jsonb_set(payload,'{by_kind}','\"agent\"') where kind='recipe.apply' and payload->>'application_id'=$1", [r.json.application_id]);
+    const writes = k.registrar.calls.replaceZone;
+    await tick(k);
+    expect(await appRow(k, r.json.application_id)).toMatchObject({ state: "failed", failure_code: "agent_dns_recipe_requires_owner" });
+    expect(k.registrar.calls.replaceZone).toBe(writes);
+  });
+
+  it("expires a queued owner plan before dispatch instead of treating approval as indefinite", async () => {
+    const { p } = await vercelPerson("queuedexpiry");
+    const r = await plan(k, p, "hosting-vercel");
+    await approvePlan(k, p, r.json.application_id);
+    expect((await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash)).status).toBe(202);
+    await k.app.db.owner.query("update recipe_applications set expires_at=$2 where id=$1", [r.json.application_id, new Date(k.app.clock.now().getTime() - 1)]);
+    const writes = k.registrar.calls.replaceZone;
+    await tick(k);
+    expect(await appRow(k, r.json.application_id)).toMatchObject({ state: "failed", failure_code: "plan_expired" });
+    expect(k.registrar.calls.replaceZone).toBe(writes);
+  });
+
+  it("refuses a recovery hold introduced after the owner approved and queued a DNS plan", async () => {
+    const { p, project } = await vercelPerson("queuedhold");
+    const r = await plan(k, p, "hosting-vercel");
+    await approvePlan(k, p, r.json.application_id);
+    expect((await applyReq(k, p, "hosting-vercel", r.json.application_id, r.json.plan.plan_hash)).status).toBe(202);
+    await k.app.db.owner.query("insert into action_holds(user_id,scope,until) values($1,'all_held',$2)", [p.user.userId, new Date(k.app.clock.now().getTime() + 3600_000)]);
+    const writes = k.registrar.calls.replaceZone;
+    await tick(k);
+    expect(await appRow(k, r.json.application_id)).toMatchObject({ state: "failed", failure_code: "recovery_hold" });
+    expect(k.registrar.calls.replaceZone).toBe(writes);
+    expect([...k.fakes.vercel.projects.get(project)!.domains]).toEqual([]);
+  });
+
+  it("refuses a frozen owner even when their queued plan did not need a passkey approval", async () => {
+    const { p } = await neonPerson("queuedfreeze");
+    const r = await plan(k, p, "postgres-neon");
+    expect(r.json.plan.needs_approval).toBe(false);
+    expect((await applyReq(k, p, "postgres-neon", r.json.application_id, r.json.plan.plan_hash)).status).toBe(202);
+    await k.app.db.owner.query("update users set frozen_at=$2 where id=$1", [p.user.userId, k.app.clock.now()]);
+    await tick(k);
+    expect(await appRow(k, r.json.application_id)).toMatchObject({ state: "failed", failure_code: "owner_unavailable" });
+    expect((await k.app.db.owner.query("select 1 from secrets where user_id=$1", [p.user.userId])).rowCount).toBe(0);
   });
 });

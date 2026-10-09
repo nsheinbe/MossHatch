@@ -1,0 +1,13 @@
+{
+  "source": "documented",
+  "note": "Synthetic adversarial inventory. No customer zone and no live provider calls.",
+  "records": [
+    { "name": "abc.com", "type": "SOA", "value": "ns1.openprovider.nl dns@openprovider.eu 1 2 3 4 5", "ttl": 86400 },
+    { "name": "abc.com", "type": "NS", "value": "ns1.openprovider.nl", "ttl": 3600 },
+    { "name": "abc.com", "type": "CAA", "value": "0 issue \"CA.example\"", "ttl": 3600 },
+    { "name": "opaque.abc.com", "type": "TYPE65400", "value": "AbCd | data ", "ttl": 30 },
+    { "name": "child.abc.com", "type": "NS", "value": "ns.child.example.", "ttl": 1800 },
+    { "name": "abc.com", "type": "TXT", "value": "\"v=spf1 -all\"", "ttl": 600 },
+    { "name": "www.abc.com", "type": "A", "value": "192.0.2.1", "ttl": 60 }
+  ]
+}

@@ -3,15 +3,16 @@
  * Each choice is one or more scope strings for one name or for every name (`*`); anything narrower or rarer goes in Advanced as
  * typed scopes. The server parses and lints every string again (bindings/scopes.ts), so nothing here is trusted.
  */
-export interface Choice { id: string; label: string; hint?: string; scopes: (name: string) => string[] }
+export interface Choice { id: string; label: string; hint?: string; domainOnly?: boolean; scopes: (name: string) => string[] }
 
 export const CHOICES: readonly Choice[] = [
   { id: "see", label: "See my names", hint: "Names, expiry dates and settings.", scopes: (n) => [`domains.read:${n}`] },
   { id: "dns-read", label: "Read DNS records", scopes: (n) => [`dns.read:${n}`] },
-  { id: "dns-write", label: "Change DNS records", hint: "Changes to mail, nameservers and other sensitive records still wait for your passkey.", scopes: (n) => [`dns.write:${n}`] },
+  { id: "dns-write", label: "Change DNS records", hint: "Optional write access. Deletions, mail, verification and other high-impact changes still wait for your passkey.", scopes: (n) => [`dns.write:${n}`] },
+  { id: "nameservers", label: "Suggest nameserver changes", hint: "Choose one name. You can review the exact delegation proposal; execution is currently blocked and proposals never change DNS.", domainOnly: true, scopes: (n) => n === "*" ? [] : [`nameservers.propose:${n}`] },
   {
     id: "recipes", label: "Connect names to Vercel, Resend or Neon",
-    hint: "Runs the recipes on a name's Connect tab: it writes their DNS records and stores the keys they need in your Nest, for development and preview only. Anything sensitive waits for your passkey.",
+    hint: "Plans recipes and can store their keys for development and preview. Recipes that change DNS must be recreated and applied by you on the name's Connect tab; agents cannot run them.",
     scopes: (n) => [`recipes.plan:${n}`, `recipes.apply:${n}:*`, `dns.write:${n}`, `secrets.write:${n}:*`],
   },
   // Buying is about names you do not own yet, so this one always covers every name.
@@ -32,7 +33,7 @@ export function picksFrom(scopes: readonly string[]): { picks: string[]; name: s
   const name = res.length === 1 ? res[0]! : "*";
   // Each choice is matched against the whole request: two choices may share a scope (dns.write is in both DNS and recipes).
   const asked = new Set(scopes);
-  const chosen = CHOICES.filter((c) => c.scopes(name).every((s) => asked.has(s)));
+  const chosen = CHOICES.filter((c) => { const needed = c.scopes(name); return needed.length > 0 && needed.every((s) => asked.has(s)); });
   const covered = new Set(chosen.flatMap((c) => c.scopes(name)));
   return { picks: chosen.map((c) => c.id), name, rest: [...asked].filter((s) => !covered.has(s)) };
 }
@@ -43,7 +44,7 @@ export const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filte
 export const minor = (dollars: string) => { const n = Number((dollars || "0").replace(/[$,\s]/g, "")); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
 
 const WORDS: Record<string, string> = {
-  "domains.read": "See names", "dns.read": "Read DNS", "dns.write": "Change DNS", "nest.names": "List secret names", "secrets.read": "Read secrets",
+  "domains.read": "See names", "dns.read": "Read DNS", "dns.write": "Change DNS", "nameservers.propose": "Suggest nameserver changes", "nest.names": "List secret names", "secrets.read": "Read secrets",
   "secrets.write": "Write secrets", "recipes.plan": "Plan recipes", "recipes.apply": "Run recipes", "register.propose": "Suggest names to buy",
   "renew.propose": "Suggest renewals", "transfer.status": "Check transfers", "mandate.off": "Turn auto-renew off",
 };

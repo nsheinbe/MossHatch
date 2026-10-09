@@ -82,13 +82,24 @@ export interface RegistrarCapabilities {
   registrantVerification?: "provider" | "reseller";
 }
 
+/** Provider operation support, not proof of the DS currently published by the parent zone. */
+export interface DnssecCapabilities {
+  supported: boolean;
+  addMode: "ds" | "dnskey" | "unsupported";
+  removeSupported: boolean;
+  managedSigning: boolean;
+}
+
 export type Registrant = RegisterRequest["registrant"];
 
-export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT";
-export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "SRV", "TXT"];
-/** `name` is the label relative to the zone apex ("" is the apex). No TTL and no CAA/NS: OpenSRS SystemDNS has neither (docs/research/reg-opensrs.md 2). */
-export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number }
-export interface DnsZone { hosted: boolean; records: DnsRecord[] }
+/** Upstream record types are open-ended; unsupported types remain visible and immutable. */
+export type DnsRecordType = string;
+/** Types currently editable through the shared DNS policy. This is not an upstream inventory filter. */
+export const DNS_RECORD_TYPES = ["A", "AAAA", "CNAME", "MX", "SRV", "TXT"] as const;
+/** `name` is relative to the zone apex ("" is the apex). Opaque RDATA keeps its exact case and whitespace. */
+export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number; ttl?: number }
+/** Complete user-managed inventory. Registrar-generated apex SOA/NS stay under provider control. */
+export interface DnsZone { hosted: boolean; records: DnsRecord[]; defaultTtl?: number }
 
 export interface DsRecord {
   keyTag: number; algorithm: number; digestType: number; digest: string;
@@ -204,7 +215,7 @@ export interface RegistrarPort {
   // ---- Phase 3 ----------------------------------------------------------------------------------------------------
   /** `MODIFY data=status lock_state`. Unlocking is the risky direction and is counted by the velocity fuse. */
   setLock(fqdn: string, locked: boolean): Promise<void>;
-  /** Refuses (`dnssec_would_break`) when a DS record exists and the target DNS is not signed. */
+  /** A caller assertion cannot prove destination DNSSEC compatibility. Signed transitions fail closed. */
   setNameservers(fqdn: string, nameservers: string[], opts?: { targetSigned?: boolean }): Promise<void>;
   /**
    * Generates a fresh random code, sets it upstream and returns it ONCE. The port never stores or logs it and never reads a code back
@@ -217,11 +228,14 @@ export interface RegistrarPort {
   getDns(fqdn: string): Promise<DnsZone>;
   /**
    * Replaces the whole zone with `records`, correct whether the provider overwrites the whole zone or only the types it is sent:
-   * every type is sent, empty ones as empty, then the zone is read back and compared. A mismatch throws `dns_readback_mismatch`.
-   * The caller holds the per-domain lock and keeps the pre-write snapshot.
+   * unchanged upstream records and TTLs are preserved; unsupported edits fail closed. The zone is read back and compared.
+   * expectedHash is checked immediately before writing, but is not upstream compare-and-swap. Errors after a write may have
+   * partial effects and carry outcomeUnknown=true: reconcile read-only, never automatically retry or restore a snapshot.
+   * The caller holds the per-domain lock and durably records the intent and pre-write snapshot before calling.
    */
-  replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
+  replaceZone(fqdn: string, records: DnsRecord[], opts?: { expectedHash?: string }): Promise<{ hash: string; records: DnsRecord[] }>;
   getDs(fqdn: string): Promise<DsRecord[]>;
+  getDnssecCapabilities?(fqdn: string): Promise<DnssecCapabilities>;
   addDs(fqdn: string, ds: DsRecord): Promise<void>;
   removeDs(fqdn: string, ds: DsRecord): Promise<void>;
   /** Adds DNSKEY material and answers with the DS the registry publishes for it. Providers that take DS records leave this out: the caller derives the DS and calls `addDs`. */

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { addPasskey, explain, removePasskey, type Me } from "../lib/account";
 import type { StepUpType } from "../lib/domains";
 import { StepUp, type StepUpRequest } from "./StepUp";
+import { useAccountAction } from "./useAccountAction";
 
 const added = (iso?: string) => (iso ? new Date(iso).toLocaleDateString("en-US", { dateStyle: "medium" }) : "");
 
@@ -14,28 +15,32 @@ export default function Passkeys({ account, onChanged, say }: { account: Me; onC
   const [label, setLabel] = useState("");
   const [req, setReq] = useState<StepUpRequest | null>(null);
   const [ready, setReady] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy, run, invalidate } = useAccountAction(say, explain);
   const [needConfirm, setNeedConfirm] = useState(false);
   const [confirmLast, setConfirmLast] = useState(false);
   const begin = (e: React.FormEvent) => {
     e.preventDefault(); say(null);
     setReq({ type: "passkey.add" as StepUpType, target: account.user.id, input: { label: label.trim() || "Passkey" }, explain, run: async (id) => { setReady(id); } });
   };
-  const create = async () => {
+  const create = () => run(async (active) => {
     if (!ready) return;
-    setBusy(true); say(null);
-    try { await addPasskey(ready); setReady(null); setAdding(false); setLabel(""); await onChanged(); say("Passkey added. Secret reveals are on hold for 24 hours, as they are after any passkey change."); }
-    catch (e) { say(explain(e)); }
-    finally { setBusy(false); }
-  };
-  const remove = async (c: Me["credentials"][number]) => {
-    setBusy(true); say(null);
-    try { await removePasskey(c.id, confirmLast); setConfirmLast(false); setNeedConfirm(false); await onChanged(); say(`Removed the passkey ${c.label}.`); }
-    catch (e) { if ((e as { code?: string }).code === "confirm_required") setNeedConfirm(true); say(explain(e)); }
-    finally { setBusy(false); }
-  };
+    await addPasskey(ready, active);
+    if (!active()) return;
+    setReady(null); setAdding(false); setLabel(""); await onChanged();
+    if (active()) say("Passkey added. Secret reveals are on hold for 24 hours, as they are after any passkey change.");
+  });
+  const remove = (c: Me["credentials"][number]) => run(async (active) => {
+    try {
+      await removePasskey(c.id, confirmLast);
+      if (!active()) return;
+      setConfirmLast(false); setNeedConfirm(false); await onChanged();
+      if (active()) say(`Removed the passkey ${c.label}.`);
+    } catch (e) { if (active() && (e as { code?: string }).code === "confirm_required") setNeedConfirm(true); throw e; }
+  });
   return (
     <>
+      <p className="notice">A passkey signs you in without a password. Your device asks for its PIN, fingerprint or face check. This is not a password followed by a separate one-time code.</p>
+      <p className="notice">Keep a backup passkey on another device or security key, and save your recovery codes. Give agents scoped access through Connected apps; never share your passkey, recovery code or emailed code.</p>
       <ul className="plain passkeys">
         {account.credentials.map((c) => (
           <li key={c.id}>
@@ -52,7 +57,7 @@ export default function Passkeys({ account, onChanged, say }: { account: Me; onC
       ) : ready ? (
         <div className="row-actions">
           <button type="button" className="btn primary" disabled={busy} onClick={() => void create()}>Create the new passkey</button>
-          <button type="button" className="btn secondary" disabled={busy} onClick={() => { setReady(null); setAdding(false); }}>Cancel</button>
+          <button type="button" className="btn secondary" onClick={() => { invalidate(); setReady(null); setAdding(false); }}>Cancel</button>
         </div>
       ) : (
         <form className="form-grid" aria-label="Add a passkey" onSubmit={begin}>
@@ -61,7 +66,7 @@ export default function Passkeys({ account, onChanged, say }: { account: Me; onC
           <p className="fineprint">Your current passkey confirms the change first. Then the browser makes the new one, on this device or on another you choose, such as a phone.</p>
           <div className="row-actions">
             <button type="submit" className="btn primary" disabled={busy || !!req}>Continue</button>
-            <button type="button" className="btn secondary" onClick={() => { setAdding(false); setReq(null); }}>Cancel</button>
+            <button type="button" className="btn secondary" onClick={() => { invalidate(); setAdding(false); setReq(null); }}>Cancel</button>
           </div>
         </form>
       )}

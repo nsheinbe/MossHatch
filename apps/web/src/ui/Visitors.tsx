@@ -177,7 +177,7 @@ export default function Visitors() {
                   <ul className="plain">
                     {pending.map((r) => (
                       <li key={r.id}>
-                        <strong>{r.requester.name}</strong> asks to {r.kind === "register" ? "register" : r.kind === "renew" ? "renew" : r.kind === "dns_change" ? "change DNS on" : "get more access"} {r.domain ? r.domain.unicode : ""}{r.max_total_minor !== "0" ? `, up to ${usd(r.max_total_minor)}` : ""}.{" "}
+                        <strong>{r.requester.name}</strong> asks to {r.kind === "register" ? "register" : r.kind === "renew" ? "renew" : r.kind === "nameservers_change" ? "request nameservers for" : r.kind === "dns_change" ? "change DNS on" : "get more access"} {r.domain ? r.domain.unicode : ""}{r.max_total_minor !== "0" ? `, up to ${usd(r.max_total_minor)}` : ""}.{" "}
                         <button type="button" className="btn secondary small" onClick={() => { setMsg(null); setOpen(r.id); }}>Review</button>
                       </li>
                     ))}
@@ -270,7 +270,7 @@ export default function Visitors() {
                     <input id="tok-name" className="text-input" value={form.name} placeholder="For example: deploy script, or Sam (developer)" onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} required autoComplete="off" />
                     <fieldset className="choices">
                       <legend>Which names</legend>
-                      <label className="check"><input type="radio" name="tok-which" checked={form.which === "all"} onChange={() => setForm({ ...form, which: "all" })} /> <span>All my names</span></label>
+                      <label className="check"><input type="radio" name="tok-which" checked={form.which === "all"} onChange={() => setForm({ ...form, which: "all", picks: form.picks.filter((id) => !CHOICES.find((c) => c.id === id)?.domainOnly) })} /> <span>All my names</span></label>
                       <label className="check"><input type="radio" name="tok-which" checked={form.which === "one"} onChange={() => setForm({ ...form, which: "one" })} /> <span>Only one name</span></label>
                       {form.which === "one" && (names === null ? <p role="status" className="fineprint">Loading your names.</p> : names.length === 0 ? <p className="fineprint">You have no names yet.</p> : (
                         <label>The name
@@ -282,11 +282,12 @@ export default function Visitors() {
                       <legend>What it can do</legend>
                       {CHOICES.map((c) => (
                         <label key={c.id} className="check">
-                          <input type="checkbox" checked={form.picks.includes(c.id)} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, c.id] : form.picks.filter((x) => x !== c.id) })} />
+                          <input type="checkbox" checked={form.picks.includes(c.id)} disabled={c.domainOnly && form.which === "all"} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, c.id] : form.picks.filter((x) => x !== c.id) })} />
                           <span>{c.label}{c.hint ? <span className="fineprint">{c.hint}</span> : null}</span>
                         </label>
                       ))}
                     </fieldset>
+                    <p className="fineprint">Start with read access if that is enough. The assistant can request specific extra access later; adding it needs your passkey. A request alone never grants access.</p>
                     {spends ? (
                       <>
                         <label htmlFor="tok-cap">Most it can ask you to spend, in dollars</label>
@@ -326,8 +327,9 @@ export default function Visitors() {
                 <h3 id="safe-h">How we keep this safe</h3>
                 <ul className="safe-list">
                   <li>Nothing is bought without your passkey. An assistant can only suggest a name or a renewal; you approve it, and you pay on Stripe.</li>
-                  <li>Changes to sensitive DNS records (mail, nameservers, the name itself, www, verification records) wait for your passkey, and we email you when one changes.</li>
-                  <li>Before every DNS change, by you or a token, we keep a copy of the records for 30 days. Roll back is on the name's DNS tab.</li>
+                  <li>Deletions and changes to sensitive DNS records or dependencies (mail, zone NS records, production, the name itself, www, verification) wait for your passkey.</li>
+                  <li>Registry nameserver delegation is separate from a zone NS record. Agents can suggest a change for one granted name; execution remains blocked until destination verification is supported.</li>
+                  <li>Before every DNS change, by you or a token, we keep a copy of the records for 30 days. Rollback needs a new review on the name's DNS tab and cannot undo lost mail or cached answers.</li>
                   <li>Every token ends within 90 days, and a token that may suggest purchases has a cap you set.</li>
                   <li>We email you when a token asks for your decision, when a production secret changes, and when everything is disconnected.</li>
                   <li>Pause stops a token at once, with no passkey. Only you can resume it, with your passkey.</li>

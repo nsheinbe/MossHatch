@@ -12,7 +12,9 @@ import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
 import { ownedDomain } from "../domain-mgmt/common.ts";
 import { disconnect } from "../vault/connections.ts";
 import { safeEqual } from "../util/bytes.ts";
-import { assertApplyScopes, assertPlanScopes, checkVariableNames, computePlan, needsApproval, planHash, planView, recipeOr404, type Plan } from "./plan.ts";
+import { lockUser } from "../agents/common.ts";
+import { assertDnsOwnerSession } from "../domain-mgmt/dns-approval.ts";
+import { assertApplyScopes, assertPlanScopes, assertRecipeActor, captureRecipeActor, checkVariableNames, computePlan, needsApproval, planHash, planView, recipeOr404, type Plan, type RecipeAuthorization } from "./plan.ts";
 import { RECIPES, type Service } from "./registry.ts";
 import { RecipeFail, registerRecipeJobs, writeRecipeZone } from "./apply.ts";
 import type { DnsRecord } from "@mosshatch/registrar/port";
@@ -74,15 +76,18 @@ export async function planRecipe(w: RecipeCaller, fqdn: string, recipeId: string
   if (!rl.allowed) throw new HttpError(429, "rate_limited", undefined, { "Retry-After": String(rl.retryAfterSeconds) });
   const p = await withUser(ctx.runtime, actor.userId, (c) => computePlan(ctx, c, actor.userId, d, recipe, input));
   await rejectNames(ctx, actor, d.id, p);
-  const hash = planHash(p), needs = needsApproval(p);
+  const needs = needsApproval(p);
   const now = ctx.clock.now();
-  const id = await withUser(ctx.runtime, actor.userId, async (c) => {
+  const { id, hash } = await withUser(ctx.runtime, actor.userId, async (c) => {
+    await lockUser(c, actor.userId);
+    p.authorization = { v: 1, creator: await captureRecipeActor(ctx, c, actor.userId, w.principal, p, "plan") };
+    const hash = planHash(p);
     const r = (await c.query(
       `insert into recipe_applications (user_id, domain_id, recipe_id, recipe_version, input, plan, plan_hash, needs_approval, sensitive_count, created_by_kind, created_by_id, expires_at, created_at)
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
       [actor.userId, d.id, recipe.id, recipe.version, JSON.stringify(p.input), JSON.stringify(p), hash, needs, p.sensitive.length, actor.kind, actor.id, new Date(now.getTime() + PLAN_TTL_MS), now])).rows[0].id as string;
     await appendAudit(ctx, c, { chainId: actor.userId, actorKind: actor.kind, actorId: actor.id, action: "recipe.planned", resourceKind: "recipe_application", resourceId: r, detail: { recipe: recipe.id, version: recipe.version, needs_approval: needs, sensitive: p.sensitive.length } });
-    return r;
+    return { id: r, hash };
   });
   // C-58: before a recipe writes DNS for a .dev or .app name, the plan says that the name serves over HTTPS only.
   return { application_id: id, state: "planned", expires_at: new Date(now.getTime() + PLAN_TTL_MS).toISOString(), plan: planView(p, hash, needs), notices: tldNotices(d.fqdn_ascii) };
@@ -114,16 +119,29 @@ export async function applyRecipe(w: RecipeCaller, applicationId: string, planHa
   if (new Date(app.expires_at) <= ctx.clock.now()) throw new HttpError(409, "plan_expired");
   if (app.state !== "planned" && app.state !== "approved") throw new HttpError(409, "plan_used");
   // Recompute now: a different zone, different provider facts or a changed recipe gives a different hash, and nothing runs.
-  const p = await withUser(ctx.runtime, actor.userId, (c) => computePlan(ctx, c, actor.userId, d, recipe, app.input));
+  const p = await withUser(ctx.runtime, actor.userId, (c) => computePlan(ctx, c, actor.userId, d, recipe, app.input, (app.plan as Plan).authorization));
   if (!safeEqual(planHash(p), Buffer.from(app.plan_hash))) throw new HttpError(409, "plan_changed");
   assertApplyScopes(w.principal, p);
+  // Shared by REST and MCP: queued DNS recipes predate grant-bound execution.
+  // Bindings use the exact DNS proposal path until that queue policy is implemented.
+  if (recipe.touchesDns && (w.principal.kind === "binding" || app.created_by_kind !== "user")) throw new HttpError(403, "agent_dns_recipe_requires_owner");
   await rejectNames(ctx, actor, d.id, p);
   if (needsApproval(p) && app.state !== "approved") throw new HttpError(403, "approval_required", undefined, undefined, { type: "dns.sensitive.approve", application_id: app.id });
   await withUser(ctx.runtime, actor.userId, async (c) => {
+    await lockUser(c, actor.userId);
+    if (p.authorization?.v !== 1) throw new HttpError(409, "recipe_authorization_missing");
+    await assertRecipeActor(ctx, c, actor.userId, p.authorization.creator, p, "plan");
+    if (p.authorization.creator.kind !== app.created_by_kind || p.authorization.creator.id !== app.created_by_id) throw new HttpError(409, "recipe_authorization_changed");
+    const applier = await captureRecipeActor(ctx, c, actor.userId, w.principal, p, "apply");
+    if (applier.kind === "user") await assertDnsOwnerSession(ctx, c, actor.userId, w.principal.sessionIdHash);
+    if (new Date(app.expires_at) <= ctx.clock.now()) throw new HttpError(409, "plan_expired");
+    if (!(await c.query("select 1 from domains where id=$1 and user_id=$2 and released_at is null", [app.domain_id, actor.userId])).rowCount) throw notFound();
+    const authorization: RecipeAuthorization = { v: 1, application_id: app.id, user_id: actor.userId, domain_id: app.domain_id,
+      plan_hash: planHashHex, creator: p.authorization.creator, applier };
     const r = await c.query("update recipe_applications set state = 'applying' where id = $1 and user_id = $2 and state = $3 and plan_hash = $4", [app.id, actor.userId, app.state, app.plan_hash]);
     if (r.rowCount !== 1) throw new HttpError(409, "plan_used");
     // Who asked (ids only): the job mails the owner at once when an agent's apply writes prod (ST-35).
-    await enqueue(c, { kind: "recipe.apply", userId: actor.userId, payload: { application_id: app.id, user_id: actor.userId, by_kind: actor.kind, by_id: actor.id }, dedupeKey: `recipe.apply:${app.id}` });
+    await enqueue(c, { kind: "recipe.apply", userId: actor.userId, payload: { application_id: app.id, user_id: actor.userId, by_kind: actor.kind, by_id: actor.id, authorization }, dedupeKey: `recipe.apply:${app.id}` });
     await appendAudit(ctx, c, { chainId: actor.userId, actorKind: actor.kind, actorId: actor.id, action: "recipe.apply_requested", resourceKind: "recipe_application", resourceId: app.id, detail: { recipe: recipe.id, approved_by: app.approved_by_action_id ?? null } });
   });
   return { application_id: app.id as string, state: "applying" as const };
@@ -291,14 +309,14 @@ async function deleteConnection(req: HandlerReq): Promise<HandlerResult> {
     const apps = await withUser(req.ctx.runtime, actor.userId, async (c) => (await c.query("select id, applied_records from recipe_applications where user_id = $1 and domain_id = $2 and state = 'applied' and plan->'connections' @> $3::jsonb", [actor.userId, cn.domain_id, JSON.stringify([{ id: cn.id }])])).rows);
     const records = apps.flatMap((a) => (a.applied_records ?? []) as DnsRecord[]);
     // The applications are marked removed only with a confirmed write (in its follow-up, under the zone lock): a removal whose outcome
-    // is unknown keeps its snapshot for rollback and leaves them applied, so the disconnect can be retried.
+    // is unknown keeps its snapshot and leaves them applied. A later attempt reconciles by reading before any further write.
     const done = async (c: PoolClient, n: number) => {
       if (apps.length) await c.query("update recipe_applications set state = 'removed' where id = any($1::uuid[]) and state = 'applied'", [apps.map((a) => a.id)]);
       await appendAudit(req.ctx, c, { chainId: actor.userId, actorKind: "user", actorId: actor.userId, action: "connection.records_removed", resourceKind: "connection", resourceId: cn.id, detail: { applications: apps.length, removed: n } });
       return n;
     };
     removed = records.length
-      ? (await writeRecipeZone(req.ctx, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" }, (c, w) => done(c, w.removed))).after ?? 0
+      ? (await writeRecipeZone(req.ctx, actor.userId, { id: cn.domain_id, fqdn: cn.fqdn_ascii }, { add: [], remove: records }, null, { cause: "connection.disconnect" }, (c, w) => done(c, w.removed), req)).after ?? 0
       : await withUser(req.ctx.runtime, actor.userId, (c) => done(c, 0));
   } catch (e) { if (e instanceof RecipeFail) throw new HttpError(409, e.code); throw e; }
   await disconnect(req.ctx, actor.userId, cn.domain_id, cn.service);

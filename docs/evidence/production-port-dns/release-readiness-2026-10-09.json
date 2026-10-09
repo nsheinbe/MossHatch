@@ -1,0 +1,219 @@
+{
+  "observed_at": "2026-10-09T16:40:10.225Z",
+  "source_candidate": "3280902987932ecc89f2ddf416fcc531053bf501",
+  "production_sha": "e311dae06f75d41131f92d4421355a3934b9bcda",
+  "target": {
+    "project": "frosty-river-45238500",
+    "branch": "br-square-bread-b7vin3u3",
+    "database": "mosshatch"
+  },
+  "read_only": true,
+  "isolation": "repeatable read",
+  "schema_migration_names": [
+    "0001_base.sql",
+    "0002_accounts.sql",
+    "0003_compliance.sql",
+    "0004_domains_money.sql",
+    "0005_ops.sql",
+    "0006_audit.sql",
+    "0007_rls_grants.sql",
+    "0100_auth.sql",
+    "0110_register_options_hash.sql",
+    "0200_stepup.sql",
+    "0300_registrar_pricing.sql",
+    "0350_orders_machine.sql",
+    "0400_ops.sql",
+    "0550_domains_core.sql",
+    "0650_domain_mgmt.sql",
+    "0660_dns_snapshot_outcome.sql",
+    "0670_mandate_keep_after_charge.sql",
+    "0700_phase3_finish.sql",
+    "0750_money_compliance.sql",
+    "0800_vault.sql",
+    "0805_vault_review.sql",
+    "0850_bindings_cli.sql",
+    "0900_transfers.sql",
+    "0946_transfer_log_legal_hold.sql",
+    "0950_agents.sql",
+    "0965_binding_audience_lookup.sql",
+    "1000_cards.sql",
+    "1005_card_takedown_hold.sql",
+    "1010_card_species.sql",
+    "1050_account_closure.sql",
+    "1100_csp_reports.sql",
+    "1110_waitlist.sql",
+    "1120_openprovider_live.sql",
+    "1180_funded_admission.sql",
+    "1190_waitlist_attribution.sql",
+    "1200_conversion_measurement.sql",
+    "1210_name_lock_all_holding_states.sql",
+    "1220_openprovider_member_prices.sql"
+  ],
+  "approved_for_execution": false,
+  "proposed_migrations": [
+    "0998_nameserver_proposals.sql",
+    "1130_dns_reconciliation.sql"
+  ],
+  "schema_constraints": [
+    {
+      "conname": "agent_requests_kind_check",
+      "definition": "CHECK ((kind = ANY (ARRAY['register'::text, 'renew'::text, 'dns_change'::text, 'scope'::text])))",
+      "convalidated": true
+    }
+  ],
+  "agent_request_counts": {
+    "request_rows": "0",
+    "pending_requests": "0"
+  },
+  "rls_metadata": [
+    {
+      "table_name": "orders",
+      "rls_active": false
+    },
+    {
+      "table_name": "domains",
+      "rls_active": false
+    },
+    {
+      "table_name": "jobs",
+      "rls_active": false
+    },
+    {
+      "table_name": "agent_requests",
+      "rls_active": false
+    }
+  ],
+  "order_state_aggregates": [
+    {
+      "kind": "register",
+      "state": "captured",
+      "n": "1"
+    },
+    {
+      "kind": "register",
+      "state": "checkout_expired",
+      "n": "2"
+    }
+  ],
+  "domain_expiry_aggregates": {
+    "expiring_within_7_days": "0",
+    "expiring_within_30_days": "0",
+    "auto_renew_within_30_days": "0"
+  },
+  "queued_work_aggregates": [],
+  "preceding_probe": {
+    "at": "2026-10-09T16:22:16.214Z",
+    "flags": {
+      "registrar_writes_paused": false,
+      "orders_paused": false,
+      "agent_purchases_paused": false
+    },
+    "dns_receipts": {
+      "total": 8,
+      "pending": 0,
+      "unknown": 0
+    },
+    "active_recipe_plans": 0,
+    "queued_running_recipe_jobs": 0,
+    "queued_running_connection_checks": 0
+  },
+  "nonsecret_environment_review": {
+    "web_production_target": true,
+    "web_registrar_mode": "live",
+    "web_absent_project_overrides": [
+      "MH_MODE",
+      "MH_INVITE_ONLY",
+      "MH_LIVE_GATE"
+    ],
+    "source_inferred": {
+      "mode": "production",
+      "invite_only": true,
+      "live_gate": true
+    },
+    "registrar_sensitive_entries_not_readable": [
+      "MH_SCOPE",
+      "MH_MODE",
+      "MH_REGISTRAR_MODE",
+      "MH_REGISTRAR_PROVIDER",
+      "OPENPROVIDER_ENV"
+    ],
+    "unrelated_values_exported": false,
+    "settings_changed": false,
+    "public_runtime_observation": "Unavailable: public HTTP DNS resolution/tool access failed. Source defaults are not runtime proof."
+  },
+  "verification": {
+    "code_head": "e7b0d1692640e0e21060395b06fbf53c5169ee10",
+    "docs_head": "3280902987932ecc89f2ddf416fcc531053bf501",
+    "unit_passed": 1621,
+    "unit_skipped": 119,
+    "perf_passed": 22,
+    "browser_passed": 88,
+    "final_head_ci_runs": [
+      37954468717,
+      37954475206
+    ],
+    "result": "All passed, attempt 1; fixture providers and virtual authenticators"
+  },
+  "mutations_performed": false,
+  "credentials_or_grants_created": false,
+  "customer_rows_exported": false,
+  "new_cloud_resources": false,
+  "notes": [
+    "Exact migration and flag approval is still required before execution.",
+    "No real provider, DNS, factor or purchase validation was performed.",
+    "Follow-up probe includes all running jobs, transfer_in.% jobs, live transfer rows and all order states; zero active transfers and running jobs."
+  ],
+  "work_probe": {
+    "observed_at": "2026-10-09T16:43:59.289Z",
+    "read_only": true,
+    "rls_metadata": [
+      {
+        "table_name": "orders",
+        "rls_active": false
+      },
+      {
+        "table_name": "jobs",
+        "rls_active": false
+      },
+      {
+        "table_name": "transfers_in",
+        "rls_active": false
+      },
+      {
+        "table_name": "domain_transfers_away",
+        "rls_active": false
+      }
+    ],
+    "all_order_states": [
+      {
+        "kind": "register",
+        "state": "captured",
+        "n": "1"
+      },
+      {
+        "kind": "register",
+        "state": "checkout_expired",
+        "n": "2"
+      }
+    ],
+    "transfers_in": {
+      "active_transfers_in": "0",
+      "transfer_deadlines_within_7_days": "0"
+    },
+    "transfers_away": {
+      "active_transfers_away": "0"
+    },
+    "running_or_relevant_queued_jobs": []
+  },
+  "catalogue_preflight": {
+    "production_matches_local_baseline": true,
+    "read_only": true,
+    "sha256": "dd1bc9403915be1233fdf071bec790591ce496e7be9eb20a2ec4c9a6ddf28899"
+  },
+  "reviewed_artifacts": {
+    "migration_sql_sha256": "c1d48fc12d184a77d11c41743d5593c2e7b4686731883ba02a83be69538c6ea7",
+    "pause_sql_sha256": "d61f3ba775f1faeb840324a7da815dbe4e0238059c86e7e4abeed992e593e5fa",
+    "local_rehearsal_passed": 14,
+    "independent_review": "No blocking issue in restricted-release scope, runbook, pause SQL or final migration SQL."
+  }
+}

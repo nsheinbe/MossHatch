@@ -1,7 +1,11 @@
 import { defineConfig } from "@playwright/test";
 
 const gl = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"];
+const launchOptions = { args: gl, ...(process.env.MH_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.MH_CHROMIUM_EXECUTABLE_PATH } : {}) };
 export default defineConfig({
+  // Dedicated cloud workspaces may provide Chromium while blocking browser downloads.
+  // CI keeps Playwright's pinned browser unless the operator explicitly selects a local executable.
+  use: { launchOptions },
   testDir: "e2e",
   testMatch: /.*\.spec\.ts/,
   timeout: 90_000,
@@ -17,12 +21,12 @@ export default defineConfig({
       env: { E2E_PORT: "5176", VITE_SITE_MODE: "invite", MH_INVITE_ONLY: "1", MH_LIVE_GATE: "1", MH_FAKE_LOOKUP: "1" } },
   ],
   projects: [
-    { name: "prod", testMatch: /prod\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
-    { name: "dev", testMatch: /dev\.spec\.ts/, use: { baseURL: "http://127.0.0.1:5173", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
+    { name: "prod", testMatch: /prod\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions, viewport: { width: 1280, height: 720 } } },
+    { name: "dev", testMatch: /dev\.spec\.ts/, use: { baseURL: "http://127.0.0.1:5173", launchOptions, viewport: { width: 1280, height: 720 } } },
     { name: "cards", testMatch: /cards\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4175", viewport: { width: 1280, height: 720 } } },
-    { name: "public", testMatch: /public\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
-    { name: "publish", testMatch: /publish\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
-    { name: "invite", testMatch: /invite\.spec\.ts/, use: { baseURL: "http://localhost:5176", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
-    { name: "account", testMatch: /account\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
+    { name: "public", testMatch: /public\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions, viewport: { width: 1280, height: 720 } } },
+    { name: "publish", testMatch: /publish\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions, viewport: { width: 1280, height: 720 } } },
+    { name: "invite", testMatch: /invite\.spec\.ts/, use: { baseURL: "http://localhost:5176", launchOptions, viewport: { width: 1280, height: 720 } } },
+    { name: "account", testMatch: /account\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions, viewport: { width: 1280, height: 720 } } },
   ],
 });

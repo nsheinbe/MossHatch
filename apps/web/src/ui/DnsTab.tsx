@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import "./DnsTab.css";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { normalizePhone } from "@mosshatch/core";
 import { sessionEnded } from "../lib/session";
 import { PHONE_HINT, PHONE_PROBLEM } from "./ContactForm";
 import {
-  addRecords, changeDs, changeNameservers, deleteRecord, draftContact, explainDomain, explainRollback, getContactStart, getDns, getDs, getSnapshots, getVerification, rollback,
-  sendVerification, submitContact, verifyRegistrant, type ContactFields, type DnsRecordView, type DnsView, type DomainDetail, type DsRecordView, type DsView, type Security, type Snapshot, type VerificationState,
+  addRecords, changeDs, deleteRecord, dnsApprovalFromError, previewNameservers, draftContact, explainDomain, explainRollback, getContactStart, getDns, getDs, getSnapshots, getVerification, rollback,
+  sendVerification, submitContact, verifyRegistrant, type NameserverPlan, type ContactFields, type DnsRecordView, type DnsView, type DomainDetail, type DsRecordView, type DsView, type Security, type Snapshot, type VerificationState,
 } from "../lib/domains";
 import { StepUp, type StepUpRequest } from "./StepUp";
+import { dnsReviewText } from "../lib/dns-display";
 
 const TYPES = ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"] as const;
-const SENSITIVE_WORD: Record<string, string> = { apex: "the domain itself", underscore_label: "a verification or mail-security name", www: "the www address", mail_host: "a mail setup name", type: "a mail, delegation or service record", txt_value: "a verification or mail-security value", wildcard: "a wildcard" };
+const SENSITIVE_WORD: Record<string, string> = { apex: "the domain itself", underscore_label: "a verification or mail-security name", www: "the www address", wildcard: "a wildcard", mail_host: "a mail setup name", type: "a mail, delegation or service record", txt_value: "a verification or mail-security value", unverified_txt: "an unverified ownership or service token", production_host: "a production service", service_dependency: "a mail or service dependency", deletion: "a record deletion" };
 /** Local time with the zone named, so "4:59 PM UTC" never reads as an afternoon change to someone whose morning it was. */
 const when = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" });
 
@@ -54,51 +56,66 @@ function checkDnskey(k: { flags: number; algorithm: number; publicKey: string })
 export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security | null; reloadAll: () => void }) {
   const f = d.fqdn;
   const [dns, setDns] = useState<DnsView | null>(null);
+  const [readErrors, setReadErrors] = useState<{ dns?: string; snapshots?: string; ds?: string }>({});
   const [snaps, setSnaps] = useState<Snapshot[]>([]);
   const [ds, setDs] = useState<DsView | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [req, setReq] = useState<StepUpRequest | null>(null);
-  const [rec, setRec] = useState({ type: "A", name: "", value: "", priority: "", weight: "", port: "" });
+  const [rec, setRec] = useState({ type: "A", name: "", value: "", priority: "", weight: "", port: "", ttl: "3600" });
   const [ns, setNs] = useState(d.nameservers.join("\n"));
-  const [signed, setSigned] = useState(false);
+  const [approvalDiff, setApprovalDiff] = useState<ReturnType<typeof dnsApprovalFromError>>(null);
+  const [nsPlan, setNsPlan] = useState<NameserverPlan | null>(null);
+  const running = useRef(false);
   const [dsForm, setDsForm] = useState({ keyTag: "", algorithm: "13", digestType: "2", digest: "" });
   const [keyForm, setKeyForm] = useState({ flags: "257", algorithm: "13", publicKey: "" });
 
   const load = useCallback(async () => {
     const [a, b, c] = await Promise.allSettled([getDns(f), getSnapshots(f), getDs(f)]);
+    setReadErrors({ ...(a.status === "rejected" ? { dns: explainDomain(a.reason) } : {}), ...(b.status === "rejected" ? { snapshots: explainDomain(b.reason) } : {}), ...(c.status === "rejected" ? { ds: explainDomain(c.reason) } : {}) });
     if (a.status === "fulfilled") setDns(a.value); else setMsg(explainDomain(a.reason));
     if (b.status === "fulfilled") setSnaps(b.value);
     if (c.status === "fulfilled") setDs(c.value);
   }, [f]);
   useEffect(() => { void load(); }, [load]);
 
-  const act = async (fn: () => Promise<string | void>, explain: (e: unknown) => string = explainDomain) => {
+  const act = async (fn: (actionId?: string) => Promise<string | void>, explain: (e: unknown) => string = explainDomain) => {
+    if (running.current || req) return;
+    running.current = true;
     setBusy(true); setMsg(null);
-    try { const m = await fn(); if (m) setMsg(m); await load(); } catch (e) { setMsg(explain(e)); } finally { setBusy(false); }
+    try { const m = await fn(); if (m) setMsg(m); await load(); }
+    catch (e) {
+      if (await sessionEnded(e)) return;
+      const approval = dnsApprovalFromError(e);
+      if (approval) { setApprovalDiff(approval); setReq({ type: "dns.sensitive.approve", target: approval.target, input: approval.input, explain,
+        run: async (id) => { const m = await fn(id); if (m) setMsg(m); await load(); },
+      }); }
+      else setMsg(explain(e));
+    } finally { running.current = false; setBusy(false); }
   };
-  const changed = (r: { changed: boolean; sensitive?: boolean }, what: string) =>
-    !r.changed ? "Nothing changed." : `${what}${r.sensitive ? " This touched a sensitive record, so we emailed you. Roll it back under History if it was not you." : ""}`;
+  const changed = (r: { changed: boolean; sensitive?: boolean }, _what: string) =>
+    !r.changed ? "Nothing changed." : "Change accepted; the provider read-back matches. Authoritative visibility has not been checked. Propagation has not been sampled.";
 
-  const add = () => act(async () => {
+  const add = () => act(async (actionId) => {
     const r: Record<string, unknown> = { type: rec.type, name: rec.name.trim() || "@", value: rec.value };
     if (rec.priority !== "") r.priority = Number(rec.priority);
     if (rec.weight !== "") r.weight = Number(rec.weight);
     if (rec.port !== "") r.port = Number(rec.port);
-    const out = await addRecords(f, [r as never]);
-    setRec({ type: rec.type, name: "", value: "", priority: "", weight: "", port: "" });
+    if (rec.ttl !== "") r.ttl = Number(rec.ttl);
+    const out = await addRecords(f, [r as never], actionId);
+    setRec({ type: rec.type, name: "", value: "", priority: "", weight: "", port: "", ttl: "3600" });
     return changed(out, "Record added.");
   });
 
-  const editable = dns?.hosted && !dns.read_only;
+  const editable = dns?.hosted && !dns.read_only && !readErrors.dns;
   // The warning waits until something is typed: an empty form is the domain itself, and shouting before a keystroke taught nobody anything.
   const warnSensitive = (rec.name !== "" || rec.value !== "" || rec.type === "MX" || rec.type === "SRV") && looksSensitive(rec.type, rec.name);
-  const dsHere = (ds?.records.length ?? 0) > 0 || d.ds_present;
   const managed = ds?.auto_signed === true;
   const keyInput = ds?.key_input ?? "ds";
   // Our nameservers add their own key on a registrar that takes keys, and while that key stands, any other is dropped: no form then.
-  const canAddKey = !!ds?.supported && !managed && !(ds?.hosted_here && keyInput === "dnskey");
+  const canAddKey = ds?.changes_supported === true && !!ds.supported && !managed && !(ds?.hosted_here && keyInput === "dnskey");
   const dsChange = (input: { kind: "ds_add" | "ds_remove"; ds?: DsRecordView; dnskey?: { flags: number; algorithm: number; publicKey: string } }, done: string) => {
+    if (ds?.changes_supported !== true || busy || req) return;
     setMsg(null);
     setReq({ type: "domain.nameservers.change", target: f, input, run: async (id) => { await changeDs(f, id); setMsg(done); reloadAll(); } });
   };
@@ -115,12 +132,12 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
   };
 
   return (
-    <div>
+    <div className="dns-panel">
       {msg && <p role="status" className="notice">{msg}</p>}
 
       <div className="section" role="group" aria-labelledby="rec-h">
         <h3 id="rec-h">Records</h3>
-        {!dns && <p>Loading the records.</p>}
+        {readErrors.dns ? <p role="alert">Records could not be refreshed. {readErrors.dns} <button type="button" className="btn secondary small" onClick={() => void load()}>Retry records</button></p> : !dns && <p role="status">Loading the records.</p>}
         {dns && !dns.hosted && (
           <>
             <p>{dns.message ?? "DNS for this name is hosted elsewhere, so it cannot be edited here."}</p>
@@ -129,27 +146,22 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
         )}
         {dns?.hosted && (
           <>
-            <p className="notice">Records marked sensitive control mail, certificates or where the name points. When one changes, we email you, and you can roll the change back under History.</p>
+            <p className="notice">Sensitive changes and deletions need approval with your passkey. Records and their TTL are included in the reviewed plan.</p>
             {dns.records.length === 0 ? <p>There are no records yet.</p> : (
-              <div className="table-wrap">
-                {/* The roles are explicit so the stacked layout in the side panel keeps this a table for assistive technology. */}
-                <table className="data records" role="table">
-                  <caption className="sr-only">DNS records for {f}</caption>
-                  <thead className="sr-only" role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Type</th><th role="columnheader" scope="col">Name</th><th role="columnheader" scope="col">Value</th><th role="columnheader" scope="col">Note</th><th role="columnheader" scope="col"><span className="sr-only">Actions</span></th></tr></thead>
-                  <tbody role="rowgroup">
-                    {dns.records.map((r: DnsRecordView) => (
-                      <tr key={r.id} role="row">
-                        <td role="cell" className="rec-type">{r.type}</td><td role="cell" className="rec-name">{r.name}</td>
-                        <td role="cell" className="val rec-val">{r.priority !== undefined ? `${r.priority} ` : ""}{r.weight !== undefined ? `${r.weight} ` : ""}{r.port !== undefined ? `${r.port} ` : ""}{r.value}</td>
-                        <td role="cell" className="rec-note">{r.sensitive ? <span className="warn">Sensitive: {r.reasons.map((x) => SENSITIVE_WORD[x] ?? x).join(", ")}</span> : ""}</td>
-                        <td role="cell" className="rec-act"><button type="button" className="btn secondary small" disabled={busy} aria-label={`Delete the ${r.type} record for ${r.name}`} onClick={() => void act(async () => changed(await deleteRecord(f, r.id), "Record deleted."))}>Delete</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ul className="dns-records" aria-label={`DNS records for ${f}`}>
+                {dns.records.map((r: DnsRecordView) => (
+                  <li key={r.id} className="dns-record">
+                    <div className="dns-record-heading"><span className="dns-record-identity"><span className="dns-type">{r.type}</span><code>{r.name}</code></span><span className="dns-ttl">TTL {r.ttl !== undefined ? `${r.ttl}s` : 'default'}</span></div>
+                    <code className="dns-value">{r.value}</code>
+                    {(r.priority !== undefined || r.weight !== undefined || r.port !== undefined) && <p className="dns-record-meta">{r.priority !== undefined && <span>Priority {r.priority}</span>}{r.weight !== undefined && <span>Weight {r.weight}</span>}{r.port !== undefined && <span>Port {r.port}</span>}</p>}
+                    <div className="dns-record-footer"><span className={r.sensitive ? 'warn' : 'dns-record-meta'}>{r.sensitive ? `Sensitive: ${r.reasons.map((x) => SENSITIVE_WORD[x] ?? x).join(', ')}` : r.editable === false ? 'Preserved; editing unavailable' : 'Standard record'}{r.editable === false && <span className="dns-preserved">Preserved; editing unavailable</span>}</span>
+                      <button type="button" className="btn secondary small" disabled={busy || !!req || !editable || r.editable === false} aria-label={`Delete the ${r.type} record for ${r.name}`} onClick={() => void act(async (id) => changed(await deleteRecord(f, r.id, id), "Record deleted."))}>Delete</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             )}
-            <form onSubmit={(e) => { e.preventDefault(); void add(); }} aria-labelledby="add-h" className="form-grid">
+            <form onSubmit={(e) => { e.preventDefault(); void add(); }} aria-labelledby="add-h" className="form-grid dns-record-form">
               <h4 id="add-h">Add a record</h4>
               <label>Type
                 <select className="text-input" value={rec.type} onChange={(e) => setRec({ ...rec, type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
@@ -163,8 +175,9 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
               {(rec.type === "MX" || rec.type === "SRV") && <label>Priority<input className="text-input" inputMode="numeric" required value={rec.priority} onChange={(e) => setRec({ ...rec, priority: e.target.value })} /></label>}
               {rec.type === "SRV" && <label>Weight<input className="text-input" inputMode="numeric" required value={rec.weight} onChange={(e) => setRec({ ...rec, weight: e.target.value })} /></label>}
               {rec.type === "SRV" && <label>Port<input className="text-input" inputMode="numeric" required value={rec.port} onChange={(e) => setRec({ ...rec, port: e.target.value })} /></label>}
-              {warnSensitive && <p className="warn" role="status">This looks like a sensitive record. It can change where mail goes or who can get a certificate. We will email you when it is saved.</p>}
-              <div className="row-actions"><button type="submit" className="btn primary" disabled={busy}>Add record</button></div>
+              <label>TTL, in seconds<input className="text-input" type="number" min="0" max="2147483647" required value={rec.ttl} onChange={(e) => setRec({ ...rec, ttl: e.target.value })} /></label>
+              {warnSensitive && <p className="warn" role="status">This looks like a sensitive record. It can change where mail goes or who can get a certificate. Review the exact change, then approve it with your passkey.</p>}
+              <div className="row-actions"><button type="submit" className="btn primary" disabled={busy || !!req || !editable}>Add record</button></div>
             </form>
           </>
         )}
@@ -173,13 +186,13 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
       {editable && (
         <div className="section" role="group" aria-labelledby="hist-h">
           <h3 id="hist-h">History</h3>
-          <p className="notice">Before each change we keep a copy of the records for 30 days. Roll back puts them back as they were.</p>
-          {snaps.length === 0 ? <p>No changes yet.</p> : (
+          <p className="notice">Before each change we keep a copy of the records for 30 days. Rollback requires a new review and may be blocked while an uncertain write is reconciled. It cannot undo lost mail or answers already cached elsewhere.</p>
+          {readErrors.snapshots ? <p role="alert">History could not be refreshed. {readErrors.snapshots}</p> : snaps.length === 0 ? <p>No changes yet.</p> : (
             <ul className="plain">
               {snaps.map((s) => (
                 <li key={s.id}>
                   <span>{when(s.taken_at)}: {describeSnapshot(s)}. </span>
-                  <button type="button" className="btn secondary small" disabled={busy} aria-label={`Roll back to before the change of ${when(s.taken_at)}`} onClick={() => void act(async () => changed(await rollback(f, s.id), "Rolled back."), explainRollback)}>Roll back</button>
+                  <button type="button" className="btn secondary small" disabled={busy || !!req} aria-label={`Roll back to before the change of ${when(s.taken_at)}`} onClick={() => void act(async (id) => changed(await rollback(f, s.id, id), "Rolled back."), explainRollback)}>Roll back</button>
                 </li>
               ))}
             </ul>
@@ -187,33 +200,27 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
         </div>
       )}
 
-      <div className="section" role="group" aria-labelledby="ns-h">
+      <div className="section dns-delegation" role="group" aria-labelledby="ns-h">
         <h3 id="ns-h">Nameservers</h3>
-        <p>{(dns?.hosted ?? d.dns_hosted_here) ? "This name uses our nameservers, so you edit its records here." : "This name uses other nameservers, so its records live there."}</p>
-        <form onSubmit={(e) => { e.preventDefault(); setMsg(null); setReq({ type: "domain.nameservers.change", target: f, input: { kind: "nameservers", nameservers: ns.split(/[\s,]+/).filter(Boolean), target_signed: signed }, run: async (id) => { await changeNameservers(f, id); setMsg("Nameservers changed. We emailed you."); reloadAll(); } }); }}>
-          <label htmlFor="ns-box">Nameservers, one per line</label>
-          <textarea id="ns-box" className="text-input area" rows={3} value={ns} onChange={(e) => setNs(e.target.value)} />
-          {dsHere && managed && <p className="notice">This name is signed by our nameservers. To move it elsewhere, turn DNSSEC off below first and wait until the record is gone (it can take a day). If the new nameservers sign the zone, add their key here after the move.</p>}
-          {dsHere && !managed && (
-            <>
-              <label className="check"><input type="checkbox" checked={signed} onChange={(e) => setSigned(e.target.checked)} /> These nameservers serve a DNSSEC-signed zone</label>
-              <p className="fineprint">Leave it unticked if the new nameservers do not sign: the change is then refused until the DNSSEC record below is removed, so the name keeps resolving.</p>
-            </>
-          )}
-          <div className="row-actions"><button type="submit" className="btn secondary" disabled={!!req}>Change nameservers</button></div>
+        <p>{(dns?.hosted ?? d.dns_hosted_here) ? "Records for this name are managed here." : "Records for this name are managed by another DNS provider."}</p>
+        <p>Changing delegation affects every service on this domain. Source records stay intact. Another DNS provider needs separate authorization and a complete record inventory.</p>
+        <form onSubmit={(e) => { e.preventDefault(); void act(async () => { setNsPlan(await previewNameservers(f, ns.split(/[\s,]+/).filter(Boolean))); }); }}>
+          <label htmlFor="ns-box">Nameservers <span className="dns-field-hint">One hostname per line</span></label>
+          <textarea id="ns-box" className="text-input area" rows={3} value={ns} onChange={(e) => { setNs(e.target.value); setNsPlan(null); }} />
+          <div className="row-actions"><button type="submit" className="btn secondary" disabled={busy || !!req}>Review nameserver request</button></div>
         </form>
-        {req?.type === "domain.nameservers.change" && (req.input as { kind?: string })?.kind === "nameservers" && <StepUp key="ns" req={req} onDone={() => { setReq(null); void load(); }} />}
+        {nsPlan && <div role="status" className="notice"><p>Current: {nsPlan.before.join(", ")}. Requested: {nsPlan.nameservers.join(", ")}.</p><p>Execution is blocked until destination authorization, complete inventory and DNSSEC transition checks are supported. No nameservers or source records changed.</p></div>}
       </div>
 
       <div className="section" role="group" aria-labelledby="ds-h">
         <h3 id="ds-h">DNSSEC</h3>
-        {!ds ? <p>Loading.</p> : !ds.supported ? <p>DNSSEC is not supported for this extension.</p> : (
+        {readErrors.ds ? <p role="alert">DNSSEC status could not be refreshed. {readErrors.ds} <button type="button" className="btn secondary small" onClick={() => void load()}>Retry DNSSEC</button></p> : !ds ? <p role="status">Loading DNSSEC status.</p> : !ds.supported ? <p>DNSSEC is not supported for this extension.</p> : (
           <>
             <p className="notice">{ds.note}</p>
             {ds.records.length === 0 ? <p>No DNSSEC records are set.</p> : (
               <ul className="plain">{ds.records.map((r) => (
-                <li key={`${r.keyTag}${r.digest}`}><span>{r.managed ? "Signed by our nameservers: " : ""}Key tag {r.keyTag}, algorithm {algorithmName(r.algorithm)}, digest type {r.digestType}, <code>{r.digest.slice(0, 16)}…</code> </span>
-                  <button type="button" className="btn secondary small" aria-label={`Remove the DNSSEC record with key tag ${r.keyTag}`} onClick={() => dsChange({ kind: "ds_remove", ds: { keyTag: r.keyTag, algorithm: r.algorithm, digestType: r.digestType, digest: r.digest } }, r.managed ? "DNSSEC is being turned off. The registry drops the record within a day." : "DNSSEC record removed.")}>{r.managed ? "Turn DNSSEC off" : "Remove"}</button></li>
+                <li key={`${r.keyTag}${r.digest}`}><span>{r.managed ? "Registrar-managed key: " : ""}Key tag {r.keyTag}, algorithm {algorithmName(r.algorithm)}, digest type {r.digestType}, <code>{r.digest.slice(0, 16)}…</code> </span>
+                  <button type="button" className="btn secondary small" disabled={!!req || busy || ds.changes_supported !== true || ds.remove_supported !== true} aria-label={`Remove the DNSSEC record with key tag ${r.keyTag}`} onClick={() => dsChange({ kind: "ds_remove", ds: { keyTag: r.keyTag, algorithm: r.algorithm, digestType: r.digestType, digest: r.digest } }, r.managed ? "DNSSEC is being turned off. The registry drops the record within a day." : "DNSSEC record removed.")}>{r.managed ? "Turn DNSSEC off" : "Remove"}</button></li>
               ))}</ul>
             )}
             {canAddKey && keyInput === "dnskey" && (
@@ -251,6 +258,14 @@ export function DnsTab({ d, sec, reloadAll }: { d: DomainDetail; sec: Security |
         )}
         {req?.type === "domain.nameservers.change" && (req.input as { kind?: string })?.kind !== "nameservers" && <StepUp key="ds" req={req} onDone={() => { setReq(null); void load(); }} />}
       </div>
+
+      {req?.type === "dns.sensitive.approve" && <section className="section dns-review" aria-label="Review exact DNS change">
+        <h3>Review exact changes</h3>
+        <p>Exact text is quoted; invisible characters are shown as escapes. Values are not shortened or normalized.</p>
+        {approvalDiff && ([['Add', approvalDiff.added], ['Remove', approvalDiff.removed]] as const).map(([label, records]) => <div key={label}><h4>{label}</h4>{records.length ? <ul className="plain">{records.map((r, i) => <li key={i}><code style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{dnsReviewText(r.type)} {dnsReviewText(r.name || '@')} {dnsReviewText(r.value)}</code>{r.priority !== undefined && <span> · Priority {r.priority}</span>}{r.weight !== undefined && <span> · Weight {r.weight}</span>}{r.port !== undefined && <span> · Port {r.port}</span>} · TTL {r.ttl === undefined ? 'not recorded' : `${r.ttl} seconds`}</li>)}</ul> : <p>None.</p>}</div>)}
+        <p>Approval covers exactly these values and TTL against the reviewed state. Cached answers or mail already lost cannot be undone by rollback.</p>
+        <StepUp req={req} onDone={() => { setReq(null); setApprovalDiff(null); void load(); }} />
+      </section>}
 
       <ContactSection f={f} sec={sec} reloadAll={reloadAll} />
     </div>

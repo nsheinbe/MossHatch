@@ -397,8 +397,13 @@ export class MockRegistrarPort implements RegistrarPort {
     this.calls.setNameservers++; this.tick();
     const dom = this.own(fqdn);
     if (nameservers.length < 2 || nameservers.length > 13 || nameservers.some((n) => !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(n))) throw rejected("bad_nameservers", "2 to 13 valid hostnames are required");
-    if (dom.ds.length > 0 && !opts.targetSigned) throw rejected("dnssec_would_break", "DS records exist and the target DNS is not signed");
+    void opts;
+    if (dom.ds.length > 0) throw rejected("dnssec_would_break", "DNSSEC transition has not been verified");
     dom.nameservers = nameservers.map((n) => n.toLowerCase()); this.afterWrite(dom.fqdn);
+  }
+  async getDnssecCapabilities(fqdn: string) {
+    const supported = this.tldOf(fqdn) !== "io";
+    return { supported, addMode: supported ? "ds" as const : "unsupported" as const, removeSupported: supported, managedSigning: false };
   }
   async issueAuthCode(fqdn: string): Promise<{ code: string; issuedAt: Date }> {
     this.calls.issueAuthCode++; this.tick();
@@ -432,19 +437,21 @@ export class MockRegistrarPort implements RegistrarPort {
     if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
     if (this.consumeFault("dnsWriteIgnored", dom.fqdn)) return;
     if (this.dnsOverwrite === "whole_zone") dom.zone = new Map();
-    for (const t of DNS_RECORD_TYPES) { const list = payload[t]; if (list) dom.zone.set(t, list.map((r) => ({ ...r }))); }
+    for (const [t, list] of Object.entries(payload)) if (list) dom.zone.set(t, list.map((r) => ({ ...r })));
   }
-  async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+  async replaceZone(fqdn: string, records: DnsRecord[], opts?: { expectedHash?: string }): Promise<{ hash: string; records: DnsRecord[] }> {
     this.calls.replaceZone++; this.tick();
-    validateZone(records);
     const dom = this.own(fqdn);
     if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
+    const live = canonicalZone([...dom.zone.values()].flat());
+    if (opts?.expectedHash !== undefined && opts.expectedHash !== zoneHash(live)) throw rejected("dns_state_changed", "DNS state changed");
+    validateZone(records, live);
     const want = canonicalZone(records);
     const payload: Partial<Record<DnsRecordType, DnsRecord[]>> = {};
-    for (const t of DNS_RECORD_TYPES) payload[t] = want.filter((r) => r.type === t); // every type, empty included: correct under either overwrite mode
+    for (const t of new Set([...DNS_RECORD_TYPES, ...live.map((r) => r.type)])) payload[t] = want.filter((r) => r.type === t); // every type, empty included: correct under either overwrite mode
     this.rawSetZone(dom.fqdn, payload);
     const back = canonicalZone([...dom.zone.values()].flat());
-    if (zoneHash(back) !== zoneHash(want)) throw rejected("dns_readback_mismatch", "the zone read back does not match what was written");
+    if (zoneHash(back) !== zoneHash(want)) throw new RegistrarError("unknown", "the zone read back does not match what was written", { retryable: false, outcomeUnknown: true, code: "dns_readback_mismatch" });
     return { hash: zoneHash(back), records: back };
   }
 

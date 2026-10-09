@@ -75,8 +75,8 @@ test("keyboard: tab to a chip, open the sheet, escape closes it", async ({ page 
   await expect(page.getByRole("region", { name: /^Hatch / })).toBeHidden();
 });
 
-test("no JavaScript: same page, static prices readable", async ({ browser }) => {
-  const ctx = await browser.newContext({ javaScriptEnabled: false, baseURL: "http://127.0.0.1:4173" });
+test("no JavaScript: same page, static prices readable", async ({ browser, baseURL }) => {
+  const ctx = await browser.newContext({ javaScriptEnabled: false, baseURL });
   const page = await ctx.newPage();
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Every name hatches." })).toBeVisible();
@@ -85,8 +85,8 @@ test("no JavaScript: same page, static prices readable", async ({ browser }) => 
   await ctx.close();
 });
 
-test("no WebGL2: in-brand fallback with a working plain search, CSP clean", async ({ browser }) => {
-  const ctx = await browser.newContext({ baseURL: "http://127.0.0.1:4173" });
+test("no WebGL2: in-brand fallback with a working plain search, CSP clean", async ({ browser, baseURL }) => {
+  const ctx = await browser.newContext({ baseURL });
   await ctx.addInitScript(() => {
     const orig = HTMLCanvasElement.prototype.getContext;
     // @ts-expect-error test shim
@@ -117,7 +117,7 @@ test("persisted state is limited to calm, sound and rehideSeconds", async ({ pag
   expect(await page.evaluate(() => Object.keys(localStorage).length)).toBeLessThanOrEqual(1);
 });
 
-test("C-53 canary: a search sends one same-origin POST to /api/lookup with the name in its body, never in any URL, and nothing else anywhere", async ({ page }) => {
+test("C-53 canary: a search sends one same-origin POST to /api/lookup with the name in its body, never in any URL, and nothing else anywhere", async ({ page, baseURL }) => {
   const reqs: { url: URL; method: string; body: string | null }[] = [];
   page.on("request", (r) => { reqs.push({ url: new URL(r.url()), method: r.method(), body: r.postData() }); });
   await page.goto("/");
@@ -132,7 +132,7 @@ test("C-53 canary: a search sends one same-origin POST to /api/lookup with the n
   expect(after.filter((r) => /canary/i.test(r.url.href))).toEqual([]);
   const named = after.filter((r) => /canary/i.test(r.body ?? ""));
   expect(named.map((r) => [r.method, r.url.pathname + r.url.search, JSON.parse(r.body!)])).toEqual([["POST", "/api/lookup", { name: "secretcanaryname" }]]);
-  expect(after.every((r) => r.url.origin === "http://127.0.0.1:4173")).toBe(true);
+  expect(after.every((r) => r.url.origin === new URL(baseURL!).origin)).toBe(true);
   expect(after.every((r) => r.method === "GET" || r.url.pathname === "/api/lookup")).toBe(true);
   await expect(page.getByRole("link", { name: "Our commitments" })).toBeVisible();
 });

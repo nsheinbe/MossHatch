@@ -51,6 +51,19 @@ test("visitors: token with passkey, agent proposal, approval card, OAuth consent
   // The Visitors view, and a token created with the passkey (shown once).
   await openVisitors(page);
   await clean(page, "visitors");
+  // UI-only name-list fixture: no domain is registered and no grant using this fixture is submitted.
+  const nameserverChoice = page.getByRole("checkbox", { name: /Suggest nameserver changes/ });
+  await expect(nameserverChoice).toBeDisabled();
+  await page.route("**/api/v1/domains", (route) => route.fulfill({ json: { domains: [{ fqdn: "scope-choice.example" }], eggs: [] } }), { times: 1 });
+  await page.getByRole("radio", { name: "Only one name", exact: true }).check();
+  await expect(page.getByRole("combobox", { name: "The name", exact: true })).toHaveValue("scope-choice.example", { timeout: 20_000 });
+  await expect(nameserverChoice).toBeEnabled();
+  await nameserverChoice.check();
+  await expect(page.getByText(/It will hold:/)).toContainText("Suggest nameserver changes on scope-choice.example");
+  await page.getByRole("radio", { name: "All my names", exact: true }).check();
+  await expect(nameserverChoice).toBeDisabled();
+  await expect(nameserverChoice).not.toBeChecked();
+  await expect(page.getByText(/It will hold:/)).not.toContainText("Suggest nameserver changes");
   await page.getByLabel("Name", { exact: true }).fill("Build bot");
   await page.getByRole("checkbox", { name: /Suggest names to buy/ }).check();
   await page.getByLabel("Most it can ask you to spend, in dollars").fill("100");
@@ -98,9 +111,12 @@ test("visitors: token with passkey, agent proposal, approval card, OAuth consent
   let back = "";
   await page.route("https://client.example/**", async (route) => { back = route.request().url(); await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Client</title><h1>Connected</h1>" }); });
   await page.goto(`${baseURL}/api/v1/oauth/authorize?` + new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: "https://client.example/cb", code_challenge: challenge, code_challenge_method: "S256", state: "e2e-state" }));
+  await page.waitForSelector("html[data-booted='1']");
   await expect(page.getByRole("region", { name: "Connect an app to your account" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("client.example")).toBeVisible();
+  await expect(page.getByText("client.example")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("E2E client")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Suggest nameserver changes/ })).toBeDisabled();
+  await expect(page.getByLabel("How long it stays connected")).toHaveValue("90");
   await clean(page, "oauth consent");
   await page.getByRole("button", { name: "Allow with passkey" }).click();
   await page.getByRole("button", { name: "Approve with passkey" }).click();
