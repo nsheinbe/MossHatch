@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import {
-  DNS_RECORD_TYPES, RegistrarError,
-  type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
+  RegistrarError,
+  type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult, type RegistrarCapabilities, type RegistrarPort,
   type TransferAway, type UpstreamOrder, type TransferInCheck, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
-import { canonicalZone, validateZone, zoneHash } from "../dns.ts";
+import { canonicalZone, validateZone, withDnsTtl, zoneHash } from "../dns.ts";
 import { readSwitch, VelocityFuse, type AdapterAlert, type FuseClass, type KillSwitch } from "../opensrs/guards.ts";
 import { checkOperation, type OpName, type OpRequest } from "./allowlist.ts";
 import { dsFromDnskey, dsMatchesKey, type Dnskey } from "./dnssec.ts";
@@ -68,7 +68,7 @@ const rejected = (code: string) => err("rejected", code, {}, "registrar rejected
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 type JObj = { [k: string]: Json };
 interface Reply { data: JObj; code: number; warnings: number[]; secret?: string }
-interface CallOpts { fuse?: FuseClass; secretOut?: boolean }
+interface CallOpts { fuse?: FuseClass; secretOut?: boolean; onSend?: () => void }
 interface WireRecord { name: string; type: string; value: string; prio?: number; ttl: number }
 
 /**
@@ -149,6 +149,7 @@ export class OpenproviderAdapter implements RegistrarPort {
       const token = await this.bearer();
       let res;
       try {
+        o.onSend?.();
         res = await this.cfg.transport.request({ method: rule.method, url, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, ...(body !== undefined ? { body } : {}), timeoutMs: this.cfg.timeoutMs ?? 30_000 });
       } catch {
         // Sent, answer not seen. For a write the outcome is unknown: the caller reconciles by reading, never resends. Observed 2026-09-30: a
@@ -456,11 +457,16 @@ export class OpenproviderAdapter implements RegistrarPort {
     if (ns.length < 2 || ns.length > 13 || new Set(ns).size !== ns.length || ns.some((n) => !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(n))) throw rejected("bad_nameservers");
     // Openprovider DNS signs every zone it hosts (observed: a new domain has a read-only DNSKEY and dnssec=signedDelegation), and the key stays at
     // the registry when the nameservers change (observed). Moving to unsigned DNS with a DS present would stop the name resolving.
-    const toOwnDns = ns.every((n) => OP_NAMESERVERS.includes(n));
-    if (!toOwnDns && !opts.targetSigned && (await this.getDs(d)).length > 0) throw rejected("dnssec_would_break");
+    void opts; // A boolean supplied by a client is never DNSKEY/RRSIG or parent DS evidence.
+    if ((await this.getDs(d)).length > 0) throw rejected("dnssec_would_break");
     const id = await this.idOf(d);
     // Observed: the sandbox registry refuses hosts it does not know (code 399, "Parent domain does not exist for host").
     await this.call("UPDATE_DOMAIN", { params: { id }, body: { name_servers: ns.map((name, i) => ({ name, seq_nr: i + 1 })) } }, { fuse: "ns_change" });
+  }
+
+  async getDnssecCapabilities(fqdn: string) {
+    this.split(fqdn);
+    return { supported: true, addMode: "dnskey" as const, removeSupported: false, managedSigning: true };
   }
 
   /**
@@ -486,94 +492,122 @@ export class OpenproviderAdapter implements RegistrarPort {
     const n = name.trim().toLowerCase().replace(/\.$/, "");
     return n === zone ? "" : n.endsWith(`.${zone}`) ? n.slice(0, -zone.length - 1) : n;
   }
-  /** Observed: TXT values come back wrapped in double quotes; a 300-character value came back as one quoted string. Multi-string join is UNVERIFIED. */
+  /** Only the observed single-string representation is decoded. Ambiguous multi-string/escape forms fail closed. */
   private unquoteTxt(v: string): string {
-    const segs = [...v.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]!.replace(/\\(["\\])/g, "$1"));
-    return segs.length ? segs.join("") : v;
+    if (!v.includes('"') && !v.includes("\\")) return v;
+    if (!/^"(?:[^"\\]|\\["\\])*"$/.test(v)) throw rejected("dns_fidelity_unavailable");
+    return v.slice(1, -1).replace(/\\(["\\])/g, "$1");
   }
-  private fromWire(w: WireRecord, zone: string): DnsRecord | null {
+  private fromWire(w: WireRecord, zone: string): DnsRecord {
     const type = w.type.toUpperCase();
-    if (!(DNS_RECORD_TYPES as readonly string[]).includes(type)) return null;
     const name = this.relName(w.name, zone);
-    if (type === "TXT") return { type: "TXT", name, value: this.unquoteTxt(w.value) };
+    if (type === "TXT") return { type, name, value: this.unquoteTxt(w.value), ttl: w.ttl };
     if (type === "SRV") {
       // Observed: SRV value is "weight port target" with the priority in `prio`.
-      const [weight, port, target] = w.value.trim().split(/\s+/);
-      return { type: "SRV", name, value: target ?? "", priority: w.prio ?? 0, weight: Number(weight), port: Number(port) };
+      const parts = w.value.trim().split(/\s+/);
+      if (parts.length !== 3 || !parts[0] || !parts[1] || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1]) || w.prio === undefined) throw rejected("dns_fidelity_unavailable");
+      return { type, name, value: parts[2]!, priority: w.prio, weight: Number(parts[0]), port: Number(parts[1]), ttl: w.ttl };
     }
-    const r: DnsRecord = { type: type as DnsRecordType, name, value: w.value };
-    if (type === "MX") r.priority = w.prio ?? 0;
+    const r: DnsRecord = { type, name, value: w.value, ttl: w.ttl };
+    if (w.prio !== undefined) r.priority = w.prio;
+    if (type === "MX" && w.prio === undefined) throw rejected("dns_fidelity_unavailable");
     return r;
   }
   private toWire(r: DnsRecord): WireRecord {
-    if (r.type === "SRV") return { name: r.name, type: "SRV", value: `${r.weight ?? 0} ${r.port ?? 0} ${r.value}`, prio: r.priority ?? 0, ttl: DNS_TTL };
-    const w: WireRecord = { name: r.name, type: r.type, value: r.value, ttl: DNS_TTL };
-    if (r.type === "MX") w.prio = r.priority ?? 0;
+    if (r.type === "SRV") return { name: r.name, type: "SRV", value: `${r.weight ?? 0} ${r.port ?? 0} ${r.value}`, prio: r.priority ?? 0, ttl: r.ttl ?? DNS_TTL };
+    const w: WireRecord = { name: r.name, type: r.type, value: r.value, ttl: r.ttl ?? DNS_TTL };
+    if (r.priority !== undefined) w.prio = r.priority;
     return w;
   }
   private async zoneRecords(d: string): Promise<WireRecord[] | null> {
     const out: WireRecord[] = [];
+    const seen = new Set<string>();
+    let expectedTotal: number | undefined;
     for (let offset = 0; offset < 5000; offset += 500) {
       let r: Reply;
       try { r = await this.call("LIST_ZONE_RECORDS", { params: { name: d }, query: { limit: "500", offset: String(offset) } }); }
-      catch (e) { if (e instanceof RegistrarError && e.code === "872") return null; throw e; }
-      const rows = arr(r.data.results).flatMap((x) => { const o = obj(x); if (!o) return []; const w: WireRecord = { name: str(o.name) ?? "", type: str(o.type) ?? "", value: str(o.value) ?? "", ttl: num(o.ttl) ?? DNS_TTL }; const p = num(o.prio); if (p !== undefined) w.prio = p; return [w]; });
+      catch (e) { if (e instanceof RegistrarError && e.code === "872" && offset === 0) return null; throw e; }
+      const total = num(r.data.total);
+      if (!Array.isArray(r.data.results) || !Number.isSafeInteger(total) || total! < 0 || total! > 5000 || (expectedTotal !== undefined && expectedTotal !== total)) throw rejected("dns_inventory_incomplete");
+      expectedTotal = total;
+      const rows = r.data.results.map((x) => {
+        const o = obj(x);
+        // Unknown response fields may carry record semantics. Do not silently discard them.
+        // ip/id/timestamps are response metadata, absent from the official zoneRecord mutation shape (OpenAPI, checked 2026-10-09).
+        if (!o || Object.keys(o).some((k) => !["name", "type", "value", "ttl", "prio", "ip", "id", "creation_date", "modification_date"].includes(k))) throw rejected("dns_fidelity_unavailable");
+        const name = str(o.name), type = str(o.type), value = str(o.value), ttl = num(o.ttl), prio = num(o.prio);
+        if (name === undefined || /[\x00-\x20\x7f]/.test(name) || !type || !/^[A-Za-z][A-Za-z0-9-]*$/.test(type) || value === undefined || !Number.isInteger(ttl) || ttl! < 0 || ttl! > 2147483647 || (o.prio !== undefined && (!Number.isInteger(prio) || prio! < 0 || prio! > 65535))) throw rejected("dns_fidelity_unavailable");
+        const w: WireRecord = { name, type: type.toUpperCase(), value, ttl: ttl! };
+        if (prio !== undefined) w.prio = prio;
+        return w;
+      });
+      for (const row of rows) {
+        const identity = JSON.stringify([row.name, row.type, row.value, row.ttl, row.prio ?? null]);
+        if (seen.has(identity)) throw rejected("dns_inventory_incomplete");
+        seen.add(identity);
+      }
       out.push(...rows);
-      if (rows.length < 500 || out.length >= (num(r.data.total) ?? 0)) break;
+      if (out.length > total! || (!rows.length && out.length !== total)) throw rejected("dns_inventory_incomplete");
+      if (out.length === total) return out;
+      if (rows.length !== 500) throw rejected("dns_inventory_incomplete");
     }
-    return out;
+    throw rejected("dns_inventory_incomplete");
   }
-  /** Hosted means every nameserver of the domain is Openprovider's and the zone exists. SOA and NS are the provider's and never shown. */
+  /** Registry delegation is separate. Only provider-generated apex SOA/NS are excluded; child NS remains in the inventory. */
   private async zoneState(d: string): Promise<{ hosted: boolean; raw: WireRecord[] }> {
     const dom = await this.detail(d);
     if (!dom) throw rejected("not_in_account");
     const ns = arr(dom.name_servers).map((n) => (str(obj(n)?.name) ?? "").toLowerCase());
     if (!ns.length || !ns.every((n) => OP_NAMESERVERS.includes(n))) return { hosted: false, raw: [] };
     const raw = await this.zoneRecords(d);
-    return raw ? { hosted: true, raw: raw.filter((w) => w.type !== "SOA" && w.type !== "NS") } : { hosted: false, raw: [] };
+    return raw ? { hosted: true, raw: raw.filter((w) => !(this.relName(w.name, d) === "" && (w.type === "SOA" || w.type === "NS"))) } : { hosted: false, raw: [] };
   }
   async getDns(fqdn: string): Promise<DnsZone> {
     const { d } = this.split(fqdn);
     const z = await this.zoneState(d);
     if (!z.hosted) return { hosted: false, records: [] };
-    return { hosted: true, records: canonicalZone(z.raw.flatMap((w) => { const r = this.fromWire(w, d); return r ? [r] : []; })) };
+    return { hosted: true, records: canonicalZone(z.raw.map((w) => this.fromWire(w, d))), defaultTtl: DNS_TTL };
   }
   /**
-   * Replace-all over per-record operations. The sandbox (2026-09-30) showed why every step is separate and read back:
-   *  - `add` and `remove` in one request: the add applied and the remove was silently dropped;
-   *  - a `remove` must match the stored form exactly (relative name, TXT value with its quotes, MX/SRV `prio`); otherwise it answers code 0 and
-   *    removes nothing, or 18002 when nothing in the batch matched;
-   *  - `replace` swaps the whole zone at once (observed), but it is not used: the brief asks for per-record operations, and a half-applied remove
-   *    or add is caught by the read-back like any other mismatch.
-   * Records of types the port cannot express (CAA and so on) are removed too: this is a replace of the whole zone except SOA and NS.
+   * Separate per-record operations retain the observed provider contract: combined add/remove silently dropped removals in the sandbox.
+   * Unknown types remain visible and unchanged; their modification is refused. Every stored removal carries its original TTL and RDATA.
+   * After the first accepted mutation, ANY failure is a possibly partial outcome. The durable caller reconciles; this method never retries
+   * or restores old data. expectedHash narrows the race with out-of-band writes, but upstream has no compare-and-swap guarantee.
    */
-  async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+  async replaceZone(fqdn: string, records: DnsRecord[], opts?: { expectedHash?: string }): Promise<{ hash: string; records: DnsRecord[] }> {
     const { d } = this.split(fqdn);
-    validateZone(records);
-    for (const r of records) {
+    const cur = await this.zoneState(d);
+    if (!cur.hosted) throw rejected("dns_not_hosted");
+    const live = canonicalZone(cur.raw.map((w) => this.fromWire(w, d)));
+    if (opts?.expectedHash !== undefined && opts.expectedHash !== zoneHash(live)) throw rejected("dns_state_changed");
+    const want = withDnsTtl(records, live, DNS_TTL);
+    validateZone(want, live);
+    for (const r of want) {
       if (r.type === "SRV" && (r.priority === undefined || r.weight === undefined || r.port === undefined)) throw rejected("srv_fields_required");
       if (r.type === "MX" && r.priority === undefined) throw rejected("mx_priority_required");
     }
-    const cur = await this.zoneState(d);
-    if (!cur.hosted) throw rejected("dns_not_hosted");
-    const want = canonicalZone(records);
     const key = (r: DnsRecord) => zoneHash([r]);
     const wantKeys = new Set(want.map(key));
     const haveKeys = new Set<string>();
     const remove: WireRecord[] = [];
     for (const w of cur.raw) {
-      const r = this.fromWire(w, d);
-      const k = r ? key(r) : null;
-      if (k && wantKeys.has(k) && !haveKeys.has(k)) { haveKeys.add(k); continue; }
-      remove.push({ name: this.relName(w.name, d), type: w.type, value: w.value, ttl: w.ttl, ...(w.prio !== undefined && (w.type === "MX" || w.type === "SRV") ? { prio: w.prio } : {}) });
+      const k = key(this.fromWire(w, d));
+      if (wantKeys.has(k)) { haveKeys.add(k); continue; }
+      remove.push({ ...w, name: this.relName(w.name, d) });
     }
     const add = want.filter((r) => !haveKeys.has(key(r))).map((r) => this.toWire(r));
     const recs = (list: WireRecord[]) => list.map((w) => ({ ...w }) as unknown as Json);
-    if (remove.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { remove: recs(remove) } } });
-    if (add.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { add: recs(add) } } });
-    const back = await this.getDns(d);
-    if (!back.hosted || zoneHash(back.records) !== zoneHash(want)) throw rejected("dns_readback_mismatch");
-    return { hash: zoneHash(back.records), records: back.records };
+    let mutated = false;
+    try {
+      if (remove.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { remove: recs(remove) } } }, { onSend: () => { mutated = true; } });
+      if (add.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { add: recs(add) } } }, { onSend: () => { mutated = true; } });
+      const back = await this.getDns(d);
+      if (!back.hosted || zoneHash(back.records) !== zoneHash(want)) throw err("unknown", "dns_readback_mismatch", { outcomeUnknown: mutated });
+      return { hash: zoneHash(back.records), records: back.records };
+    } catch (e) {
+      if (mutated) throw err("unknown", e instanceof RegistrarError ? e.code ?? "dns_partial_or_unknown" : "dns_partial_or_unknown", { outcomeUnknown: true });
+      throw e;
+    }
   }
 
   // ---- DNSSEC -----------------------------------------------------------------------------------------------------

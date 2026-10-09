@@ -3,7 +3,17 @@ import { RegistrarError, type DnsRecord } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
 import type { DnsOverwriteMode } from "@mosshatch/registrar/mock-port";
 import { classifyRecord } from "./classify.ts";
-import { call, makeDomain, makeKit, makePerson, poll, resetFuse, type Kit, type Person } from "./testkit.ts";
+import { call as rawCall, stepUp, makeDomain, makeKit, makePerson, poll, resetFuse, type Kit, type Person } from "./testkit.ts";
+
+// Existing write/rollback fixtures now explicitly complete any required owner ceremony.
+// The separate security suite tests cancellation, missing approval, stale state and replay.
+async function call(k: Kit, p: Person, method: string, path: string, body?: unknown) {
+  const first = await rawCall(k, p, method, path, body);
+  if (first.json?.error?.code !== "step_up_required" || first.json.error.type !== "dns.sensitive.approve") return first;
+  const e = first.json.error;
+  const action = await stepUp(k, p, e.type, e.target_id, e.user_input);
+  return rawCall(k, p, method, path, body, action);
+}
 
 describe("ST-127: record classification", () => {
   const T = (name: string, value = "x", type: string = "TXT") => classifyRecord({ type: type as DnsRecord["type"], name, value }, "example.com");
@@ -28,7 +38,7 @@ describe("ST-127: record classification", () => {
     for (const [name, type, value] of sensitive) expect(T(name, value, type).sensitive, `${type} ${name}`).toBe(true);
   });
   it("ordinary records are not sensitive", () => {
-    for (const [name, type, value] of [["blog", "CNAME", "x.example.net"], ["app", "A", "192.0.2.1"], ["api.eu", "AAAA", "2001:db8::1"], ["status", "TXT", "hello world"], ["shop.eu", "A", "192.0.2.9"]] as const)
+    for (const [name, type, value] of [["blog", "CNAME", "x.example.net"], ["app", "A", "192.0.2.1"], ["stage.eu", "AAAA", "2001:db8::1"], ["shop.eu", "A", "192.0.2.9"]] as const)
       expect(T(name, value, type).sensitive, `${type} ${name}`).toBe(false);
   });
   it("the reasons say why", () => {
@@ -76,7 +86,7 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
       expect(k.app.email.sent.filter((m) => m.kind === "dns.sensitive_changed")).toHaveLength(0);
     });
 
-    it("a human-session change to a sensitive record is allowed, emails every address with a freeze link, and can be rolled back from the snapshot", async () => {
+    it("a human-session change to a sensitive record requires its owner passkey, emails every address with a freeze link, and can be rolled back from the snapshot", async () => {
       const d = await fresh();
       const before = await live(d.fqdn);
       const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "TXT", name: "sel._domainkey", value: "k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA" }, { type: "MX", name: "", value: "evil.example.org", priority: 5 }] });
@@ -87,7 +97,8 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
         const m = k.app.email.to(to).filter((x) => x.kind === "dns.sensitive_changed");
         expect(m, to).toHaveLength(1);
         expect(/email-actions\/[A-Za-z0-9_-]{43}/.test(m[0]!.text)).toBe(true);
-        expect(m[0]!.text).toContain("roll the change back");
+        expect(m[0]!.text).toContain("An uncertain outcome must be reconciled before another change or rollback");
+        expect(m[0]!.text).toContain("cannot undo cached answers or lost mail");
         expect(m[0]!.text).not.toContain("evil.example.org");      // names and types, never values
       }
       expect((await k.app.db.owner.query("select detail from audit_log where action = 'dns.sensitive_change' and resource_id = $1", [d.id])).rows).toHaveLength(1);
@@ -145,7 +156,7 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
       const blog = read.json.records.find((r: { name: string }) => r.name === "blog");
       expect(read.json.records.find((r: { name: string; type: string }) => r.type === "MX").sensitive).toBe(true);
       expect(read.json.records.find((r: { name: string }) => r.name === "@" && r.name).name).toBe("@");
-      expect(note.sensitive).toBe(false);
+      expect(note.sensitive).toBe(true);
       const patch = await call(k, alice, "PATCH", `/api/v1/domains/${d.fqdn}/dns/${note.id}`, { value: "changed" });
       expect(patch.status, patch.text).toBe(200);
       expect((await live(d.fqdn)).find((r) => r.name === "note")!.value).toBe("changed");
@@ -174,7 +185,7 @@ for (const mode of ["whole_zone", "per_type"] as DnsOverwriteMode[]) {
       const before = await live(d.fqdn);
       k.registrar.faults.set("dnsWriteIgnored", { times: 1, fqdn: d.fqdn });
       const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "lost", value: "192.0.2.99" }] });
-      expect(res.status).toBe(502); expect(res.json.error.code).toBe("dns_write_failed");
+      expect(res.status).toBe(502); expect(res.json.error.code).toBe("outcome_unknown");
       expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(before));
     });
 

@@ -21,14 +21,20 @@ export function StepUp({ req, onDone }: { req: StepUpRequest; onDone: () => void
   const [msg, setMsg] = useState<{ req: StepUpRequest; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const running = useRef<object | null>(null);
+  const generation = useRef(0);
+  const latest = useRef(req);
+  latest.current = req;
   const head = useRef<HTMLHeadingElement>(null);
   const say = (r: StepUpRequest, e: unknown) => setMsg({ req: r, text: (r.explain ?? explainDomain)(e) });
   useEffect(() => {
     let live = true;
-    setPrepared(null); setMsg(null);
+    // A replacement request owns a fresh pending state; an older prompt cannot leave it disabled.
+    running.current = null;
+    setBusy(false); setPrepared(null); setMsg(null);
     prepareStepUp(req.type, req.target, req.input).then((p) => { if (live) setPrepared({ req, p }); })
       .catch((e) => { if (live) setMsg({ req, text: (req.explain ?? explainDomain)(e) }); });
-    return () => { live = false; };
+    return () => { live = false; generation.current++; };
   }, [req, attempt]);
   useEffect(() => { head.current?.focus(); }, []);
   // Only what was prepared for the request in hand counts, even for the one render before the effect above runs.
@@ -36,11 +42,21 @@ export function StepUp({ req, onDone }: { req: StepUpRequest; onDone: () => void
   const text = msg?.req === req ? msg.text : null;
   const approve = async () => {
     const cur = current;
-    if (!cur) return;
+    if (!cur || running.current) return;
+    const pending = {};
+    running.current = pending;
+    const started = generation.current;
+    const active = () => generation.current === started && latest.current === cur.req;
     setBusy(true); setMsg(null);
-    try { const id = await commitStepUp(cur.p); await cur.req.run(id); onDone(); }
-    catch (e) { say(cur.req, e); setPrepared(null); }
-    finally { setBusy(false); }
+    try {
+      const id = await commitStepUp(cur.p);
+      // Closing/replacing the view abandons this approval. A completed signature alone must not execute its action.
+      if (!active()) return;
+      await cur.req.run(id);
+      if (active()) onDone();
+    }
+    catch (e) { if (active()) { say(cur.req, e); setPrepared(null); } }
+    finally { if (running.current === pending) { running.current = null; if (active()) setBusy(false); } }
   };
   const again = () => { setMsg(null); setAttempt((n) => n + 1); head.current?.focus(); };
   return (

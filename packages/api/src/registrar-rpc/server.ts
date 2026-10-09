@@ -27,7 +27,9 @@ export class MemoryNonceStore implements NonceStore {
 
 const fqdn = z.string().min(3).max(253).regex(/^[A-Za-z0-9.-]+$/);
 const registrant = z.object({ name: z.string().min(1).max(200), email: z.string().min(3).max(320), phone: z.string().min(3).max(40), street: z.string().min(1).max(200), city: z.string().min(1).max(100), region: z.string().min(1).max(100), postalCode: z.string().min(1).max(20), country: z.string().length(2) }).strict();
-const dnsRecord = z.object({ type: z.enum(["A", "AAAA", "CNAME", "MX", "SRV", "TXT"]), name: z.string().max(253), value: z.string().min(1).max(1024), priority: z.number().int().min(0).max(65535).optional(), weight: z.number().int().min(0).max(65535).optional(), port: z.number().int().min(0).max(65535).optional() }).strict();
+// Opaque upstream types must survive this hop unchanged. The adapter permits only
+// unchanged opaque records and validates edits against its authoritative inventory.
+const dnsRecord = z.object({ type: z.string().regex(/^[A-Z][A-Z0-9]{0,15}$/), name: z.string().max(253), value: z.string().min(1).max(65535), ttl: z.number().int().min(0).max(2147483647).optional(), priority: z.number().int().min(0).max(65535).optional(), weight: z.number().int().min(0).max(65535).optional(), port: z.number().int().min(0).max(65535).optional() }).strict();
 const ds = z.object({ keyTag: z.number().int().min(0).max(65535), algorithm: z.number().int().min(0).max(255), digestType: z.number().int().min(0).max(255), digest: z.string().regex(/^[0-9a-fA-F]{20,128}$/) }).strict();
 const years = z.number().int().min(1).max(10);
 const tstatus = z.enum(["pending_admin", "pending_owner", "pending_registry", "completed", "cancelled"]);
@@ -53,8 +55,9 @@ export const RPC_COMMANDS = {
   issueAuthCode: cmd(z.tuple([fqdn]), (p, a) => p.issueAuthCode(a[0])),
   rerandomizeAuthCode: cmd(z.tuple([fqdn]), (p, a) => p.rerandomizeAuthCode(a[0])),
   getDns: cmd(z.tuple([fqdn]), (p, a) => p.getDns(a[0])),
-  replaceZone: cmd(z.tuple([fqdn, z.array(dnsRecord).max(500)]), (p, a) => p.replaceZone(a[0], a[1] as DnsRecord[])),
+  replaceZone: cmd(z.tuple([fqdn, z.array(dnsRecord).max(500), z.object({ expectedHash: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict().optional()]), (p, a) => p.replaceZone(a[0], a[1] as DnsRecord[], a[2])),
   getDs: cmd(z.tuple([fqdn]), (p, a) => p.getDs(a[0])),
+  getDnssecCapabilities: cmd(z.tuple([fqdn]), async (p, a) => p.getDnssecCapabilities?.(a[0]) ?? { supported: false, addMode: "unsupported", removeSupported: false, managedSigning: false }),
   addDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.addDs(a[0], a[1])),
   removeDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.removeDs(a[0], a[1])),
   updateContact: cmd(z.tuple([fqdn, registrant]), (p, a) => p.updateContact(a[0], a[1])),
@@ -128,7 +131,8 @@ export function createRegistrarRpc(opts: RegistrarRpcOptions): (req: RpcRequest)
       if (e instanceof RegistrarError) {
         const status = e.kind === "rejected" ? 422 : e.kind === "rate_limited" ? 429 : e.kind === "unknown" ? 502 : 503;
         // Codes only: the message is fixed text and never crosses the boundary.
-        return reply(status, { error: { code: e.code ?? "registrar_error", kind: e.kind, retryable: e.retryable, outcomeUnknown: e.outcomeUnknown } });
+        const code = e.code && /^[a-z][a-z0-9_]{0,79}$/.test(e.code) ? e.code : "registrar_error";
+        return reply(status, { error: { code, kind: e.kind, retryable: e.retryable, outcomeUnknown: e.outcomeUnknown } });
       }
       return reply(500, { error: { code: "internal" } });
     }

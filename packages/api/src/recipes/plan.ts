@@ -1,6 +1,6 @@
 import type { PoolClient } from "@mosshatch/db";
-import type { DnsRecord } from "@mosshatch/registrar/port";
-import { canonicalZone, normalizeRecord, validateZone, zoneHash } from "@mosshatch/registrar/dns";
+import type { DnsRecord, DnsZone } from "@mosshatch/registrar/port";
+import { canonicalZone, normalizeRecord, validateZone, withDnsTtl, zoneHash } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import type { Principal } from "../http/types.ts";
@@ -44,11 +44,12 @@ export async function loadConnections(c: PoolClient, userId: string, domainId: s
   return new Map(r.rows.map((x) => [x.service as Service, { id: x.id, service: x.service, externalRef: x.external_ref, facts: x.provider_facts ?? {}, checkedAt: x.checked_at ? new Date(x.checked_at).toISOString() : null }]));
 }
 
+async function liveZoneState(ctx: AppContext, d: Pick<DomainRow, "fqdn_ascii">): Promise<DnsZone> {
+  try { return await registrarOf(ctx).getDns(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); }
+}
 export async function liveZoneOrNull(ctx: AppContext, d: Pick<DomainRow, "fqdn_ascii">): Promise<DnsRecord[] | null> {
-  try {
-    const z = await registrarOf(ctx).getDns(d.fqdn_ascii);
-    return z.hosted ? canonicalZone(z.records) : null;
-  } catch (e) { throw mapRegistrarError(e); }
+  const zone = await liveZoneState(ctx, d);
+  return zone.hosted ? canonicalZone(zone.records) : null;
 }
 
 /** Compute the plan from current state. Pure given its inputs; called at plan time, at apply and again inside the job. */
@@ -56,17 +57,18 @@ export async function computePlan(ctx: AppContext, c: PoolClient, userId: string
   const parsed = recipe.input.safeParse(rawInput ?? {});
   if (!parsed.success) throw new HttpError(422, "invalid_input");
   const conns = await loadConnections(c, userId, d.id);
-  const live = recipe.touchesDns ? await liveZoneOrNull(ctx, d) : null;
+  const state = recipe.touchesDns ? await liveZoneState(ctx, d) : null;
+  const live = state?.hosted ? canonicalZone(state.records) : null;
   const parts = recipe.build({ fqdn: d.fqdn_ascii, domainId: d.id, live, conns }, parsed.data);
-  const add = canonicalZone(parts.dns.add), remove = canonicalZone(parts.dns.remove);
+  const add = withDnsTtl(parts.dns.add, live ?? [], state?.defaultTtl), remove = canonicalZone(parts.dns.remove);
   if (live && (add.length || remove.length)) {
     const rm = new Set(remove.map(keyOf));
     const desired = canonicalZone([...live.filter((r) => !rm.has(keyOf(r))), ...add]);
     checkShape(desired);
-    validateZone(desired);
+    validateZone(desired, live);
   }
   const rmKeys = new Set(remove.map(keyOf));
-  const sensitive = sensitiveOf(d.fqdn_ascii, diffZones(live ?? [], canonicalZone([...(live ?? []).filter((r) => !rmKeys.has(keyOf(r))), ...add])));
+  const sensitive = sensitiveOf(d.fqdn_ascii, diffZones(live ?? [], canonicalZone([...(live ?? []).filter((r) => !rmKeys.has(keyOf(r))), ...add])), live ?? []);
   // Pending provider records are sensitive too (DKIM, MX): their approval is the provider step's approval.
   const envs = new Set<Env>();
   for (const v of parts.variables) for (const t of v.targets) envs.add(t.env);

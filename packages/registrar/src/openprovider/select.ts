@@ -60,8 +60,9 @@ export class RoutedRegistrar implements RegistrarPort {
   issueAuthCode: RegistrarPort["issueAuthCode"] = (f) => this.by(f).issueAuthCode(f);
   rerandomizeAuthCode: RegistrarPort["rerandomizeAuthCode"] = (f) => this.by(f).rerandomizeAuthCode(f);
   getDns: RegistrarPort["getDns"] = (f) => this.by(f).getDns(f);
-  replaceZone: RegistrarPort["replaceZone"] = (f, r) => this.by(f).replaceZone(f, r);
+  replaceZone: RegistrarPort["replaceZone"] = (f, r, o) => this.by(f).replaceZone(f, r, o);
   getDs: RegistrarPort["getDs"] = (f) => this.by(f).getDs(f);
+  getDnssecCapabilities: NonNullable<RegistrarPort["getDnssecCapabilities"]> = async (f) => this.by(f).getDnssecCapabilities?.(f) ?? { supported: false, addMode: "unsupported", removeSupported: false, managedSigning: false };
   addDs: RegistrarPort["addDs"] = (f, d) => this.by(f).addDs(f, d);
   removeDs: RegistrarPort["removeDs"] = (f, d) => this.by(f).removeDs(f, d);
   updateContact: RegistrarPort["updateContact"] = (f, r) => this.by(f).updateContact(f, r);

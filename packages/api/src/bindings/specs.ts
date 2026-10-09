@@ -50,11 +50,11 @@ export const agentTokenCreateSpec: ActionSpec<z.infer<typeof createInput>> = {
 };
 
 /** The binding as it stands, hashed: a change between prepare and commit (or a revoke) invalidates the assertion. */
-export async function bindingState(c: PoolClient, userId: string, bindingId: string) {
+export async function bindingState(c: PoolClient, userId: string, bindingId: string, lock = false) {
   if (!/^[0-9a-f-]{36}$/i.test(bindingId)) throw new HttpError(404, "not_found");
-  const b = (await c.query("select id, kind, name, scopes, spend_cap_minor, expires_at, family_expires_at, paused_at from bindings where id = $1 and user_id = $2 and revoked_at is null", [bindingId, userId])).rows[0];
+  const b = (await c.query(`select id, kind, name, scopes, spend_cap_minor, expires_at, family_expires_at, paused_at, oauth_client_id, audience from bindings where id = $1 and user_id = $2 and revoked_at is null${lock ? " for update" : ""}`, [bindingId, userId])).rows[0];
   if (!b) throw new HttpError(404, "not_found");
-  const before = { name: b.name as string, scopes: canonical(storedScopes(b.scopes)), spend_cap_minor: String(b.spend_cap_minor), expires_at: new Date(b.expires_at).toISOString(), paused: !!b.paused_at };
+  const before = { name: b.name as string, scopes: canonical(storedScopes(b.scopes)), spend_cap_minor: String(b.spend_cap_minor), expires_at: new Date(b.expires_at).toISOString(), grant_expires_at: new Date(b.family_expires_at ?? b.expires_at).toISOString(), paused: !!b.paused_at, kind: b.kind, client_id: b.oauth_client_id, audience: b.audience };
   return { row: b, before, beforeHash: hashOf(before).toString("hex") };
 }
 

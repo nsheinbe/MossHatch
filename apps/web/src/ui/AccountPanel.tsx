@@ -4,9 +4,12 @@ import { explain, revokeAll, signIn, signOut, signupStart, signupVerify, whoAmI 
 import { currentInvite, openWaitlist } from "../lib/waitlist";
 import { buildSiteMode } from "../lib/site";
 
-type Step = "choose" | "code" | "codes";
+type Step = "choose" | "code" | "codes" | "recover";
 // Download my data and Close my account: a lazy chunk (closure module routes), loaded only when asked for.
 const AccountData = lazy(() => import("./AccountData"));
+const Passkeys = lazy(() => import("./Passkeys"));
+const RecoverAccount = lazy(() => import("./Recovery").then((m) => ({ default: m.RecoverAccount })));
+const RecoveryNotice = lazy(() => import("./Recovery").then((m) => ({ default: m.RecoveryNotice })));
 
 /** Sign-up (emailed code, then a passkey), passkey sign-in, and the small account view. No passwords anywhere. */
 export function AccountPanel() {
@@ -21,6 +24,9 @@ export function AccountPanel() {
   // Invite-only rollout: without an invite, sign-up shows the waitlist instead (the server answers 403 invite_required).
   const [needInvite, setNeedInvite] = useState(() => (import.meta.env.VITE_INVITE_ONLY === "1" || buildSiteMode === "invite") && !currentInvite());
   const head = useRef<HTMLHeadingElement>(null);
+  const running = useRef(false);
+  const generation = useRef(0);
+  useEffect(() => { if (!accountOpen) { generation.current++; setCode(""); setCodes([]); setStep("choose"); } }, [accountOpen]);
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
     if (!accountOpen) return;
@@ -30,11 +36,15 @@ export function AccountPanel() {
   }, [accountOpen, set]);
   if (!accountOpen) return null;
 
-  const run = async (fn: () => Promise<void>) => {
+  const run = async (fn: (active: () => boolean) => Promise<void>) => {
+    if (running.current) return;
+    running.current = true;
+    const started = generation.current;
+    const active = () => generation.current === started;
     setBusy(true); setMsg(null);
-    try { await fn(); }
-    catch (e) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); } else setMsg(explain(e)); }
-    finally { setBusy(false); }
+    try { await fn(active); }
+    catch (e) { if (active()) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); } else setMsg(explain(e)); } }
+    finally { running.current = false; setBusy(false); }
   };
   const refresh = async () => set({ account: await whoAmI() });
 
@@ -45,6 +55,10 @@ export function AccountPanel() {
         <div className="body">
           <p>Signed in as <strong>{account.user.email}</strong>.</p>
           <p className="notice">{account.credentials.length} {account.credentials.length === 1 ? "passkey" : "passkeys"}. {account.credentials.length < 2 ? "Add a second one so losing a device does not lock you out." : ""}</p>
+          <Suspense fallback={<p role="status">Loading account security.</p>}>
+            {account.recovery && <RecoveryNotice recovery={account.recovery} onChanged={refresh} />}
+            <Passkeys account={account} onChanged={refresh} />
+          </Suspense>
           {msg && <p role="alert" className="notice">{msg}</p>}
           {data && <Suspense fallback={<p role="status">Loading.</p>}><AccountData mode={data} userId={account.user.id} onDone={() => setData(null)} onClosed={(m) => { setData(null); setMsg(m); set({ account: null }); }} /></Suspense>}
           <div className="row-actions">
@@ -66,6 +80,7 @@ export function AccountPanel() {
         <div className="head"><h2 ref={head} tabIndex={-1}>Save your recovery codes</h2></div>
         <div className="body">
           <p>These ten codes are the way back in if you lose every passkey. They are shown once.</p>
+          <p>Save them in your password manager or another secure place. Each works once, together with an emailed code. Never share them with an agent.</p>
           <ul className="codes">{codes.map((c) => <li key={c}><code>{c}</code></li>)}</ul>
           <div className="row-actions">
             <button type="button" className="btn primary" onClick={() => { setCodes([]); setStep("choose"); void refresh().then(() => set({ accountOpen: false })); }}>I saved them</button>
@@ -75,6 +90,8 @@ export function AccountPanel() {
     );
   }
 
+  if (step === "recover") return <Suspense fallback={<p role="status">Loading recovery.</p>}><RecoverAccount initialEmail={email} onBack={() => setStep("choose")} onRecovered={async () => { await refresh(); setStep("choose"); }} /></Suspense>;
+
   return (
     <aside className="panel side" role="region" aria-label="Sign in or create an account">
       <div className="head"><h2 ref={head} tabIndex={-1}>{step === "code" ? "Check your email" : "Sign in"}</h2></div>
@@ -83,7 +100,8 @@ export function AccountPanel() {
           <>
             <p>Sign in with a passkey. There are no passwords.</p>
             <div className="row-actions">
-              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); await refresh(); set({ accountOpen: false }); })}>Sign in with a passkey</button>
+              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async (active) => { await signIn(active); if (active()) { await refresh(); set({ accountOpen: false }); } })}>Sign in with a passkey</button>
+              <button type="button" className="btn secondary" disabled={busy} onClick={() => { setMsg(null); setStep("recover"); }}>Lost your passkey?</button>
             </div>
             <hr className="rule" />
             {needInvite ? (
@@ -92,7 +110,7 @@ export function AccountPanel() {
                 <div className="row-actions"><button type="button" className="btn secondary" onClick={() => openWaitlist({ email, source: "signup" })}>Join the waitlist</button></div>
               </div>
             ) : (
-            <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await signupStart(email); setStep("code"); }); }}>
+            <form onSubmit={(e) => { e.preventDefault(); void run(async (active) => { await signupStart(email); if (active()) setStep("code"); }); }}>
               <label htmlFor="acct-email">New here? Your email</label>
               <input id="acct-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="text-input" />
               <div className="row-actions"><button type="submit" className="btn secondary" disabled={busy}>Email me a code</button></div>
@@ -101,7 +119,7 @@ export function AccountPanel() {
           </>
         )}
         {step === "code" && (
-          <form onSubmit={(e) => { e.preventDefault(); void run(async () => { const r = await signupVerify(email, code.trim()); setCodes(r.recoveryCodes); setStep("codes"); }); }}>
+          <form onSubmit={(e) => { e.preventDefault(); void run(async (active) => { const r = await signupVerify(email, code.trim(), active); if (active()) { setCodes(r.recoveryCodes); setStep("codes"); } }); }}>
             <p>If that address can be used, a code is on its way. It lasts fifteen minutes.</p>
             <label htmlFor="acct-code">Eight-digit code</label>
             <input id="acct-code" inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value)} className="text-input" />

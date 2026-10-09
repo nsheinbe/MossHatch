@@ -2,7 +2,7 @@ import { buildSiteMode } from "./site";
 
 /** Thin client for /api/v1. Same-origin JSON only; the CSRF guard needs the X-MH-Client header on every mutation. */
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, public reason?: string) { super(code); this.name = "ApiError"; }
+  constructor(public status: number, public code: string, public reason?: string, public details?: Record<string, unknown>) { super(code); this.name = "ApiError"; }
 }
 
 export async function api<T = unknown>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
@@ -15,9 +15,9 @@ export async function api<T = unknown>(method: "GET" | "POST" | "DELETE", path: 
   let res: Response;
   try { res = await fetch(path, init); } catch { throw new ApiError(0, "network"); }
   const text = await res.text();
-  let json: { error?: { code?: string; reason?: string } } & Record<string, unknown> = {};
+  let json: { error?: { code?: string; reason?: string; [key: string]: unknown } } & Record<string, unknown> = {};
   try { json = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
-  if (!res.ok) throw new ApiError(res.status, json.error?.code ?? "error", json.error?.reason);
+  if (!res.ok) throw new ApiError(res.status, json.error?.code ?? "error", json.error?.reason, json.error);
   return json as T;
 }
 

@@ -58,14 +58,19 @@ describe("ST-131 review: an agent's direct DNS write whose outcome is unknown ke
     const audit = await dnsAudit(d.id);
     expect(audit.map((a) => a.action)).toEqual(["dns.write_intent", "dns.write_outcome_unknown"]);
     expect(audit.every((a) => a.actor_kind === "agent")).toBe(true);
-    const rb = await web(k, ada, "POST", `/api/v1/domains/${d.fqdn}/dns-snapshots/${s[0].id}/rollback`);
+    const path = `/api/v1/domains/${d.fqdn}/dns-snapshots/${s[0].id}/rollback`;
+    const prompt = await web(k, ada, "POST", path);
+    expect(prompt.status).toBe(403);
+    const consent = await stepUp(k, ada, prompt.json.error.type, prompt.json.error.target_id, prompt.json.error.user_input);
+    expect(consent.status).toBe(200);
+    const rb = await web(k, ada, "POST", path, {}, { [ACTION_HEADER]: consent.actionId });
     expect(rb.status, rb.text).toBe(200);
     expect(zoneHash(await live(d.fqdn))).toBe(zoneHash(before));
   });
 
   it("a normal write still applies once, with its snapshot marked applied and a dns.write row for the agent", async () => {
     const { d, t } = await setup();
-    const res = await bearer(k, t.token, "POST", `/api/v1/agent/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "api", value: "203.0.113.11" }] });
+    const res = await bearer(k, t.token, "POST", `/api/v1/agent/domains/${d.fqdn}/dns`, { records: [{ type: "A", name: "preview", value: "203.0.113.11" }] });
     expect(res.status, res.text).toBe(200);
     expect(res.json).toMatchObject({ applied: true, added: 1, removed: 0 });
     const s = await snaps(d.id);

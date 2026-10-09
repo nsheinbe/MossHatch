@@ -29,6 +29,7 @@ const s256 = (verifier: string) => crypto.createHash("sha256").update(verifier).
 
 async function issue(ctx: AppContext, c: PoolClient, o: { userId: string; bindingId: string; clientRef: string; familyEnd: Date }) {
   const now = ctx.clock.now();
+  if (o.familyEnd <= now) return null;
   const access = mintToken("cli");
   const refresh = mintToken("clr");
   const accessEnd = new Date(Math.min(now.getTime() + ACCESS_TTL_MS, o.familyEnd.getTime()));
@@ -46,19 +47,26 @@ async function codeGrant(ctx: AppContext, b: Record<string, unknown>): Promise<H
   if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return oauthError("invalid_grant");
   const row = (await withNoUser(ctx.runtime, (c) => c.query("select * from oauth_code_get($1)", [sha256(code)]))).rows[0];
   if (!row) return oauthError("invalid_grant");
-  const now = ctx.clock.now();
-  if (row.status === "exchanged") {
-    // A code presented twice was intercepted or replayed: the grant it produced is revoked (RFC 6749 4.1.2).
-    if (row.binding_id) await withUser(ctx.runtime, row.user_id, (c) => revokeBinding(ctx, c, row.user_id, row.binding_id, "oauth_code_reuse", { kind: "system" }));
-    return oauthError("invalid_grant");
-  }
-  if (row.status !== "approved" || !row.code_expires_at || new Date(row.code_expires_at) <= now) return oauthError("invalid_grant");
   const client = await resolveClient(ctx, clientId);
   // The code belongs to the client it was issued to, for the exact redirect URI, and only with the matching verifier.
   if (!client || client.id !== row.client_ref || row.redirect_uri !== redirectUri) return oauthError("invalid_grant");
   if (!safeEqual(Buffer.from(s256(verifier)), Buffer.from(row.code_challenge))) return oauthError("invalid_grant");
   if (resource !== undefined && resource !== (row.resource ?? mcpResource(ctx))) return oauthError("invalid_target");
+  if (row.status === "exchanged") {
+    // Only a replay proving the original client and PKCE verifier may revoke a grant. Knowing a code alone is insufficient.
+    if (row.binding_id) await withUser(ctx.runtime, row.user_id, (c) => revokeBinding(ctx, c, row.user_id, row.binding_id, "oauth_code_reuse", { kind: "system" }));
+    return oauthError("invalid_grant");
+  }
+  if (row.status !== "approved" || !row.code_expires_at || new Date(row.code_expires_at) <= ctx.clock.now()) return oauthError("invalid_grant");
   const out = await withUser(ctx.runtime, row.user_id, async (c) => {
+    // Recheck after the row lock: waiting behind another exchange must not extend a code's one-minute lifetime.
+    const current = (await c.query("select status, code_expires_at from oauth_authorizations where id = $1 for update", [row.id])).rows[0];
+    if (!current) return null;
+    if (current.status !== "approved") {
+      if (current.status === "exchanged" && row.binding_id) await revokeBinding(ctx, c, row.user_id, row.binding_id, "oauth_code_reuse", { kind: "system" });
+      return null;
+    }
+    if (!current.code_expires_at || new Date(current.code_expires_at) <= ctx.clock.now()) return null;
     const won = await c.query("update oauth_authorizations set status = 'exchanged' where id = $1 and status = 'approved' and code_hash = $2", [row.id, sha256(code)]);
     if (won.rowCount !== 1) {
       // Lost a race with another exchange of the same code: that is a second use too, so the grant it produced is revoked.
@@ -66,7 +74,7 @@ async function codeGrant(ctx: AppContext, b: Record<string, unknown>): Promise<H
       return null;
     }
     const bind = (await c.query("select id, family_expires_at, revoked_at from bindings where id = $1 and user_id = $2 for update", [row.binding_id, row.user_id])).rows[0];
-    if (!bind || bind.revoked_at || !bind.family_expires_at || new Date(bind.family_expires_at) <= now) return null;
+    if (!bind || bind.revoked_at || !bind.family_expires_at || new Date(bind.family_expires_at) <= ctx.clock.now()) return null;
     const t = await issue(ctx, c, { userId: row.user_id, bindingId: row.binding_id, clientRef: row.client_ref, familyEnd: new Date(bind.family_expires_at) });
     if (t) await appendAudit(ctx, c, { chainId: row.user_id, actorKind: "agent", actorId: row.binding_id, action: "binding.granted", resourceKind: "binding", resourceId: row.binding_id, detail: { kind: "oauth", client: row.client_ref } });
     return t;
@@ -75,8 +83,8 @@ async function codeGrant(ctx: AppContext, b: Record<string, unknown>): Promise<H
 }
 
 async function refreshGrant(ctx: AppContext, b: Record<string, unknown>): Promise<HandlerResult> {
-  const presented = str(b.refresh_token), clientId = str(b.client_id);
-  if (!presented || !clientId) return oauthError("invalid_request");
+  const presented = str(b.refresh_token), clientId = str(b.client_id), resource = b.resource === undefined ? undefined : str(b.resource), scope = b.scope === undefined ? undefined : str(b.scope);
+  if (!presented || !clientId || resource === null || scope === null) return oauthError("invalid_request");
   const parsed = parseToken(presented);
   if (!parsed || parsed.kind !== "clr") return oauthError("invalid_grant");
   const row = (await withNoUser(ctx.runtime, (c) => c.query("select * from oauth_refresh_get($1)", [parsed.hash]))).rows[0];
@@ -84,6 +92,7 @@ async function refreshGrant(ctx: AppContext, b: Record<string, unknown>): Promis
   const client = await resolveClient(ctx, clientId);
   if (!client || client.id !== row.client_ref) return oauthError("invalid_grant");
   const now = ctx.clock.now();
+  let refusal = "invalid_grant";
   const out = await withUser(ctx.runtime, row.user_id, async (c) => {
     if (row.rotated_at && !row.revoked_at) {
       // Reuse of a rotated refresh token: the family is compromised. Revoke the grant (the trigger revokes the family).
@@ -92,18 +101,29 @@ async function refreshGrant(ctx: AppContext, b: Record<string, unknown>): Promis
       return null;
     }
     if (row.revoked_at || new Date(row.expires_at) <= now || new Date(row.idle_expires_at) <= now) return null;
-    const bind = (await c.query("select id, family_expires_at, revoked_at, paused_at from bindings where id = $1 and user_id = $2 for update", [row.binding_id, row.user_id])).rows[0];
+    const bind = (await c.query("select id, family_expires_at, revoked_at, paused_at, audience, scopes from bindings where id = $1 and user_id = $2 for update", [row.binding_id, row.user_id])).rows[0];
     if (!bind || bind.revoked_at || bind.paused_at) return null;
+    const checkedAt = ctx.clock.now();
+    const familyEnd = new Date(bind.family_expires_at ?? row.expires_at);
+    if (familyEnd <= checkedAt || new Date(row.expires_at) <= checkedAt || new Date(row.idle_expires_at) <= checkedAt) return null;
+    if (resource !== undefined && resource !== bind.audience) { refusal = "invalid_target"; return null; }
+    // Per-refresh scope changes are unsupported: request_scope and owner step-up manage the stored grant. Never silently
+    // return broader access than a client requested, or treat a refresh request as consent to widen the grant.
+    if (scope !== undefined) {
+      const requested = [...new Set(scope.split(" ").filter(Boolean))].sort();
+      const granted = storedScopes(bind.scopes).map(scopeString).sort();
+      if (JSON.stringify(requested) !== JSON.stringify(granted)) { refusal = "invalid_scope"; return null; }
+    }
     const used = await c.query("update oauth_refresh_tokens set rotated_at = $2 where id = $1 and rotated_at is null and revoked_at is null", [row.id, now]);
     if (used.rowCount !== 1) {
       await revokeBinding(ctx, c, row.user_id, row.binding_id, "refresh_reuse", { kind: "system" });
       return null;
     }
-    const t = await issue(ctx, c, { userId: row.user_id, bindingId: row.binding_id, clientRef: row.client_ref, familyEnd: new Date(bind.family_expires_at ?? row.expires_at) });
+    const t = await issue(ctx, c, { userId: row.user_id, bindingId: row.binding_id, clientRef: row.client_ref, familyEnd });
     if (t) await appendAudit(ctx, c, { chainId: row.user_id, actorKind: "agent", actorId: row.binding_id, action: "binding.refreshed", resourceKind: "binding", resourceId: row.binding_id, detail: { kind: "oauth" } });
     return t;
   });
-  return out ? json(out, 200, { headers: NO_STORE }) : oauthError("invalid_grant");
+  return out ? json(out, 200, { headers: NO_STORE }) : oauthError(refusal);
 }
 
 /**
