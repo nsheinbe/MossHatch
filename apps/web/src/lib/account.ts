@@ -34,17 +34,26 @@ export async function whoAmI(): Promise<Me | null> {
 export const signupStart = (email: string) => api("POST", "/api/v1/auth/signup/start", { email, invite: currentInvite() ?? undefined });
 
 /** Step 2: verify the code, then create the passkey. Returns the recovery codes, shown once. */
-export async function signupVerify(email: string, code: string): Promise<{ recoveryCodes: string[] }> {
+export async function signupVerify(email: string, code: string, active: () => boolean = () => true): Promise<{ recoveryCodes: string[] }> {
   const { options } = await api<{ options: Parameters<typeof startRegistration>[0]["optionsJSON"] }>("POST", "/api/v1/auth/signup/verify", { email, code, invite: currentInvite() ?? undefined });
+  assertCeremonyActive(active);
   const response = await startRegistration({ optionsJSON: options });
+  assertCeremonyActive(active);
   const out = await api<{ recoveryCodes?: string[] }>("POST", "/api/v1/auth/register/verify", { response });
   return { recoveryCodes: out.recoveryCodes ?? [] };
 }
 
-export async function signIn(): Promise<void> {
+export async function signIn(active: () => boolean = () => true): Promise<void> {
   const { options } = await api<{ options: Parameters<typeof startAuthentication>[0]["optionsJSON"] }>("POST", "/api/v1/auth/login/options", {});
+  assertCeremonyActive(active);
   const response = await startAuthentication({ optionsJSON: options });
+  assertCeremonyActive(active);
   await api("POST", "/api/v1/auth/login/verify", { response });
+}
+
+/** An abandoned browser view must not finish a factor enrollment or sign-in. */
+function assertCeremonyActive(active: () => boolean): void {
+  if (!active()) throw new DOMException("Ceremony abandoned", "AbortError");
 }
 
 type RegistrationOptions = Parameters<typeof startRegistration>[0]["optionsJSON"];
@@ -68,9 +77,11 @@ export async function recoveryRedeem(email: string, code: string, recoveryCode?:
  * Step 3: create the new passkey, which completes the recovery and signs in. Without options (the prompt was closed after a
  * redeem), fresh ones come from the registration ticket, so the spent codes are not needed again. Returns when the hold ends.
  */
-export async function recoveryPasskey(options?: RegistrationOptions): Promise<{ holdUntil: string | null }> {
+export async function recoveryPasskey(options?: RegistrationOptions, active: () => boolean = () => true): Promise<{ holdUntil: string | null }> {
   const optionsJSON = options ?? (await api<{ options: RegistrationOptions }>("POST", "/api/v1/auth/register/options", {})).options;
+  assertCeremonyActive(active);
   const response = await startRegistration({ optionsJSON });
+  assertCeremonyActive(active);
   const out = await api<{ holdUntil?: string | null }>("POST", "/api/v1/auth/register/verify", { response });
   return { holdUntil: out.holdUntil ?? null };
 }
@@ -84,9 +95,11 @@ export const signOut = () => api("POST", "/api/v1/auth/logout", {});
 export interface PasskeyView { id: string; label: string; alg: number; backupEligible: boolean; backupState: boolean; transports: string[]; createdAt: string; lastUsedAt: string | null; suspended: boolean; revoked: boolean }
 export const listPasskeys = async () => (await api<{ passkeys: PasskeyView[] }>("GET", "/api/v1/passkeys")).passkeys;
 /** After the `passkey.add` step-up is committed: the browser makes the new passkey, then it is added with the action id. From a click of its own. */
-export async function addPasskey(actionId: string): Promise<PasskeyView> {
+export async function addPasskey(actionId: string, active: () => boolean = () => true): Promise<PasskeyView> {
   const { options } = await api<{ options: RegistrationOptions }>("POST", "/api/v1/auth/register/options", {});
+  assertCeremonyActive(active);
   const registration = await startRegistration({ optionsJSON: options });
+  assertCeremonyActive(active);
   return (await api<{ credential: PasskeyView }>("POST", "/api/v1/passkeys", { registration }, { "X-MH-Action-Id": actionId })).credential;
 }
 /** `confirmLast` removes the last live passkey (only with recovery codes left; the server refuses otherwise). */
@@ -97,6 +110,7 @@ export const revokeAll = () => api("POST", "/api/v1/auth/sessions/revoke-all", {
 export function explain(e: unknown): string {
   if (!(e instanceof ApiError)) {
     const name = (e as { name?: string } | null)?.name;
+    if (name === "AbortError") return "The passkey request was cancelled.";
     if (name === "NotAllowedError") return "The passkey prompt was closed or timed out. Try again.";
     return "Something went wrong. Try again.";
   }

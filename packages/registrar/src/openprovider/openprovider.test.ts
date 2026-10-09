@@ -231,7 +231,7 @@ describe("Openprovider DNS writes", () => {
     const after = [soa, { name: zone, type: "TXT", value: '"v=spf1 -all"', ttl: 900 }, { name: zone, type: "A", value: "192.0.2.9", ttl: 900 }];
     const r = rig([listHit(7), dom, recs(before), ok({ success: true }), ok({ success: true }), dom, recs(after)]);
     const out = await r.adapter.replaceZone(zone, [{ type: "TXT", name: "", value: "v=spf1 -all" }, { type: "A", name: "", value: "192.0.2.9" }]);
-    expect(out.records).toEqual([{ type: "A", name: "", value: "192.0.2.9" }, { type: "TXT", name: "", value: "v=spf1 -all" }]);
+    expect(out.records).toEqual([{ type: "A", name: "", value: "192.0.2.9", ttl: 900 }, { type: "TXT", name: "", value: "v=spf1 -all", ttl: 900 }]);
     const puts = r.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
     expect(puts).toEqual([
       { remove: [{ name: "", type: "MX", value: "mail.example.net", ttl: 900, prio: 10 }, { name: "www", type: "A", value: "192.0.2.2", ttl: 900 }] },
@@ -313,5 +313,27 @@ describe("Openprovider registrant email verification (ICANN) and managed DNSSEC"
     expect(ds[0]!.managed).toBe(true); expect(ds[1]!.managed).toBeUndefined();
     expect(ds[0]).toMatchObject(dsFromDnskey("abc.com", { flags: 257, protocol: 3, algorithm: 13, publicKey: KEY_A }, 2));
     expect(r.adapter.capabilities().dnssecKeyInput).toBe("dnskey");
+  });
+
+  it("ST-109: ignores targetSigned and refuses unknown or malformed DNSSEC state before a nameserver write", async () => {
+    const unsafeStates = [
+      {},
+      { dnssec_keys: null },
+      { dnssec_keys: [] as unknown[], is_dnssec_enabled: true },
+      { dnssec_keys: [{ flags: 257, protocol: 3, alg: 13 }] },
+      { dnssec_keys: [{ flags: 257, protocol: 3, alg: 13, pub_key: KEY_A }] },
+    ];
+    for (const [index, state] of unsafeStates.entries()) {
+      const r = rig([listHit(), ok({ id: 7, domain: { name: "abc", extension: "com" }, ...state })]);
+      await expect(r.adapter.setNameservers("abc.com", ["ns1.destination.example", "ns2.destination.example"], { targetSigned: true })).rejects.toMatchObject({ kind: "rejected", code: index === unsafeStates.length - 1 ? "dnssec_would_break" : "dnssec_state_unknown", outcomeUnknown: false });
+      expect(r.transport.sent.filter((q) => q.method === "PUT")).toHaveLength(0);
+    }
+  });
+
+  it("ST-109: derives managed signing from this domain's current provider keys and nameservers", async () => {
+    const managed = { id: 7, domain: { name: "abc", extension: "com" }, is_dnssec_enabled: true, name_servers: [{ name: "ns1.openprovider.nl" }], dnssec_keys: [{ flags: 257, protocol: 3, alg: 13, pub_key: KEY_A, readonly: 1 }] };
+    const r = rig([listHit(), ok(managed), ok({ id: 7, domain: { name: "abc", extension: "com" }, is_dnssec_enabled: false, dnssec_keys: null, name_servers: [{ name: "ns.external.example" }] })]);
+    expect(await r.adapter.getDnssecCapabilities("abc.com")).toMatchObject({ addMode: "dnskey", managedSigning: true, removeSupported: false });
+    expect(await r.adapter.getDnssecCapabilities("abc.com")).toMatchObject({ addMode: "dnskey", managedSigning: false, removeSupported: false });
   });
 });

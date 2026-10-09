@@ -124,14 +124,14 @@ async function registerVerify(req: HandlerReq): Promise<HandlerResult> {
     const hadCodes = Number((await c.query("select count(*) as n from recovery_codes where user_id = $1", [userId])).rows[0].n) > 0;
     const recoveryCodes = hadCodes ? undefined : await issueRecoveryCodes(ctx, c, userId);
     await auditUser(ctx, c, userId, "auth.passkey.added", { resourceKind: "passkey", resourceId: id, detail: { via: ch.recovery_id ? "recovery" : "signup", be: reg.backupEligible, bs: reg.backupState, alg: reg.alg } });
-    return { email: u.email as string, id, row, recoveryCodes, holdUntil };
+    const session = await createSession(ctx, userId, { credentialId: reg.credentialId, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily }, c);
+    return { email: u.email as string, id, row, recoveryCodes, holdUntil, session };
   });
 
   await withNoUser(ctx.runtime, (c) => c.query("select auth2_ticket_kill($1)", [preHash]));
-  const s = await createSession(ctx, userId, { credentialId: reg.credentialId, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily });
   return json(
     { user: { id: userId, email: result.email }, credential: passkeyView(result.row), recoveryCodes: result.recoveryCodes, holdUntil: result.holdUntil?.toISOString() ?? null },
-    201, { cookies: [s.cookie, clearCookie(PRE_AUTH_COOKIE)] },
+    201, { cookies: [result.session.cookie, clearCookie(PRE_AUTH_COOKIE)] },
   );
 }
 

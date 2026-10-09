@@ -36,10 +36,22 @@ describe("the web's everyday access choices are scopes the server accepts as sho
     expect(() => parseScopes(scopesFor(["see", "buy"], NAME), owned)).not.toThrow();
   });
 
+  it("nameserver proposals require one owned name and are never inferred from wildcard or read access", () => {
+    expect(scopesFor(["nameservers"], "*")).toEqual([]);
+    expect(scopesFor(["nameservers"], NAME)).toEqual([`nameservers.propose:${NAME}`]);
+    expect(picksFrom(["domains.read:*"]).picks).toEqual(["see"]);
+    const grant = parseScopes(scopesFor(["nameservers"], NAME), owned);
+    expect(allows(grant, "nameservers.propose", DOMAIN, null)).toBe(true);
+    expect(allows(grant, "nameservers.propose", "0190f0f0-0000-7000-8000-00000000d0c2", null)).toBe(false);
+    expect(allows(grant, "dns.write", DOMAIN, null)).toBe(false);
+    expect(() => parseScope("nameservers.propose:*", owned)).toThrow("domain_required");
+  });
+
   it("the consent screen ticks exactly what a well-formed request asked for, and leaves the rest visible under Advanced", () => {
     for (const n of [NAME, "*"]) {
       const all = CHOICES.map((c) => c.id);
-      expect(picksFrom(scopesFor(all, n))).toEqual({ picks: all, name: n, rest: [] });
+      const offered = CHOICES.filter((c) => c.scopes(n).length > 0).map((c) => c.id);
+      expect(picksFrom(scopesFor(all, n))).toEqual({ picks: offered, name: n, rest: [] });
     }
     expect(picksFrom(["domains.read:*", `secrets.read:${NAME}:prod`])).toEqual({ picks: [], name: NAME, rest: ["domains.read:*", `secrets.read:${NAME}:prod`] });
     expect(picksFrom([`dns.read:${NAME}`, "dns.read:other-name.com"])).toEqual({ picks: [], name: "*", rest: [`dns.read:${NAME}`, "dns.read:other-name.com"] });

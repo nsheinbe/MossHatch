@@ -72,7 +72,7 @@ export default function OAuthConsent({ id, onClose }: { id: string; onClose: () 
                   <input id="c-name" className="text-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
                   <fieldset className="choices">
                     <legend>Which names</legend>
-                    <label className="check"><input type="radio" name="c-which" checked={form.which === "*"} onChange={() => setForm({ ...form, which: "*" })} /> <span>All my names</span></label>
+                    <label className="check"><input type="radio" name="c-which" checked={form.which === "*"} onChange={() => setForm({ ...form, which: "*", picks: form.picks.filter((id) => !CHOICES.find((ch) => ch.id === id)?.domainOnly) })} /> <span>All my names</span></label>
                     {c.domains.length > 0 && (
                       <label className="check"><input type="radio" name="c-which" checked={form.which !== "*"} onChange={() => setForm({ ...form, which: c.domains[0]! })} /> <span>Only one name</span></label>
                     )}
@@ -86,11 +86,12 @@ export default function OAuthConsent({ id, onClose }: { id: string; onClose: () 
                     <legend>What it can do</legend>
                     {CHOICES.map((ch) => (
                       <label key={ch.id} className="check">
-                        <input type="checkbox" checked={form.picks.includes(ch.id)} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, ch.id] : form.picks.filter((x) => x !== ch.id) })} />
+                        <input type="checkbox" checked={form.picks.includes(ch.id)} disabled={ch.domainOnly && form.which === "*"} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, ch.id] : form.picks.filter((x) => x !== ch.id) })} />
                         <span>{ch.label}{ch.hint ? <span className="fineprint">{ch.hint}</span> : null}</span>
                       </label>
                     ))}
                   </fieldset>
+                  <p className="fineprint">Review every selected permission. Write access is optional. You can start with reads; the assistant can request specific extra access later, and adding it needs your passkey. A request alone never grants access.</p>
                   <details open={askedExtra}>
                     <summary>Advanced: scopes typed by hand{askedExtra ? " (the app asked for some)" : ""}</summary>
                     <label htmlFor="c-scopes">Extra scopes, one per line</label>

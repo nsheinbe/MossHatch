@@ -9,6 +9,7 @@ import { chipPrices, searchAvailability, SearchCache } from "../search/service.t
 import { hit } from "../ratelimit.ts";
 import type { Capability } from "../bindings/scopes.ts";
 import { agentDnsChange, agentDnsRead } from "../agents/dns.ts";
+import { agentNameserverPropose } from "../agents/nameservers.ts";
 import { getDomainFor, listDomainsFor, nestNamesFor, secretGetFor, secretSetFor, transferStatusFor } from "../agents/capabilities.ts";
 import { agentView, propose, requestScope } from "../agents/requests.ts";
 import { untrusted, type Caller } from "../agents/common.ts";
@@ -45,7 +46,7 @@ const nameArg = z.string().min(1).max(128).describe("A variable name, for exampl
 
 const rrType = z.enum(DNS_RECORD_TYPES as unknown as [DnsRecordType, ...DnsRecordType[]]);
 const port = z.number().int().min(0).max(65535);
-const dnsRecord = z.strictObject({ type: rrType, name: z.string().max(253).describe("Owner name relative to the domain; @ is the domain itself."), value: z.string().min(1).max(2048), priority: port.optional(), weight: port.optional(), port: port.optional() });
+const dnsRecord = z.strictObject({ type: rrType, name: z.string().max(253).describe("Owner name relative to the domain; @ is the domain itself."), value: z.string().min(1).max(2048), priority: port.optional(), weight: port.optional(), port: port.optional(), ttl: z.number().int().min(0).max(2147483647).optional().describe("Time to live in seconds. Omit to preserve an existing value or use the provider's known default.") });
 const dnsNamed = z.strictObject({ type: rrType, name: z.string().max(253), value: z.string().max(2048).optional() });
 
 const searchCache = new SearchCache();
@@ -74,6 +75,13 @@ async function searchBudget(ctx: AppContext, caller: Caller): Promise<void> {
 }
 
 export const TOOLS: Tool[] = [
+  {
+    name: "nameservers_propose", kind: "write", capability: "nameservers.propose",
+    description: "Request an exact registry nameserver delegation change for one explicitly granted domain. This is different from a zone NS record. Nothing executes: the owner can review or decline; migration remains blocked until destination authorization, complete inventory and DNSSEC verification are supported. Existing source records stay intact.",
+    input: z.strictObject({ domain: fqdnArg, nameservers: z.array(z.string().min(4).max(253)).min(2).max(13) }),
+    annotations: { title: "Propose nameservers", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    run: (ctx, caller, a) => agentNameserverPropose(ctx, caller, a.domain, { nameservers: a.nameservers }),
+  },
   {
     name: "search_names", kind: "read", capability: null,
     description: "Check whether a name is available under Mosshatch's extensions and show the first-year price. Returns availability as reported by the registrar; nothing is reserved.",
@@ -129,7 +137,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "dns_upsert", kind: "write", capability: "dns.write",
-    description: "Add or remove DNS records on a domain. A change to a sensitive record (mail, nameservers, the domain itself, www, verification and underscore names) is not applied: it waits for the owner to approve it with a passkey in Mosshatch, and the result says so.",
+    description: "Add or remove DNS records on a domain. Every deletion and changes to sensitive records or their dependencies (mail, nameservers, production, the domain itself, www, verification and underscore names) wait for the owner to approve the exact change with a passkey in Mosshatch. Unchanged records and TTLs are preserved.",
     input: z.strictObject({ domain: fqdnArg, records: z.array(dnsRecord).max(50).optional(), remove: z.array(dnsNamed).max(20).optional() }),
     annotations: { title: "Change DNS records", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     run: (ctx, caller, a) => { const { domain, ...rest } = a as { domain: string }; return agentDnsChange(ctx, caller, domain, rest); },
@@ -193,14 +201,14 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "plan_recipe", kind: "read", capability: ["recipes.plan", "recipes.apply"],
-    description: "Plan a recipe on one domain: the exact DNS records it would add and remove, the variables it would store and where, and whether the owner must approve it with a passkey. Nothing changes. The plan is kept for one hour; apply it with apply_recipe.",
+    description: "Plan a recipe on one domain: the exact DNS records it would add and remove, the variables it would store and where, and whether the owner must approve it with a passkey. Nothing changes. The plan is kept for one hour. DNS-changing recipes must be recreated and applied by the owner on the domain's Connect tab; other plans can use apply_recipe.",
     input: z.strictObject({ domain: fqdnArg, recipe: z.enum(["hosting-vercel", "postgres-neon", "email-resend"]).describe("The recipe id from list_recipes."), input: z.record(z.string(), z.unknown()).optional().describe("The recipe's options, as list_recipes describes them.") }),
     annotations: { title: "Plan a recipe", readOnlyHint: true, openWorldHint: false },
     run: (ctx, caller, a) => planRecipe(recipeCaller(ctx, caller), a.domain, a.recipe, a.input ?? {}),
   },
   {
     name: "apply_recipe", kind: "write", capability: "recipes.apply",
-    description: "Apply a plan from plan_recipe, exactly as planned. A plan that changes sensitive records or creates something at a provider is not applied until the owner approves it with a passkey in Mosshatch: the result is then pending_human_approval, and you call this again after they approve. Check progress with get_recipe_application.",
+    description: "Apply a non-DNS plan from plan_recipe, exactly as planned and within this token's scopes. DNS-changing recipes are blocked for agents; the owner must recreate and apply them from the domain's Connect tab. Other plans that create something at a provider wait for the owner's passkey approval. Check progress with get_recipe_application.",
     input: z.strictObject({ application_id: z.string().uuid(), plan_hash: z.string().regex(/^[0-9a-f]{64}$/) }),
     annotations: { title: "Apply a recipe", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async run(ctx, caller, a) {

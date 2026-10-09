@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { hashOf, sha256 } from "../util/bytes.ts";
 import { commit, prepare } from "../stepup/testkit.ts";
 import { deliverAll, drain, buyAndPay, REGISTRANT } from "../orders/testkit.ts";
 import { ACTION_HEADER } from "../stepup/gate.ts";
@@ -14,6 +15,12 @@ const HOUR = 3600_000;
 const step = async (ms: number) => { at(h, new Date(h.app.clock.now().getTime() + ms)); await settle(h); };
 const findingsOf = async (domainId: string, fqdn?: string) => (await findings(h)).filter((f) => f.domain_id === domainId || (fqdn && f.fqdn_ascii === fqdn));
 const fieldsOf = async (domainId: string) => (await findings(h)).filter((f) => f.domain_id === domainId).flatMap((f) => f.fields as string[]);
+
+/** Pre-upgrade committed actions are synthetic historical evidence, never minted by the new mutation gate. */
+async function historicalDelegationAction(domain: { id: string; fqdn: string }, input: Record<string, unknown>) {
+  const params = { ...input, domain_id: domain.id, fqdn: domain.fqdn };
+  return (await h.app.db.owner.query("insert into actions (user_id, session_id_hash, type, params, params_hash, state, expires_at, committed_at, credential_id, uv, be, bs, client_data_json, authenticator_data, signature, resource_id) values ($1,$2,'domain.nameservers.change',$3,$4,'committed',$5,$6,'historical-fixture',true,false,false,'fixture','fixture','fixture',$7) returning id", [ada.user.userId, sha256(Buffer.from(ada.user.cookie.split("=")[1]!, "base64url")), params, hashOf(params), new Date(h.app.clock.now().getTime() + 120_000), h.app.clock.now(), domain.id])).rows[0].id;
+}
 
 describe("ST-114: the detector fires within its cadence on an out-of-band change", () => {
   const cases: [string, string, (f: string) => void][] = [
@@ -163,13 +170,8 @@ describe("ST-60: crash recovery and ordering leave the detector quiet after reco
   it("two actions queued for one domain: any prefix of the committed sequence is explained, in commit order, and a state no prefix produces is a finding", async () => {
     const d = await buyDomain(h, ada, "free-order60.dev");
     await syncDomain(h.app.ctx, d.id);
-    const commitNs = async (ns: string[]) => {
-      const prep = await prepare(h.app, ada.user, { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "nameservers", nameservers: ns } });
-      expect(prep.status, JSON.stringify(prep.json)).toBe(200);
-      const done = await commit(h.app, ada.user, prep.json.action_id, ada.key.auth.get(prep.json.webauthn_options));
-      expect(done.status, JSON.stringify(done.json)).toBe(200);
-      return prep.json.action_id as string;
-    };
+    // Historical actions remain relevant to the detector even though new delegation writes are now gated.
+    const commitNs = (ns: string[]) => historicalDelegationAction(d, { op: "nameservers", nameservers: ns });
     const A = ["ns1.first-host.example", "ns2.first-host.example"], B = ["ns1.second-host.example", "ns2.second-host.example"];
     await commitNs(A);
     await commitNs(B);
@@ -234,9 +236,7 @@ describe("ST-60: crash recovery and ordering leave the detector quiet after reco
     const f = await buyDomain(h, ada, "free-ds60.dev");
     await syncDomain(h.app.ctx, f.id);
     const ds = { keyTag: 4242, algorithm: 13, digestType: 2, digest: "ab".repeat(32) };
-    const dsPrep = await prepare(h.app, ada.user, { type: "domain.nameservers.change", target_id: f.fqdn, user_input: { kind: "ds_add", ds } });
-    expect(dsPrep.status, JSON.stringify(dsPrep.json)).toBe(200);
-    expect((await commit(h.app, ada.user, dsPrep.json.action_id, ada.key.auth.get(dsPrep.json.webauthn_options))).status).toBe(200);
+    await historicalDelegationAction(f, { op: "ds_add", ds });
     h.registrar.oob.addDs(f.fqdn, ds);                           // what the action did at the registrar
     await syncDomain(h.app.ctx, f.id);
     expect(await fieldsOf(f.id)).toEqual([]);

@@ -3,14 +3,15 @@ import type { PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
-import { dsFromDnskey } from "@mosshatch/registrar/dnssec";
-import { isHostedNs, normalizeFqdn, ownedDomain, type DomainRow } from "./common.ts";
+import { normalizeFqdn, ownedDomain, type DomainRow } from "./common.ts";
 
 /**
  * The four step-up specs of domain management: `domain.unlock`, `domain.transfer_out` (code issue), `domain.nameservers.change`
  * (nameservers and DS records) and `domain.contact.change`. Every param is built from server state; the client supplies only
  * the low-risk inputs named in each schema. A hold after recovery refuses all four (`held: true`).
  */
+
+import { assertDelegationExecutable, normalizeNameservers } from "./nameservers.ts";
 
 export const HOSTNAME = /^(?=.{4,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
@@ -70,27 +71,12 @@ export const nameserversSpec: ActionSpec<z.infer<typeof nsInput>> = {
   async derive(_ctx, c, userId, targetId, input) {
     const d = await ownedDomain(c, userId, targetId);
     if (input.kind === "nameservers") {
-      const ns = [...new Set(input.nameservers ?? [])];
-      if (ns.length < 2) throw new HttpError(422, "bad_nameservers");
-      // Glue (addresses for nameservers under the domain itself, IPv6 included) is not supported: say so plainly.
-      if (ns.some((n) => n === d.fqdn_ascii || n.endsWith("." + d.fqdn_ascii))) throw new HttpError(422, "glue_unsupported");
-      const signed = input.target_signed === true;
-      if (signed && isHostedNs(ns)) throw new HttpError(422, "target_not_signed");
-      // A signed domain moved to unsigned DNS stops resolving on validating resolvers (plan 4.3b DNSSEC, C-20).
-      if (d.ds_present && !signed) throw new HttpError(409, "dnssec_would_break");
-      if (ns.length === d.nameservers.length && ns.every((n) => d.nameservers.includes(n))) throw new HttpError(409, "unchanged");
-      return { params: { op: "nameservers", domain_id: d.id, fqdn: d.fqdn_ascii, nameservers: ns, target_signed: signed }, resourceId: d.id };
+      normalizeNameservers(d.fqdn_ascii, { nameservers: input.nameservers });
+      // target_signed remains accepted for old clients, but cannot grant authority or bypass verification.
+      return assertDelegationExecutable();
     }
-    if (input.kind === "ds_add" && input.dnskey && !input.ds) {
-      // The key is signed along with the DS the registry will derive from it, so the summary names the record either way.
-      const dnskey = { flags: input.dnskey.flags, algorithm: input.dnskey.algorithm, publicKey: input.dnskey.publicKey.replace(/\s+/g, "") };
-      const ds = dsFromDnskey(d.fqdn_ascii, { ...dnskey, protocol: 3 }, 2);
-      return { params: { op: "ds_add", domain_id: d.id, fqdn: d.fqdn_ascii, ds, dnskey, ds_label: dsLabel(ds) }, resourceId: d.id };
-    }
-    if (!input.ds || input.dnskey) throw new HttpError(422, "bad_ds");
-    const ds = { ...input.ds, digest: input.ds.digest.toLowerCase() };
-    // The record's identity goes into the signed params and the summary, so two different DS changes never read the same.
-    return { params: { op: input.kind, domain_id: d.id, fqdn: d.fqdn_ascii, ds, ds_label: dsLabel(ds) }, resourceId: d.id };
+    if (input.kind === "ds_add" ? (!input.ds && !input.dnskey) || (!!input.ds && !!input.dnskey) : !input.ds || !!input.dnskey) throw new HttpError(422, "bad_ds");
+    throw new HttpError(409, "ds_change_unavailable");
   },
   summary: (p) => p.op === "nameservers"
     ? `Change the nameservers of ${String(p.fqdn)} to ${(p.nameservers as string[]).join(", ")}.`

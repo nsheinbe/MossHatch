@@ -1,8 +1,12 @@
 import { tx, withUser, type PoolClient } from "@mosshatch/db";
 import type { DnsRecord } from "@mosshatch/registrar/port";
-import { canonicalZone, normalizeRecord, validateZone, zoneHash } from "@mosshatch/registrar/dns";
+import { canonicalZone, normalizeRecord, validateZone, withDnsTtl, zoneHash } from "@mosshatch/registrar/dns";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
+import type { HandlerReq } from "../http/types.ts";
+import { assertNotHeld } from "../stepup/holds-port.ts";
+import { approveSessionDns, assertDnsOwnerSession } from "../domain-mgmt/dns-approval.ts";
+import type { DomainRow } from "../domain-mgmt/common.ts";
 import { appendAudit } from "../audit.ts";
 import { safeEqual } from "../util/bytes.ts";
 import { enqueue, getJobDef, registerJob, type JobRow } from "../jobs/registry.ts";
@@ -13,7 +17,7 @@ import { checkShape, diffZones, sensitiveOf, writeZoneLocked, type ZoneChange, t
 import { withConnectionCredential } from "../vault/connections.ts";
 import { writeSecret } from "../vault/secrets.ts";
 import { prodWriteNotice } from "../agents/notices.ts";
-import { checkVariableNames, computePlan, planHash, type Plan } from "./plan.ts";
+import { checkVariableNames, computePlan, planHash, needsApproval, type Plan } from "./plan.ts";
 import { recipeById, type Service } from "./registry.ts";
 import { isProviderNotFound, providersOf } from "./providers.ts";
 
@@ -53,32 +57,39 @@ const recipeWriter: ZoneWriter = {
     const n = `${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}`;
     const lines = sensitive.slice(0, 10).map((s) => `- ${s.type} ${s.name === "" ? "@ (the domain itself)" : s.name}`).join("\n");
     return maybe
-      ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `A wire-it recipe you approved may have changed ${n}: our registrar did not confirm the change.\n${lines}\n\nThese records control mail, certificates and where the domain points. You can roll the change back from the DNS tab, under History.` }
-      : { subject: "A sensitive DNS record on your Mosshatch domain changed", text: `A wire-it recipe you approved changed ${n}:\n${lines}\n\nYou can roll the change back from the DNS tab, under History.` };
+      ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `A wire-it recipe you approved may have changed ${n}: our registrar did not confirm the change.\n${lines}\n\nThese records control mail, certificates and where the domain points. Review the saved receipt in the DNS tab, under History. An uncertain outcome must be reconciled before another change or rollback. Rollback needs a new review and cannot undo cached answers or lost mail.` }
+      : { subject: "A sensitive DNS record on your Mosshatch domain changed", text: `A wire-it recipe you approved changed ${n}:\n${lines}\n\nReview the saved receipt in the DNS tab, under History. An uncertain outcome must be reconciled before another change or rollback. Rollback needs a new review and cannot undo cached answers or lost mail.` };
   },
 };
 
 /**
  * Write a DNS change for a recipe with the DNS tab's write safety (`writeZoneLocked`): under the per-domain lock, against the zone
  * the plan saw (a different live zone fails the write), with the pre-write snapshot and intent committed before the registrar is
- * called, so a write whose outcome is unknown keeps its snapshot and can be rolled back from the DNS tab. `after` runs in the
+ * called, so an uncertain write keeps its receipt for reconciliation before another change or rollback. `after` runs in the
  * follow-up transaction, under the same lock (or in the first one when nothing changes).
  */
 export async function writeRecipeZone<T = undefined>(
   ctx: AppContext, userId: string, d: { id: string; fqdn: string }, change: { add: DnsRecord[]; remove: DnsRecord[] }, expectBefore: string | null,
-  ref: { application?: string; cause: string }, after?: (c: PoolClient, w: { removed: number; added: number; snapshotId: string | null }) => Promise<T>,
+  ref: { application?: string; cause: string }, after?: (c: PoolClient, w: { removed: number; added: number; snapshotId: string | null }) => Promise<T>, ownerReq?: HandlerReq,
 ): Promise<{ snapshotId: string | null; removed: number; added: number; after: T | undefined }> {
   const key = (r: DnsRecord) => JSON.stringify(normalizeRecord(r));
   const rm = new Set(change.remove.map(key));
+  let approval: { domain: DomainRow; live: DnsRecord[]; change: ZoneChange } | undefined;
   try {
-    const w = await writeZoneLocked(ctx, userId, d.id, recipeWriter, (live, dom) => {
+    const w = await writeZoneLocked(ctx, userId, d.id, recipeWriter, (live, dom, defaultTtl) => {
       if (expectBefore !== null && zoneHash(live) !== expectBefore) throw new RecipeFail("plan_changed");
-      const desired = canonicalZone([...live.filter((r) => !rm.has(key(r))), ...change.add]);
-      checkShape(desired); validateZone(desired);
+      const desired = withDnsTtl([...live.filter((r) => !rm.has(key(r))), ...change.add], live, defaultTtl);
+      checkShape(desired); validateZone(desired, live);
       const diff = diffZones(live, desired);
-      return { desired, diff, sensitive: sensitiveOf(dom.fqdn_ascii, diff) };
+      const planned = { desired, diff, sensitive: sensitiveOf(dom.fqdn_ascii, diff, live) };
+      approval = { domain: dom, live, change: planned };
+      return planned;
     }, {
       detail: { actor: "recipe", cause: ref.cause, application: ref.application ?? null },
+      claim: async (c) => {
+        if (ownerReq && approval) await approveSessionDns(ownerReq, c, approval.domain, approval.live, approval.change);
+        if (ref.application) await assertRecipeConsent(ctx, c, userId, ref.application);
+      },
       ...(after ? { after: (c: PoolClient, r: { snapshotId: string | null; change: ZoneChange | null }) => after(c, { removed: r.change?.diff.removed.length ?? 0, added: r.change?.diff.added.length ?? 0, snapshotId: r.snapshotId }) } : {}),
     });
     return { snapshotId: w.snapshotId, removed: w.change?.diff.removed.length ?? 0, added: w.change?.diff.added.length ?? 0, after: w.after };
@@ -86,6 +97,21 @@ export async function writeRecipeZone<T = undefined>(
     if (e instanceof RecipeFail) throw e;
     throw mapRegistrarError(e);
   }
+}
+
+/** Existing owner recipe approval must still authorize the exact plan at dispatch and DNS intent. */
+async function assertRecipeConsent(ctx: AppContext, c: PoolClient, userId: string, appId: string): Promise<void> {
+  const app = (await c.query("select * from recipe_applications where id=$1 and user_id=$2 and state='applying'", [appId, userId])).rows[0];
+  if (!app || new Date(app.expires_at) <= ctx.clock.now()) throw new RecipeFail("plan_expired");
+  const plan = app.plan as Plan;
+  if (recipeById(app.recipe_id)?.touchesDns && app.created_by_kind !== "user") throw new RecipeFail("agent_dns_recipe_requires_owner");
+  if (!(await c.query("select 1 from users where id=$1 and status='active' and frozen_at is null", [userId])).rowCount) throw new RecipeFail("owner_unavailable");
+  await assertNotHeld(ctx, c, userId, "dns.sensitive.approve");
+  if (!needsApproval(plan)) return;
+  const action = (await c.query("select * from actions where id=$1 and user_id=$2 and type='dns.sensitive.approve' and state='executed'", [app.approved_by_action_id, userId])).rows[0];
+  if (!action || new Date(action.expires_at) <= ctx.clock.now()) throw new RecipeFail("approval_expired");
+  if (action.params.application_id !== app.id || action.params.plan_hash !== Buffer.from(app.plan_hash).toString("hex")) throw new RecipeFail("plan_changed");
+  await assertDnsOwnerSession(ctx, c, userId, action.session_id_hash);
 }
 
 // ---- recipe.apply ------------------------------------------------------------------------------------------------------------
@@ -104,6 +130,8 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
   try {
     const recipe = recipeById(app.recipe_id);
     if (!recipe || recipe.version !== app.recipe_version) throw new RecipeFail("recipe_changed");
+    if (recipe.touchesDns && (job.payload.by_kind !== "user" || app.created_by_kind !== "user")) throw new RecipeFail("agent_dns_recipe_requires_owner");
+    await withUser(ctx.runtime, userId, (c) => assertRecipeConsent(ctx, c, userId, appId));
     const d = await withUser(ctx.runtime, userId, async (c) => (await c.query("select id, fqdn_ascii from domains where id = $1 and user_id = $2 and released_at is null", [app.domain_id, userId])).rows[0]);
     if (!d) throw new RecipeFail("domain_gone");
     // Recompute and compare: what runs is exactly what was previewed and approved.

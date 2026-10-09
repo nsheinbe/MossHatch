@@ -16,7 +16,7 @@ export interface VisitorList { visitors: Visitor[]; pending_requests: number; co
 export interface DomainName { unicode: string; ascii: string; mixed_script: boolean; has_unicode: boolean }
 export interface RequestSummary { id: string; kind: string; state: string; domain: DomainName | null; years: number | null; max_total_minor: string; requested_at: string; expires_at: string; requester: { binding_id: string; name: string } }
 export interface Card {
-  id: string; kind: "register" | "renew" | "dns_change" | "scope"; state: string; agent_state: string;
+  id: string; kind: "register" | "renew" | "dns_change" | "nameservers_change" | "scope"; state: string; agent_state: string;
   requester: { binding_id: string; name: string; kind: string; connected_app: boolean; token_expires_at: string; live: boolean };
   requested_at: string; age_seconds: number; expires_at: string; new_network: boolean; decided_at: string | null; decision_reason: string | null; order_id: string | null;
   domain?: DomainName; years?: number;
@@ -24,9 +24,10 @@ export interface Card {
   renewal?: { subtotal_minor: string; years: number } | null;
   spend?: Spend; confirm?: { required: boolean; reasons: string[] };
   dns?: { added: DnsLine[]; removed: DnsLine[]; sensitive: { type: string; name: string; reasons: string[] }[] };
+  delegation?: { before: string[]; nameservers: string[]; executable: false; blockers: string[] };
   scopes?: string[];
 }
-export interface DnsLine { type: string; name: string; value: string; priority?: number }
+export interface DnsLine { type: string; name: string; value: string; priority?: number; weight?: number; port?: number; ttl?: number }
 export interface Consent {
   id: string; expires_at: string; redirect_host: string; redirect_is_this_computer: boolean; client_id_host: string | null; registration: string;
   reported: { client_name: string | null }; suggested_scopes: string[]; ignored_scopes: number; domains: string[];
@@ -53,7 +54,7 @@ export const getActivity = async (id: string) => (await api<{ activity: Activity
 
 const OP: Record<string, string> = {
   search_names: "searched names", get_quote: "asked for a price", list_domains: "listed your names", get_domain: "read a name", dns_list: "read DNS records",
-  dns_upsert: "changed DNS records", nest_names: "listed secret names", secrets_get: "read a secret", secrets_set: "stored a secret",
+  dns_upsert: "requested a DNS change", nameservers_propose: "suggested a nameserver change", nest_names: "listed secret names", secrets_get: "read a secret", secrets_set: "stored a secret",
   propose_registration: "suggested a name to buy", propose: "suggested a name to buy", propose_renewal: "suggested a renewal", request_scope: "asked for more access",
   get_proposal: "checked a request", transfer_status: "checked a transfer", list_recipes: "listed recipes", plan_recipe: "planned a recipe",
   apply_recipe: "applied a recipe", get_recipe_application: "checked a recipe",

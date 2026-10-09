@@ -209,56 +209,33 @@ describe("C-23: dispute lock", () => {
   });
 });
 
-describe("C-20: DS records", () => {
-  it("lists records with a plain note, relays add and remove behind the step-up, and says .io is unsupported", async () => {
+describe("C-20: provider-aware DNSSEC reads and the transition gate", () => {
+  it("ST-NS-04: reads pre-existing DS without exposing unsupported editing or relying on stale DS cache", async () => {
     const d = await makeDomain(k, alice, "c20-ds.com");
-    const before = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/ds`);
-    expect(before.json.supported).toBe(true); expect(before.json.records).toEqual([]);
-    expect(before.json.glue_supported).toBe(false); expect(before.json.note).toContain("IPv6");
     const ds = { keyTag: 4242, algorithm: 13, digestType: 2, digest: "ef".repeat(32) };
-    const add = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/ds`, {}, await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "ds_add", ds }));
-    expect(add.status, add.text).toBe(200); expect(add.json.ds_present).toBe(true);
-    expect((await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/ds`)).json.records).toHaveLength(1);
-    // A nameserver action cannot be spent on a DS route, and the other way round.
-    const nsAction = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "ds_remove", ds });
-    const wrongRoute = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/nameservers`, {}, nsAction);
-    expect(wrongRoute.status).toBe(403);
-    const rm = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/ds`, {}, nsAction);
-    expect(rm.status, rm.text).toBe(200); expect(rm.json.ds_present).toBe(false);
-
+    k.registrar.oob.addDs(d.fqdn, ds);
+    const before = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/ds`);
+    expect(before.json).toMatchObject({ supported: true, records: [ds], ds_present: true, changes_supported: false, remove_supported: false, glue_supported: false });
+    expect(before.json.note).toContain("registrar");
+    for (const kind of ["ds_add", "ds_remove"]) {
+      const prep = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind, ds } });
+      expect(prep.status).toBe(409); expect(prep.json.error.code).toBe("ds_change_unavailable");
+    }
+    expect(await k.registrar.getDs(d.fqdn)).toEqual([ds]);
     const io = await makeDomain(k, alice, "c20-ds.io");
     const info = await call(k, alice, "GET", `/api/v1/domains/${io.fqdn}/ds`);
-    expect(info.json.supported).toBe(false); expect(info.json.note).toContain("not available for .io");
-    const res = await call(k, alice, "POST", `/api/v1/domains/${io.fqdn}/ds`, {}, await stepUp(k, alice, "domain.nameservers.change", io.fqdn, { kind: "ds_add", ds }));
-    expect(res.status).toBe(409); expect(res.json.error.code).toBe("dnssec_unsupported");
+    expect(info.json.supported).toBe(false); expect(info.json.changes_supported).toBe(false);
   });
 
-  it("ST-58, ST-122: the step-up summary and the signed params name the DS record, so two different removals never read the same", async () => {
+  it("ST-58, ST-122: no DNSSEC challenge is minted while exact verified execution is unavailable", async () => {
     const d = await makeDomain(k, alice, "c20-ds-summary.com");
-    const one = { keyTag: 11111, algorithm: 13, digestType: 2, digest: "A1B2C3D4E5F60718".repeat(4) };
-    const two = { keyTag: 22222, algorithm: 8, digestType: 1, digest: "0f".repeat(20) };
-    const prep = async (kind: string, ds: typeof one) => {
-      const r = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind, ds } });
-      expect(r.status, r.text).toBe(200);
-      const params = (await row("select params from actions where id = $1", [r.json.action_id]))[0].params;
-      return { summary: r.json.summary as string, params };
-    };
-    const a = await prep("ds_remove", one), b = await prep("ds_remove", two);
-    expect(a.summary).not.toBe(b.summary);
-    // Key tag, algorithm, digest type and a short prefix of the digest (lower case, as relayed), never the whole digest.
-    expect(a.summary).toBe(`Remove the DNSSEC record with key tag 11111, algorithm 13, digest type 2, digest a1b2c3d4e5f60718… from ${d.fqdn}.`);
-    expect(b.summary).toBe(`Remove the DNSSEC record with key tag 22222, algorithm 8, digest type 1, digest 0f0f0f0f0f0f0f0f… from ${d.fqdn}.`);
-    expect(a.summary).not.toContain(one.digest.toLowerCase());
-    const add = await prep("ds_add", one);
-    expect(add.summary).toBe(`Add the DNSSEC record with key tag 11111, algorithm 13, digest type 2, digest a1b2c3d4e5f60718… to ${d.fqdn}.`);
-    // The identity is in the params the passkey signs (hashed into the challenge), and the summary is rendered from those params.
-    for (const [x, ds] of [[a, one], [b, two]] as const) {
-      expect(x.params.ds).toEqual({ ...ds, digest: ds.digest.toLowerCase() });
-      expect(x.params.ds_label).toBe(`key tag ${ds.keyTag}, algorithm ${ds.algorithm}, digest type ${ds.digestType}, digest ${ds.digest.toLowerCase().slice(0, 16)}…`);
+    const before = (await row("select id from actions where user_id=$1", [alice.user.userId])).length;
+    for (const kind of ["ds_add", "ds_remove"]) {
+      const result = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind, ds: { keyTag: 11111, algorithm: 13, digestType: 2, digest: "ab".repeat(32) } } });
+      expect(result.status).toBe(409);
+      expect(result.json.error.code).toBe("ds_change_unavailable");
     }
-    // Changing only the digest after the first 16 characters still changes what is signed.
-    const tail = await prep("ds_remove", { ...one, digest: one.digest.slice(0, 60) + "ffff" });
-    expect(tail.params.ds.digest).not.toBe(a.params.ds.digest);
+    expect((await row("select id from actions where user_id=$1", [alice.user.userId])).length).toBe(before);
   });
 });
 

@@ -6,6 +6,7 @@ import { currentInvite, openWaitlist } from "../lib/waitlist";
 import { buildSiteMode } from "../lib/site";
 import { sayWaiting } from "../lib/waiting";
 import { openWaiting } from "./Waiting";
+import { useAccountAction } from "./useAccountAction";
 
 type Step = "choose" | "code" | "codes" | "recover";
 
@@ -37,27 +38,33 @@ export function AccountPanel() {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [codes, setCodes] = useState<string[]>([]);
-  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const { busy, run: guardedRun, invalidate } = useAccountAction(setMsg, explain);
   const [data, setData] = useState<"export" | "close" | null>(null);
   // Invite-only rollout: without an invite, sign-up shows the waitlist instead (the server answers 403 invite_required).
   const [needInvite, setNeedInvite] = useState(() => (import.meta.env.VITE_INVITE_ONLY === "1" || buildSiteMode === "invite") && !currentInvite());
   const head = useRef<HTMLHeadingElement>(null);
+  const close = () => { invalidate(); setCodes([]); setCode(""); setMsg(null); setStep("choose"); set({ accountOpen: false, accountNotice: null }); };
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
+    if (!accountOpen) { invalidate(); setCodes([]); setCode(""); setMsg(null); setStep("choose"); }
+  }, [accountOpen, invalidate]);
+  useEffect(() => {
     if (!accountOpen) return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") set({ accountOpen: false, accountNotice: null }); };
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape") { invalidate(); set({ accountOpen: false, accountNotice: null }); } };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [accountOpen, set]);
+  }, [accountOpen, set, invalidate]);
   if (!accountOpen) return null;
 
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true); setMsg(null);
-    try { await fn(); }
-    catch (e) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); } else setMsg(explain(e)); }
-    finally { setBusy(false); }
-  };
+  const run = (fn: (active: () => boolean) => Promise<void>) => guardedRun(async (active) => {
+    try { await fn(active); }
+    catch (e) {
+      if (!active()) return;
+      if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); }
+      else throw e;
+    }
+  });
   const refresh = async () => set({ account: await whoAmI() });
 
   if (account) {
@@ -102,13 +109,13 @@ export function AccountPanel() {
                 <h3 id="sess-h">Signed in</h3>
                 <p className="notice">Sign out here, or everywhere: that ends every session of this account, on every device and browser, and revokes nothing else.</p>
                 <div className="row-actions">
-                  <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signOut(); set({ account: null, accountOpen: false }); })}>Sign out</button>
-                  <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async () => { await revokeAll(); set({ account: null, accountOpen: false }); })}>Sign out everywhere</button>
+                  <button type="button" className="btn primary" disabled={busy} onClick={() => run(async (active) => { await signOut(); set({ account: null, ...(active() ? { accountOpen: false } : {}) }); })}>Sign out</button>
+                  <button type="button" className="btn secondary" disabled={busy} onClick={() => run(async (active) => { await revokeAll(); set({ account: null, ...(active() ? { accountOpen: false } : {}) }); })}>Sign out everywhere</button>
                 </div>
               </section>
             </>
           )}
-          <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button></div>
+          <div className="row-actions"><button type="button" className="btn secondary" onClick={close}>Close</button></div>
         </div>
       </aside>
     );
@@ -116,7 +123,7 @@ export function AccountPanel() {
 
   if (step === "recover") {
     // A finished recovery signs in: the account view below takes over and shows the hold.
-    return <RecoverAccount initialEmail={email} onBack={() => { setMsg(null); setStep("choose"); }} onClose={() => set({ accountOpen: false, accountNotice: null })}
+    return <RecoverAccount initialEmail={email} onBack={() => { invalidate(); setMsg(null); setStep("choose"); }} onClose={close}
       onRecovered={async () => { await refresh(); setStep("choose"); }} />;
   }
 
@@ -133,7 +140,7 @@ export function AccountPanel() {
           </div>
           {msg && <p role="status" className="notice">{msg}</p>}
           <div className="row-actions">
-            <button type="button" className="btn primary" onClick={() => { setCodes([]); setMsg(null); setStep("choose"); void refresh().then(() => set({ accountOpen: false, accountNotice: null })); }}>I saved them</button>
+            <button type="button" className="btn primary" disabled={busy} onClick={() => void run(async (active) => { setCodes([]); setStep("choose"); const me = await whoAmI(); if (active()) set({ account: me, accountOpen: false, accountNotice: null }); })}>I saved them</button>
           </div>
         </div>
       </aside>
@@ -150,9 +157,9 @@ export function AccountPanel() {
             <p>Sign in with a passkey. There are no passwords.</p>
             <div className="row-actions">
               {/* The recovery banner is shown at every sign-in, so the panel stays open while there is one. */}
-              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async () => { await signIn(); const me = await whoAmI(); set({ account: me, accountOpen: !!me?.recovery, accountNotice: null }); })}>Sign in with a passkey</button>
+              <button type="button" className="btn primary" disabled={busy} onClick={() => run(async (active) => { await signIn(active); if (!active()) return; const me = await whoAmI(); if (active()) set({ account: me, accountOpen: !!me?.recovery, accountNotice: null }); })}>Sign in with a passkey</button>
             </div>
-            <p><button type="button" className="linklike lost-passkey" onClick={() => { setMsg(null); setStep("recover"); }}>Lost your passkey?</button></p>
+            <p><button type="button" className="linklike lost-passkey" onClick={() => { invalidate(); setMsg(null); setStep("recover"); }}>Lost your passkey?</button></p>
             <hr className="rule" />
             {needInvite ? (
               <div role="group" aria-label="Invite only">
@@ -160,7 +167,7 @@ export function AccountPanel() {
                 <div className="row-actions"><button type="button" className="btn secondary" onClick={() => openWaitlist({ email, source: "signup" })}>Join the waitlist</button></div>
               </div>
             ) : (
-            <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await signupStart(email); setStep("code"); }); }}>
+            <form onSubmit={(e) => { e.preventDefault(); void run(async (active) => { await signupStart(email); if (active()) setStep("code"); }); }}>
               <label htmlFor="acct-email">New here? Your email</label>
               <input id="acct-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="text-input" />
               <div className="row-actions"><button type="submit" className="btn secondary" disabled={busy}>Email me a code</button></div>
@@ -169,18 +176,18 @@ export function AccountPanel() {
           </>
         )}
         {step === "code" && (
-          <form onSubmit={(e) => { e.preventDefault(); void run(async () => { const r = await signupVerify(email, code.trim()); setCodes(r.recoveryCodes); setStep("codes"); }); }}>
+          <form onSubmit={(e) => { e.preventDefault(); void run(async (active) => { const r = await signupVerify(email, code.trim(), active); if (active()) { setCode(""); setCodes(r.recoveryCodes); setStep("codes"); } }); }}>
             <p>If that address can be used, a code is on its way. It lasts fifteen minutes. If it is not in your inbox within a minute, look in Junk: our mail is new to most providers.</p>
             <label htmlFor="acct-code">Eight-digit code</label>
             <input id="acct-code" inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value)} className="text-input" />
             <div className="row-actions">
               <button type="submit" className="btn primary" disabled={busy}>Create my passkey</button>
-              <button type="button" className="btn secondary" onClick={() => setStep("choose")}>Back</button>
+              <button type="button" className="btn secondary" onClick={() => { invalidate(); setCode(""); setStep("choose"); }}>Back</button>
             </div>
           </form>
         )}
         {msg && <p role="alert" className="notice" style={{ marginTop: 10 }}>{msg}</p>}
-        <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ accountOpen: false, accountNotice: null })}>Close</button></div>
+        <div className="row-actions"><button type="button" className="btn secondary" onClick={close}>Close</button></div>
       </div>
     </aside>
   );

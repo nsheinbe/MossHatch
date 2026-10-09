@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../lib/api";
 import { explain, recoveryCancel, recoveryPasskey, recoveryRedeem, recoveryStart, type RecoveryBanner, type RecoveryPath } from "../lib/account";
+import { useAccountAction } from "./useAccountAction";
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "");
 // Every action marked held in PLAN 4.5 (HELD_ACTIONS on the server), plus the passkey, recovery-code and address changes a hold freezes.
@@ -35,37 +36,36 @@ export function RecoverAccount({ initialEmail, onBack, onClose, onRecovered }: {
   const [recoveryCode, setRecoveryCode] = useState("");
   // The codes were accepted and spent: the browser holds a 30-minute registration ticket, so a retry needs only the passkey.
   const [redeemed, setRedeemed] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const { busy, run, invalidate } = useAccountAction(setMsg, explain);
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { head.current?.focus(); }, [phase]);
 
   const restart = (m: string) => { setRedeemed(false); setCode(""); setRecoveryCode(""); setPhase("start"); setMsg(m); };
-  const submitStart = async () => {
-    setBusy(true); setMsg(null);
-    try { await recoveryStart(email, path); setCode(""); setRecoveryCode(""); setRedeemed(false); setPhase("code"); }
-    catch (e) { setMsg(explain(e)); }
-    finally { setBusy(false); }
-  };
-  const submitCode = async () => {
-    setBusy(true); setMsg(null);
+  const submitStart = () => run(async (active) => {
+    await recoveryStart(email, path);
+    if (active()) { setCode(""); setRecoveryCode(""); setRedeemed(false); setPhase("code"); }
+  });
+  const submitCode = () => run(async (active) => {
     let spent = redeemed;
     try {
       if (!spent) {
         const options = await recoveryRedeem(email, code.trim(), path === "codes_email" ? recoveryCode.trim() : undefined);
-        spent = true; setRedeemed(true);
-        await recoveryPasskey(options);
+        if (!active()) return;
+        spent = true; setRedeemed(true); setCode(""); setRecoveryCode("");
+        await recoveryPasskey(options, active);
       } else {
-        await recoveryPasskey();
+        await recoveryPasskey(undefined, active);
       }
-      await onRecovered();
+      if (active()) await onRecovered();
     } catch (e) {
+      if (!active()) return;
       const c = e instanceof ApiError ? e.code : "";
       // The ticket ran out (30 minutes) or the request was cancelled meanwhile: the codes are spent, so it starts again.
       if (spent && (c === "unauthorized" || c === "recovery_not_open")) restart(c === "unauthorized" ? "The 30 minutes to add a passkey are over. Start the recovery again." : explain(e));
       else setMsg(explainRecovery(e, path, spent));
-    } finally { setBusy(false); }
-  };
+    }
+  });
 
   return (
     <aside className="panel side" role="region" aria-label="Recover your account">
@@ -85,7 +85,7 @@ export function RecoverAccount({ initialEmail, onBack, onClose, onRecovered }: {
             </fieldset>
             <div className="row-actions">
               <button type="submit" className="btn primary" disabled={busy}>{path === "codes_email" ? "Email me a code" : "Continue"}</button>
-              <button type="button" className="btn secondary" onClick={onBack}>Back to sign in</button>
+              <button type="button" className="btn secondary" onClick={() => { invalidate(); onBack(); }}>Back to sign in</button>
             </div>
           </form>
         )}
@@ -112,12 +112,12 @@ export function RecoverAccount({ initialEmail, onBack, onClose, onRecovered }: {
             )}
             <div className="row-actions">
               <button type="submit" className="btn primary" disabled={busy}>{redeemed ? "Try the passkey again" : "Add a new passkey"}</button>
-              {!redeemed && <button type="button" className="btn secondary" onClick={() => { setMsg(null); setPhase("start"); }}>Back</button>}
+              {!redeemed && <button type="button" className="btn secondary" onClick={() => { invalidate(); setMsg(null); setPhase("start"); }}>Back</button>}
             </div>
           </form>
         )}
         {msg && <p role="alert" className="notice" style={{ marginTop: 10 }}>{msg}</p>}
-        <div className="row-actions"><button type="button" className="btn secondary" onClick={onClose}>Close</button></div>
+        <div className="row-actions"><button type="button" className="btn secondary" onClick={() => { invalidate(); onClose(); }}>Close</button></div>
       </div>
     </aside>
   );
@@ -128,8 +128,8 @@ export function RecoverAccount({ initialEmail, onBack, onClose, onRecovered }: {
  * An open request can be cancelled from here: whoever is signed in already holds a passkey, so the recovery is not needed.
  */
 export function RecoveryNotice({ recovery, onCancelled }: { recovery: RecoveryBanner; onCancelled: (message: string) => Promise<void> }) {
-  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const { busy, run } = useAccountAction(setMsg, explain);
   if (recovery.status === "holding") {
     return (
       <div className="banner" role="status">
@@ -142,12 +142,7 @@ export function RecoveryNotice({ recovery, onCancelled }: { recovery: RecoveryBa
       </div>
     );
   }
-  const cancel = async () => {
-    setBusy(true); setMsg(null);
-    try { await recoveryCancel(); await onCancelled("The recovery is cancelled. Nothing about your passkeys changed."); }
-    catch (e) { setMsg(explain(e)); }
-    finally { setBusy(false); }
-  };
+  const cancel = () => run(async (active) => { await recoveryCancel(); if (active()) await onCancelled("The recovery is cancelled. Nothing about your passkeys changed."); });
   return (
     <div className="banner" role="alert">
       <h3>Someone started a recovery of this account</h3>
