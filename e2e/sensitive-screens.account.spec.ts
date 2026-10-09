@@ -553,7 +553,7 @@ test("ST-DNS-UI-02: exact values and TTL are reviewed, cancellation writes nothi
   await expect.poll(() => requests).toBe(1);
   wait.open();
   const review = panel.getByRole("region", { name: "Review exact DNS change" });
-  await expect(review.getByText(/A @.*192\.0\.2\.10/)).toBeVisible();
+  await expect(review.getByText('"A" "@" "192.0.2.10"', { exact: true })).toBeVisible();
   await expect(review.getByText(/TTL 300 seconds/)).toBeVisible();
   await review.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(applied).toBe(0);

@@ -51,6 +51,8 @@ npm run build:cards
 npx playwright test
 ```
 
+Browser tests reserve ports 4173/4175/5173/5174/5176 and the default config reuses existing servers. Start from a clean set of test-owned listeners, or use a temporary config that preserves the project settings and assigns isolated ports. In this session a previously opened manual Vite server on 5173 lacked `MH_FAKE_LOOKUP=1`; the dev hatch test could not obtain its fixture results. Its project was rerun against a fresh local server with explicit fake lookup. Do not use real registrar credentials to repair a fixture failure.
+
 There is no `lint` script in this repository. TypeScript, supply-chain checks, security-test coverage checks, tests and builds are the defined checks; an absent lint command is not reported as a passing lint run. Final measured results are in `docs/SECURE-AGENT-DNS-VERIFICATION.md`.
 
 The first test attempt ran before PostgreSQL finished starting and failed with `ECONNREFUSED`; it was not evidence of code correctness. The workspace doctor now checks database readiness and both restore tools before a verification pass. The first npm audit found a high-severity `source-map-js` advisory; the lockfile is patched narrowly from 1.2.1 to 1.2.2 and the final audit is rerun.

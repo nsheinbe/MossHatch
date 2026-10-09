@@ -1,6 +1,6 @@
 # Secure agent DNS and owner access: review evidence
 
-This is a draft against the owner-selected base `claude/vigilant-ritchie-8vinxb` (`689ea51`). Production is on `main` (`e311dae`), 64 commits ahead. Nothing in this work has been merged, deployed or exercised against a real customer's DNS. No owner factors, production credentials, grants, purchases or production migrations were created. Read-only Vercel metadata confirmed both production projects; direct public HTTP checks from this environment were blocked with 403, so no fresh public health result is claimed.
+[Draft PR #45](https://github.com/nsheinbe/MossHatch/pull/45) targets the owner-selected base `claude/vigilant-ritchie-8vinxb` (`689ea51`). Production is on `main` (`e311dae`), 64 commits ahead. Nothing in this work has been merged, deployed or exercised against a real customer's DNS. No owner factors, production credentials, grants, purchases or production migrations were created. Read-only Vercel metadata confirmed both production projects; direct public HTTP checks from this environment were blocked with 403, so no fresh public health result is claimed.
 
 ## Implemented behavior
 
@@ -38,6 +38,7 @@ All implementation modules were frozen before the final integrated run. Commands
 
 | Command/check | Final result |
 |---|---|
+| `npm ci --ignore-scripts` | Final local clean install passed: 115 packages in 2 seconds. |
 | `npm test` | **135 files passed, 1 skipped; 1,405 tests passed, 119 skipped; zero failed**. Started 14:07:40 UTC, 194.59 seconds. |
 | `npm run typecheck` | All configured workspace TypeScript checks passed. |
 | `npm run build` | Passed, including API bundle, client secret scan and size budgets. Initial JS **91.8 kB gzip**, below 130 kB hard budget. |
@@ -54,7 +55,11 @@ The 119 skipped cases include the unauthorized live sandbox suite and contract c
 
 The separate agent security review found and prompted fixes for DNSSEC mutation durability, grant revocation on queued DNS recipes, session/credential races, stale exact approval content and uncertain-write messaging. After its targeted checks (including 58 DNS/recipe/display tests), it found no remaining definite unsafe write path in its reviewed scope and marked this ready for draft review subject to integrated verification. This is an agent code review, not a security certification or live integration validation.
 
-Local raw logs remain in `/tmp/mosshatch-frozen-tests.log`, `/tmp/mosshatch-frozen-typecheck.log`, `/tmp/mosshatch-frozen-build.log`, `/tmp/mosshatch-frozen-registrar-build.log`, `/tmp/mosshatch-final-cards.log` and `/tmp/mosshatch-frozen-perf.log`. Browser evidence and final counts follow below when completed.
+Local raw logs remain in `/tmp/mosshatch-frozen-tests.log`, `/tmp/mosshatch-frozen-typecheck.log`, `/tmp/mosshatch-frozen-build.log`, `/tmp/mosshatch-frozen-registrar-build.log`, `/tmp/mosshatch-final-cards-favicon-build.log` and `/tmp/mosshatch-frozen-perf.log`. Browser checks use virtual authenticators and local fake effects. Production 27 and public 5 cases passed in `/tmp/mosshatch-final-public-browser.log`; development 13 passed on fresh port 5189 in `/tmp/mosshatch-final-dev-browser.log`; cards 7 passed in `/tmp/mosshatch-final-cards-browser.log`. Publish and invite each passed on isolated ports 5184/5186 (2 cases, 212.83 seconds) in `/tmp/mosshatch-publish-invite-verification.log`. The original static run's two failures were resolved: a reused dev server lacked fake lookup data, and the separate cards origin lacked a favicon. No assertions were weakened. Animated grove controls are activated by keyboard in the account/publish tests instead of waiting indefinitely for motion to stop. The full account run passed 25/26 cases in 13.5 minutes; its sole failure was an obsolete unquoted-text locator after the exact quoted DNS display change. After changing that assertion to require the full quoted value, the **entire sensitive-screen file passed 15/15** in 1.9 minutes, including cancellation and repeated-click single execution. The other 25 successful account cases required no feature changes. This verifies **all 26 account cases**, and **all 80 browser cases across final project/file runs**; it is not a claim of one uninterrupted 80-case invocation. Raw account logs: `/tmp/mosshatch-account-final.log` and `/tmp/mosshatch-sensitive-final.log`.
+
+Temporary browser configs import the committed project settings and select separate test-owned servers, preventing one runner from closing another's listener. Their commands and log hashes are preserved in the machine-readable evidence. Normal reproduction is `npx playwright test` on fresh reserved listeners with the documented local browser override. A final clean install and workspace doctor passed after all browser runners finished. No source or dependency changes followed that install.
+
+GitHub CI on `72c1cf0` independently passed clean `npm ci`, audit, typecheck, unit/performance tests, security IDs, web/cards builds and pinned Chromium installation; the browser step was still running at the last check. This is not a claim that the final PR head has completed CI. See [machine-readable evidence](evidence/secure-agent-dns-checks.json).
 
 ## Release gates and limitations
 
