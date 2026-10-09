@@ -14,8 +14,9 @@ const required = (type: ActionType) => new HttpError(403, "step_up_required", un
 /**
  * The gate for routes that declare `stepUp`. Requires a committed action of exactly that type, for the same user and
  * session, not expired and not yet used. The action id comes in the `X-MH-Action-Id` header. Every failure looks the same.
+ * Executors already inside a user-scoped transaction pass its client to avoid acquiring a second pooled connection.
  */
-export function createStepUpGate(): (req: HandlerReq, type: ActionType) => Promise<{ id: string; type: ActionType; params: unknown }> {
+export function createStepUpGate(client?: PoolClient): (req: HandlerReq, type: ActionType) => Promise<{ id: string; type: ActionType; params: unknown }> {
   return async (req, type) => {
     if (!ACTION_TYPES.includes(type)) throw new Error("step-up gate called with an id outside the thirteen");
     const p = req.principal;
@@ -23,13 +24,14 @@ export function createStepUpGate(): (req: HandlerReq, type: ActionType) => Promi
     const id = req.request.headers.get(ACTION_HEADER) ?? "";
     if (!UUID.test(id)) throw required(type);
     const userId = p.userId;
-    const row = await withUser(req.ctx.runtime, userId, async (c) => {
+    const read = async (c: PoolClient) => {
       const r = (await c.query("select id, type, params, state, expires_at, session_id_hash from actions where id = $1 and user_id = $2", [id, userId])).rows[0];
       if (!r || r.type !== type || r.state !== "committed" || new Date(r.expires_at) <= req.ctx.clock.now() || !safeEqual(Buffer.from(r.session_id_hash), p.sessionIdHash!)) return null;
       // A hold that began after the commit still blocks the effect.
       if (getActionSpec(type)?.held) await assertNotHeld(req.ctx, c, userId, type);
       return r as { id: string; params: unknown };
-    });
+    };
+    const row = client ? await read(client) : await withUser(req.ctx.runtime, userId, read);
     if (!row) throw required(type);
     return { id: row.id, type, params: row.params };
   };

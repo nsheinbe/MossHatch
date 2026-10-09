@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "git": { "deploymentEnabled": { "codex/production-secure-agent-dns": false } },
+  "git": { "deploymentEnabled": { "codex/mosshatch-dns-boundaries-20261009": false, "codex/production-secure-agent-dns": false } },
   "framework": null,
   "installCommand": "cd ../.. && npm install",
   "buildCommand": "cd ../.. && npm run build:cards",

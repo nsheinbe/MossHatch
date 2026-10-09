@@ -1,9 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeBinding } from "../vault/testkit.ts";
+import { newSession } from "../stepup/testkit.ts";
 import type { JobRow } from "../jobs/registry.ts";
 import { recipeApplyJob } from "./apply.ts";
 import { planHash, type Plan } from "./plan.ts";
-import { appRow, applyReq, approvePlan, bearer, connect, makePerson, makeRecipeKit, tick, web, type RecipeKit } from "./testkit.ts";
+import { appRow, applyReq, approvePlan, bearer, connect, makePerson, makeRecipeKit, plan, tick, web, zone, type RecipeKit } from "./testkit.ts";
 
 let k: RecipeKit, sequence = 0;
 beforeAll(async () => { k = await makeRecipeKit(); }, 120_000);
@@ -262,4 +263,60 @@ describe("ST-211 queued Neon recipes: revocation at asynchronous effect boundari
     await recipeApplyJob(k.app.ctx, x.job);
     expect(k.fakes.vercel.calls.filter((c) => c.op === "upsertEnv")).toHaveLength(1);
   });
+});
+
+describe("queued DNS recipes: full authority remains required at the final DNS intent", () => {
+  it.each(["provider completion", "final DNS read"].flatMap((boundary) => ["disconnect", "applying session logout"].map((change) => ({ boundary, change }))))(
+    "stops DNS after $change at $boundary, preserving the dispatched provider result",
+    async ({ boundary, change }) => {
+      const tag = `queuedns${++sequence}`;
+      const p = await makePerson(k, tag);
+      const credential = `fixture-vercel-${tag}-NOT-A-LIVE-CREDENTIAL`, project = `vercel-${tag}`;
+      k.fakes.vercel.addProject(project, credential);
+      const connectionId = await connect(k, p, "vercel", credential, project);
+      const planned = await plan(k, p, "hosting-vercel", { include_www: false });
+      expect(planned.status, planned.text).toBe(201);
+      const appId = planned.json.application_id as string;
+      await approvePlan(k, p, appId);
+      // Keep the approval session live: only the independently recorded applying session is revoked.
+      const applying = { ...p, user: await newSession(k.app, p.user) };
+      const applied = await applyReq(k, applying, "hosting-vercel", appId, planned.json.plan.plan_hash);
+      expect(applied.status, applied.text).toBe(202);
+      const job = (await k.app.db.owner.query("select * from jobs where kind='recipe.apply' and payload->>'application_id'=$1", [appId])).rows[0] as JobRow;
+      const before = await zone(k, p.domain.fqdn), dnsWrites = k.registrar.calls.replaceZone;
+      k.fakes.vercel.calls.length = 0;
+      let providerCompleted = false, crossed = false;
+      const loseAuthority = async () => {
+        crossed = true;
+        const r = change === "disconnect"
+          ? await web(k, p, "DELETE", `/api/v1/connections/${connectionId}`)
+          : await web(k, applying, "POST", "/api/v1/auth/logout");
+        expect(r.status, r.text).toBe(200);
+      };
+      const addDomain = k.fakes.vercel.addProjectDomain.bind(k.fakes.vercel);
+      vi.spyOn(k.fakes.vercel, "addProjectDomain").mockImplementationOnce(async (...args) => {
+        const result = await addDomain(...args);
+        providerCompleted = true;
+        if (boundary === "provider completion") await loseAuthority();
+        return result;
+      });
+      const getDns = k.registrar.getDns.bind(k.registrar);
+      vi.spyOn(k.registrar, "getDns").mockImplementation(async (...args) => {
+        const result = await getDns(...args);
+        if (boundary === "final DNS read" && providerCompleted && !crossed) await loseAuthority();
+        return result;
+      });
+      await tick(k);
+      expect(crossed).toBe(true);
+      expect(await appRow(k, appId)).toMatchObject({ state: "failed", failure_code: change === "disconnect" ? "connection_missing" : "session_unavailable" });
+      expect(k.registrar.calls.replaceZone).toBe(dnsWrites);
+      expect(await zone(k, p.domain.fqdn)).toEqual(before);
+      expect((await k.app.db.owner.query("select 1 from dns_snapshots where domain_id=$1", [p.domain.id])).rowCount).toBe(0);
+      expect([...k.fakes.vercel.projects.get(project)!.domains]).toEqual([p.domain.fqdn]);
+      expect(k.fakes.vercel.calls.filter((c) => c.op === "addProjectDomain")).toHaveLength(1);
+      await recipeApplyJob(k.app.ctx, job);
+      expect(k.registrar.calls.replaceZone).toBe(dnsWrites);
+      expect(k.fakes.vercel.calls.filter((c) => c.op === "addProjectDomain")).toHaveLength(1);
+    },
+  );
 });

@@ -81,7 +81,8 @@ const recipeWriter: ZoneWriter = {
  */
 export async function writeRecipeZone<T = undefined>(
   ctx: AppContext, userId: string, d: { id: string; fqdn: string }, change: { add: DnsRecord[]; remove: DnsRecord[] }, expectBefore: string | null,
-  ref: { application?: string; cause: string }, after?: (c: PoolClient, w: { removed: number; added: number; snapshotId: string | null }) => Promise<T>, ownerReq?: HandlerReq,
+  ref: { cause: string } & ({ application: string; authorization: RecipeAuthorization } | { application?: undefined; authorization?: never }),
+  after?: (c: PoolClient, w: { removed: number; added: number; snapshotId: string | null }) => Promise<T>, ownerReq?: HandlerReq,
 ): Promise<{ snapshotId: string | null; removed: number; added: number; after: T | undefined }> {
   const key = (r: DnsRecord) => JSON.stringify(normalizeRecord(r));
   const rm = new Set(change.remove.map(key));
@@ -99,7 +100,9 @@ export async function writeRecipeZone<T = undefined>(
       detail: { actor: "recipe", cause: ref.cause, application: ref.application ?? null },
       claim: async (c) => {
         if (ownerReq && approval) await approveSessionDns(ownerReq, c, approval.domain, approval.live, approval.change);
-        if (ref.application) await assertRecipeConsent(ctx, c, userId, ref.application);
+        // The live DNS read may outlast the applying session or a connection. Recheck the complete
+        // queued authority here, on the intent transaction's client, before recording any DNS effect.
+        if (ref.application) await assertRecipeExecution(ctx, c, userId, ref.application, ref.authorization);
       },
       ...(after ? { after: (c: PoolClient, r: { snapshotId: string | null; change: ZoneChange | null }) => after(c, { removed: r.change?.diff.removed.length ?? 0, added: r.change?.diff.added.length ?? 0, snapshotId: r.snapshotId }) } : {}),
     });
@@ -187,7 +190,7 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
     // ST-35: when an agent token planned or applied this, its writes to prod are mailed at once, as its own writes are.
     const byKind = String(job.payload.by_kind ?? ""), byId = String(job.payload.by_id ?? "");
     const agent = byKind === "agent" && UUID.test(byId) ? byId : app.created_by_kind === "agent" && UUID.test(String(app.created_by_id ?? "")) ? String(app.created_by_id) : null;
-    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan, agent, authorize);
+    await runPlan(ctx, userId, appId, { id: d.id, fqdn: d.fqdn_ascii }, plan, agent, authorization);
     await withUser(ctx.runtime, userId, async (c) => {
       const r = await c.query("update recipe_applications set state = 'applied', applied_records = $3, applied_at = $4 where id = $1 and user_id = $2 and state = 'applying'", [appId, userId, JSON.stringify(plan.dns.add), ctx.clock.now()]);
       if (r.rowCount !== 1) throw new RecipeFail("state_changed");
@@ -199,8 +202,9 @@ export async function recipeApplyJob(ctx: AppContext, job: JobRow): Promise<void
   }
 }
 
-async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan, agent: string | null, authorize: () => Promise<void>): Promise<void> {
+async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: string; fqdn: string }, plan: Plan, agent: string | null, authorization: RecipeAuthorization): Promise<void> {
   const pv = providersOf(ctx);
+  const authorize = () => withUser(ctx.runtime, userId, (c) => assertRecipeExecution(ctx, c, userId, appId, authorization));
   const conn = (s: Service) => { const c = plan.connections.find((x) => x.service === s); if (!c) throw new RecipeFail("connection_missing"); return c.id; };
   const useCredential = async <T>(service: Service, effect: (credential: string) => Promise<T>): Promise<T> => {
     await authorize();
@@ -267,7 +271,7 @@ async function runPlan(ctx: AppContext, userId: string, appId: string, d: { id: 
     if (agent && prodWrites.length) await prodNotices(ctx, userId, agent, d.fqdn, prodWrites).catch(() => undefined);
   }
   if (plan.dns.add.length || plan.dns.remove.length) {
-    await writeRecipeZone(ctx, userId, d, plan.dns, plan.zone_before, { application: appId, cause: "recipe.apply" });
+    await writeRecipeZone(ctx, userId, d, plan.dns, plan.zone_before, { application: appId, cause: "recipe.apply", authorization });
   }
 }
 
