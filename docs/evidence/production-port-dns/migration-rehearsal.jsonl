@@ -1,0 +1,16 @@
+{"check":1,"result":"PASS","label":"Only loopback PostgreSQL and unique owned databases; existing shared roles preserved","head":"3280902987932ecc89f2ddf416fcc531053bf501","baseline_migrations":38,"pinned_files":{"0998_nameserver_proposals.sql":"1856d191e54cfd8cfcf3483be607dd2c80706c73c510e3d910c115faea573a92","1130_dns_reconciliation.sql":"2ec9c61122ff2e32819c26e4690b3c979800631814e8a721aa88a8f0db799b80"}}
+{"check":2,"result":"PASS","label":"Exact two-file runner application preserves all eight original rows, RR data, TTL, hashes, original ledger timestamps, RLS/policies and table ACLs","original_rows_sha256":"d6158285db1ccb03144dad87506b13527fb7d018dbc10ae1ecab8c7cb5a285ba","rows":8}
+{"check":3,"result":"PASS","label":"Legacy state_format remains NULL; five nullable fields stay NULL; reconciliation defaults unresolved; second run skips both without timestamp changes"}
+{"check":4,"result":"PASS","label":"Kind allow-list, state-format/reconciliation checks, NOT NULL and real agent-request FK enforced; rolled-back fixture changes preserve eight rows"}
+{"check":5,"result":"PASS","label":"Valid partial index covers pending/unknown receipts only","index":"CREATE INDEX dns_snapshots_unresolved ON public.dns_snapshots USING btree (domain_id) WHERE (write_state = ANY (ARRAY['pending'::text, 'unknown'::text]))"}
+{"check":6,"result":"PASS","label":"Failure late in 1130 rolls back its entire DDL and ledger row; 0998 stays durable; reviewed repair then retry applies only 1130"}
+{"check":7,"result":"PASS","label":"Connector single-transaction wrapper applies exact original SQL and exact ledger names, validates catalog, and safely skips a verified rerun","wrapper":"/tmp/mosshatch-migration-rehearsal-3HIlVx/connector-two-migrations.REVIEW.sql","wrapper_sha256":"c1d48fc12d184a77d11c41743d5593c2e7b4686731883ba02a83be69538c6ea7"}
+{"check":8,"result":"PASS","label":"Wrapper rejects unledgered columns, falsely claimed completed migrations, and unexpected ledger names before writes"}
+{"check":9,"result":"PASS","label":"Connector transaction lock conflicts with existing runner session advisory lock and aborts without waiting or applying either file"}
+{"check":10,"result":"PASS","label":"Connector late-1130 failure rolls back BOTH migrations plus ledger; explicit retry after removing fixture collision succeeds"}
+{"check":11,"result":"PASS","label":"Connector resumes verified runner-partial state without rerunning or retimestamping 0998"}
+{"check":12,"result":"PASS","label":"Existing runner advisory lock serializes two concurrent exact-file applications; one applies, one skips"}
+{"check":13,"result":"PASS","label":"Exact pause SQL changes only three false flags to true with attribution; repeat preserves every row/timestamp","pause_sql_sha256":"d61f3ba775f1faeb840324a7da815dbe4e0238059c86e7e4abeed992e593e5fa"}
+{"check":14,"result":"PASS","label":"Pause SQL rejects bad-value or missing flag with no partial pause or unrelated flag mutation"}
+{"result":"ALL_CHECKS_PASSED","checks":14,"artifacts":"/tmp/mosshatch-migration-rehearsal-3HIlVx","local_only":true,"production_executed":false}
+{"cleanup":"Only rehearsal-owned databases removed","count":7,"artifacts_retained":"/tmp/mosshatch-migration-rehearsal-3HIlVx"}

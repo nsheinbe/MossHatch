@@ -2,6 +2,8 @@
 
 Status: **HOLD public retail launch; retain the waitlist posture pending owner sign-off on these gates.** This is a release decision document, not an instruction to change production flags. The selected production source baseline is `e311dae06f75d41131f92d4421355a3934b9bcda`. This port preserves that baseline's pricing, member-cost rows, funding admission, and paid-operation controls. It does not authorize activation, price changes, a merge, deployment, production migrations, new credentials or grants, domain purchases, or real customer changes.
 
+The owner's later instruction authorizes finishing, merging and deploying the reviewed security release when ready, while retaining separate confirmation for production migrations and security-sensitive setting changes. The [restricted-release procedure](runbooks/secure-dns-restricted-release.md) records that exact pending package, verified production aggregates, rollout and rollback. It does not change the retail HOLD or authorize provider testing.
+
 ## Evidence and its limits
 
 The immutable source audit is at `afe9ced52244585cd539c38b58a19cf7766f3b3f`:
