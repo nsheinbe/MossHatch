@@ -95,7 +95,7 @@ test("no WebGL2: in-brand fallback with a working plain search, CSP clean", asyn
   const page = await ctx.newPage();
   const bad = watch(page);
   await page.goto("/");
-  await expect(page.getByText("You're using the lightweight view. Search and checkout work without the animated grove.")).toBeVisible();
+  await expect(page.getByText("You're using the lightweight view. Search and preview work without the animated grove.")).toBeVisible();
   await page.fill("#name-input", "moonfern");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("moonfern.com")).toBeVisible();

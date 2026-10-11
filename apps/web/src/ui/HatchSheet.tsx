@@ -53,7 +53,7 @@ function CheckoutSheet({ r }: { r: Result }) {
   const years = r.years ?? 1;
   // A refusal is written above the sticky button bar, which a long sheet scrolls out of view: bring it into view (2026-10-08, the sell-gate refusal went unseen).
   useEffect(() => { if (error) errRef.current?.scrollIntoView({ block: "nearest" }); }, [error]);
-  useEffect(() => { head.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !inFlight.current) set({ hatchPhase: "none", selected: null }); }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [set]);
+  useEffect(() => { if (!accountOpen) head.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape" && !useUi.getState().accountOpen && !document.querySelector("dialog[open]") && !inFlight.current) set({ hatchPhase: "none", selected: null }); }; window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key); }, [accountOpen, set]);
   // Back from Stripe can restore this page from the back-forward cache with the button still "Opening secure checkout…": release it.
   useEffect(() => { const show = (e: PageTransitionEvent) => { if (e.persisted) { inFlight.current = false; setBusy(false); } }; window.addEventListener("pageshow", show); return () => window.removeEventListener("pageshow", show); }, []);
   useEffect(() => {
@@ -122,8 +122,8 @@ function CheckoutSheet({ r }: { r: Result }) {
       <p className="notice">{live ? 'Review the price and terms, then pay on Stripe. Your card is only held until our registrar confirms the name is yours; then it is charged and your creature hatches.' : 'Preview only. A practice hatch does not purchase or reserve this name.'}</p>
       {live && quote && !quote.salesOpen && <div className="checkout-status" role="alert"><p><strong>New registrations are paused right now.</strong> Nothing can be charged, and the name isn't held. Please check back later.</p></div>}
       <dl className="rows">
-        <dt>{term}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
-        <dt>Renews at</dt><dd>{live ? (quote ? `${quote.subtotal} / ${termWords(years)}` : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
+        <dt>{live ? term : `Test price · ${term.toLowerCase()}`}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
+        <dt>{live ? "Renews at" : "Test renewal price"}</dt><dd>{live ? (quote ? `${quote.subtotal} / ${termWords(years)}` : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
         {live && quote && <><dt>Renewal date</dt><dd>About {renewsOn.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</dd></>}
         <dt>Public lookups</dt><dd>{privacyRow(tld)}</dd>
         <dt className="total">{live ? 'Total today, before tax' : 'Published test price'}</dt><dd className="total">{total ?? 'Unavailable'}</dd>
