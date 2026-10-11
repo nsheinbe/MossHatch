@@ -177,7 +177,7 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
   const fb = await ctx.newPage();
   const bad = watch(fb);
   await fb.goto("/");
-  await expect(fb.getByText("You're using the lightweight view. Search and checkout work without the animated grove.")).toBeVisible();
+  await expect(fb.getByText("You're using the lightweight view. Search and preview work without the animated grove.")).toBeVisible();
   await expect(fb.getByRole("complementary", { name: "Preview notice" })).toContainText(BANNER);
   await fb.fill("#name-input", "moonfern");
   await fb.getByRole("button", { name: "Search" }).click();
