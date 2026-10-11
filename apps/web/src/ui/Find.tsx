@@ -161,17 +161,17 @@ export function Find({ simple = false }: { simple?: boolean }) {
       <div className="shop-intro">
         <span className="eyebrow">A home for your next idea</span>
         <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>
-        <p>{preview ? "Try a domain search and preview its creature. Join for an early-access invite." : "A name you own. A creature that's yours. A little world waiting to begin."}</p>
+        <p>{preview ? "Find a name for your portfolio, project or business. Search and preview without an account." : "Register a domain, manage its DNS and connect your own website. Your creature comes with it."}</p>
         {preview && <div className="intro-access">
           <div className="row-actions">
             <a className="btn primary" href="/waitlist" data-waitlist="intro">Join the waitlist</a>
             <a className="btn secondary" href="/fees.html#prices">View test prices</a>
           </div>
-          <p className="fineprint">Joining does not reserve or register a domain. Public launch prices may change.</p>
+          <p className="fineprint">Invite-only testing is underway; public purchases are not open. Joining does not reserve or register a domain.</p>
         </div>}
         <div className="shop-promises"><span>Clear renewal pricing</span><span>No preselected extras</span><span>Your domain, your control</span></div>
       </div>
-      {simple && <p className="notice">You're using the lightweight view. Search and checkout work without the animated grove.</p>}
+      {simple && <p className="notice">You're using the lightweight view. {preview ? "Search and preview work" : "Search and checkout work"} without the animated grove.</p>}
       <div className="search-modes" role="group" aria-label="How would you like to find a name?">
         <button type="button" aria-pressed={mode === "name"} onClick={() => setMode("name")}>I have a name</button>
         <button type="button" aria-pressed={mode === "idea"} onClick={() => setMode("idea")}>Describe my idea</button>
@@ -198,6 +198,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
         </div>
         <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com published test price ${com.price} / year. Public launch pricing may change.` : "Start with a name or a domain, like moonfern.com"}</p>
       </form>
+      <p className="fineprint">{preview ? "When invited, review a fresh quote before checkout. " : "Choose a name to review a fresh quote before checkout. "}Registration includes DNS management, renewal controls and a creature. Website hosting and email service are separate.</p>
       {parsed?.unsupported && results.length > 0 && <p className="notice" role="note">Mosshatch doesn't sell .{parsed.unsupported} names. Here is {parsed.label} in the extensions we do sell.</p>}
       {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
       {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(cell)}</div>}
@@ -214,14 +215,14 @@ export function Find({ simple = false }: { simple?: boolean }) {
           const r = known.get(d);
           return <li key={d}>
             <span className="sl-name">{d}</span>
-            <span className="sl-price">{r?.available && r.price ? <>{r.price}{per(r)}<small> · renews {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : "Check for today's price"}</span>
+            <span className="sl-price">{r?.available && r.price ? <>{preview ? "Test price " : ""}{r.price}{per(r)}<small> · {preview ? "test renewal" : "renews"} {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : "Check for today's price"}</span>
             {r?.available
               ? <button type="button" className="link-btn" aria-label={`${preview ? "Preview" : "Choose"} ${d}`} onClick={() => pick(r)}>{preview ? "Preview" : "Choose"}</button>
               : <button type="button" className="link-btn" aria-label={`Check ${d} now`} onClick={() => { setMode("name"); set({ query: d }); }}>Check</button>}
             <button type="button" className="text-btn" aria-label={`Remove ${d} from your shortlist`} onClick={() => { setShortlistNote(""); setShortlist(shortlist.filter(x => x !== d)); }}>Remove</button>
           </li>;
         })}</ul>
-        <p className="fineprint">Prices and availability are checked again before you pay.</p>
+        <p className="fineprint">{preview ? "This shortlist is not a cart or reservation. Test prices may change at launch." : "This shortlist is not a cart or reservation. Prices and availability are checked again before you pay."}</p>
       </section>}
       {shortlistNote && <p role="status" className="fineprint">{shortlistNote}</p>}
       {apiReady && rescuable && <div className="rescue-offer" role="group" aria-label="Bring a name you own"><span>Already own {rescuable.domain}?</span><button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button></div>}

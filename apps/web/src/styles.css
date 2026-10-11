@@ -270,6 +270,7 @@ html[data-site="demo"] .static-find { padding-top: calc(96px + var(--bh)); }
 .practice-note { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--lantern); border-radius: 12px; background: rgba(28, 37, 71, 0.8); }
 .practice-note p { margin: 0 0 8px; }
 .practice-note .btn { min-height: 44px; }
+.practice-note .btn + .btn { margin-top: 8px; }
 dialog.waitlist { padding: 0; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; color: var(--shell); background: #141b35; }
 dialog.waitlist::backdrop { background: rgba(6, 10, 22, 0.66); }
 dialog.waitlist label { display: block; }
@@ -388,6 +389,7 @@ dialog.waitlist a { color: var(--lantern); }
 @media (max-width: 720px) { .order-panel.docked { display: none; } }
 .checkout-sheet dl.rows-small { margin-top: 12px; grid-template-columns: auto 1fr; font-size: .86rem; }
 .checkout-sheet dl.rows-small dd { font-weight: 400; text-align: left; }
+.checkout-sheet dl.rows:not(.rows-small) { grid-template-columns: minmax(100px, .85fr) minmax(0, 1.65fr); }
 .checkout-sheet dl.rows dd { overflow-wrap: anywhere; }
 .auto-renew-choice { margin: 14px 0 6px; padding: 12px; border: 1px solid var(--glass-border); border-radius: 12px; background: rgba(11,18,33,.35); }
 .auto-renew-choice .fineprint { margin-top: 6px; }

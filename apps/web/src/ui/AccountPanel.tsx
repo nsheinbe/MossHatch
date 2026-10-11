@@ -32,7 +32,7 @@ const Passkeys = lazy(() => import("./Passkeys"));
 
 /** Sign-up (emailed code, then a passkey), passkey sign-in, recovery, and the account view. No passwords anywhere. */
 export function AccountPanel() {
-  const { accountOpen, account, accountNotice, waiting, set } = useUi();
+  const { accountOpen, account, accountNotice, waiting, selected, hatchPhase, set } = useUi();
   const [step, setStep] = useState<Step>("choose");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -46,7 +46,7 @@ export function AccountPanel() {
   useEffect(() => { if (accountOpen) head.current?.focus(); }, [accountOpen, step]);
   useEffect(() => {
     if (!accountOpen) return;
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") set({ accountOpen: false, accountNotice: null }); };
+    const h = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector("dialog[open]")) set({ accountOpen: false, accountNotice: null }); };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [accountOpen, set]);
@@ -55,7 +55,7 @@ export function AccountPanel() {
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setMsg(null);
     try { await fn(); }
-    catch (e) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup" }); } else setMsg(explain(e)); }
+    catch (e) { if ((e as { code?: string }).code === "invite_required") { setNeedInvite(true); setStep("choose"); openWaitlist({ email, source: "signup", ...(selected && hatchPhase === "sheet" ? { name: selected.domain } : {}) }); } else setMsg(explain(e)); }
     finally { setBusy(false); }
   };
   const refresh = async () => set({ account: await whoAmI() });
@@ -144,6 +144,7 @@ export function AccountPanel() {
     <aside className="panel side" role="region" aria-label="Sign in or create an account">
       <div className="head"><h2 ref={head} tabIndex={-1}>{step === "code" ? "Check your email" : "Sign in"}</h2></div>
       <div className="body">
+        {selected && hatchPhase === "sheet" && <p className="notice">Continue with <strong>{selected.domain}</strong> after sign-in. We check the price and availability again for accounts with purchase access. Nothing is reserved or charged by signing in.</p>}
         {step === "choose" && (
           <>
             {accountNotice && <p role="status" className="notice">{accountNotice}</p>}
@@ -157,7 +158,7 @@ export function AccountPanel() {
             {needInvite ? (
               <div role="group" aria-label="Invite only">
                 <p>Mosshatch is letting people in a few at a time. New accounts need an invite: join the waitlist and we will email you one when it is your turn.</p>
-                <div className="row-actions"><button type="button" className="btn secondary" onClick={() => openWaitlist({ email, source: "signup" })}>Join the waitlist</button></div>
+                <div className="row-actions"><button type="button" className="btn secondary" onClick={() => openWaitlist({ email, source: "signup", ...(selected && hatchPhase === "sheet" ? { name: selected.domain } : {}) })}>Join the waitlist</button></div>
               </div>
             ) : (
             <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await signupStart(email); setStep("code"); }); }}>
