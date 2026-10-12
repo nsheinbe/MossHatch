@@ -1,4 +1,5 @@
 import { registerConversionRoutes } from "./conversion/routes.ts";
+import { registerPageviews } from "./conversion/pageviews.ts";
 import { Router } from "./http/router.ts";
 import { registerStepUp } from "./stepup/routes.ts";
 import { authRoutes } from "./auth/routes.ts";
@@ -26,6 +27,7 @@ export function buildRouter(): Router {
   router.add(...authRoutes);
   registerSearchRoutes(router);
   registerConversionRoutes(router);
+  registerPageviews(router);
   registerOps(router);
   registerOrderRoutes(router);
   registerAccountRoutes(router);
