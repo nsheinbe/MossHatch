@@ -11,7 +11,7 @@ function staticPrices(): Plugin {
   return {
     name: "mosshatch-static-prices",
     transformIndexHtml(html) {
-      const items = previewPrices().map(({tld, price, years, renewal}) => `<li><span class="ext">.${tld}</span> <span class="price">${price}</span> <span class="note">${years === 2 ? "for 2 years" : "first year"}, renews at ${renewal}${years === 2 ? " for 2 years" : " a year"}</span></li>`).join("");
+      const items = previewPrices().map(({tld, price, years, renewal}) => `<li><span class="ext">.${tld}</span> <span class="price">${price}</span> <span class="note">${years === 2 ? "for 2 years" : "first year"}, reference renewal ${renewal}${years === 2 ? " for 2 years" : " a year"}</span></li>`).join("");
       const asOf = new Date().toISOString().slice(0, 10);
       return html
         .replace("<!--PRICES-->", items)

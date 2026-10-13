@@ -165,7 +165,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
         {preview && <div className="intro-access">
           <div className="row-actions">
             <a className="btn primary" href="/waitlist" data-waitlist="intro">Join the waitlist</a>
-            <a className="btn secondary" href="/fees.html#prices">View test prices</a>
+            <a className="btn secondary" href="/fees.html#prices">View reference prices</a>
           </div>
           <p className="fineprint">Invite-only testing is underway; public purchases are not open. Joining does not reserve or register a domain.</p>
         </div>}
@@ -196,7 +196,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
           <input id="name-input" type="text" value={query} autoComplete="off" autoCapitalize="none" spellCheck={false} inputMode="url" maxLength={70} placeholder="Your next great name" onChange={e => { set({ query: e.target.value, demo: "done" }); handle.world?.keystroke(); sound.drop(); }} />
           <button type="submit" className="btn primary" disabled={checking || !query.trim()}>Search</button>
         </div>
-        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com published test price ${com.price} / year. Public launch pricing may change.` : "Start with a name or a domain, like moonfern.com"}</p>
+        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com reference price ${com.price} / year (8 October 2026). A fresh checkout quote may differ.` : "Start with a name or a domain, like moonfern.com"}</p>
       </form>
       <p className="fineprint">{preview ? "When invited, review a fresh quote before checkout. " : "Choose a name to review a fresh quote before checkout. "}Registration includes DNS management, renewal controls and a creature. Website hosting and email service are separate.</p>
       {parsed?.unsupported && results.length > 0 && <p className="notice" role="note">Mosshatch doesn't sell .{parsed.unsupported} names. Here is {parsed.label} in the extensions we do sell.</p>}
@@ -215,19 +215,19 @@ export function Find({ simple = false }: { simple?: boolean }) {
           const r = known.get(d);
           return <li key={d}>
             <span className="sl-name">{d}</span>
-            <span className="sl-price">{r?.available && r.price ? <>{preview ? "Test price " : ""}{r.price}{per(r)}<small> · {preview ? "test renewal" : "renews"} {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : "Check for today's price"}</span>
+            <span className="sl-price">{r?.available && r.price ? <>{preview ? "Reference price " : ""}{r.price}{per(r)}<small> · {preview ? "reference renewal" : "renews"} {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : preview ? "Check availability" : "Check for today's price"}</span>
             {r?.available
               ? <button type="button" className="link-btn" aria-label={`${preview ? "Preview" : "Choose"} ${d}`} onClick={() => pick(r)}>{preview ? "Preview" : "Choose"}</button>
               : <button type="button" className="link-btn" aria-label={`Check ${d} now`} onClick={() => { setMode("name"); set({ query: d }); }}>Check</button>}
             <button type="button" className="text-btn" aria-label={`Remove ${d} from your shortlist`} onClick={() => { setShortlistNote(""); setShortlist(shortlist.filter(x => x !== d)); }}>Remove</button>
           </li>;
         })}</ul>
-        <p className="fineprint">{preview ? "This shortlist is not a cart or reservation. Test prices may change at launch." : "This shortlist is not a cart or reservation. Prices and availability are checked again before you pay."}</p>
+        <p className="fineprint">{preview ? "This shortlist is not a cart or reservation. Sample prices use the 8 October 2026 reference tariff; review a fresh quote before checkout." : "This shortlist is not a cart or reservation. Prices and availability are checked again before you pay."}</p>
       </section>}
       {shortlistNote && <p role="status" className="fineprint">{shortlistNote}</p>}
       {apiReady && rescuable && <div className="rescue-offer" role="group" aria-label="Bring a name you own"><span>Already own {rescuable.domain}?</span><button type="button" className="link-btn" onClick={() => set({ rescue: { fqdn: rescuable.domain, transferId: null } })}>Transfer {rescuable.domain} here</button></div>}
       <div className="shop-links"><button type="button" className="text-btn" aria-expanded={dealOpen} onClick={() => set({ dealOpen: !dealOpen })}>The deal</button><a href="/how-it-works">How it works</a><a href="/fees.html">Prices & renewals</a><a href="/assistants">Use with Claude</a></div>
-      {dealOpen && <section className="shop-deal" aria-label="The deal"><h2>A clear price. A name that's yours.</h2><p>See the registration term and renewal price before checkout. Taxes, if applicable, are shown by Stripe before you confirm.</p><p>Privacy protection is included where the registry supports it. .ai registrant details are public. No add-ons are preselected.</p><p>{preview ? "These are published invite-only test prices. A practice hatch never registers or reserves a domain." : "Availability is checked again before purchase. Your creature hatches after registration is confirmed."}</p><button className="link-btn" type="button" onClick={() => set({ dealOpen: false })}>Got it</button></section>}
+      {dealOpen && <section className="shop-deal" aria-label="The deal"><h2>A clear price. A name that's yours.</h2><p>See the registration term and renewal price before checkout. Taxes, if applicable, are shown by Stripe before you confirm.</p><p>Privacy protection is included where the registry supports it. .ai registrant details are public. No add-ons are preselected.</p><p>{preview ? "These sample prices use the 8 October 2026 reference tariff, not a current quote. A practice hatch never registers or reserves a domain." : "Availability is checked again before purchase. Your creature hatches after registration is confirmed."}</p><button className="link-btn" type="button" onClick={() => set({ dealOpen: false })}>Got it</button></section>}
       <p className="search-note">We don't sell your searches. <a href="/commitments.html">Our commitments</a> · <a href="/legal/index.html">Legal</a> · <a href="/report.html">Report abuse</a></p>
     </main>
   );

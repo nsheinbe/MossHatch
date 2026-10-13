@@ -63,17 +63,17 @@ test("demo: registered-or-not comes from the registry lookup, no made-up prices,
   // Unregistered names: hatchable, with no dollar figure.
   await page.fill("#name-input", "emberwick");
   await expect(page.locator("button.chip").first()).toBeVisible({ timeout: 15000 });
-  for (const chip of await page.locator("button.chip").all()) await expect(chip).toContainText("Looks unregistered · test price may change");
+  for (const chip of await page.locator("button.chip").all()) await expect(chip).toContainText("Looks unregistered · reference price from 8 Oct 2026");
   await expect(page.locator("button.chip").first()).toContainText("$");
-  await expect(page.locator("button.chip").first()).toContainText("Current renewal");
+  await expect(page.locator("button.chip").first()).toContainText("Reference renewal");
   await expect(page.getByText(/stay in this browser/)).toHaveCount(0);
   await page.getByRole("button", { name: "The deal" }).click();
-  await expect(page.getByText("These are published invite-only test prices. A practice hatch never registers or reserves a domain.", { exact: false })).toBeVisible();
+  await expect(page.getByText("These sample prices use the 8 October 2026 reference tariff, not a current quote. A practice hatch never registers or reserves a domain.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Got it" }).press("Enter");
   await page.locator("button.chip").first().press("Enter");
   const sheet = page.getByRole("region", { name: /^Hatch / });
   await expect(sheet.getByText("Practice hatch — this name isn't registered.")).toBeVisible();
-  await expect(sheet.getByText("Published test price", {exact:true})).toBeVisible();
+  await expect(sheet.getByText("Reference price (8 Oct 2026)", {exact:true})).toBeVisible();
   await expect(sheet.getByText("Preview only. A practice hatch does not purchase or reserve this name.", { exact: false })).toBeVisible();
   expect(await sheet.textContent()).toMatch(/\$\d/);
   await expect(sheet.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
@@ -104,7 +104,7 @@ test("waitlist dialog: consent unticked and required, says it reserves nothing, 
   await cancelDemo(page);
   const open = page.getByRole("main").getByRole("link", { name: "Join the waitlist" });
   await expect(open).toHaveAttribute("href", "/waitlist");
-  await expect(page.getByRole("link", { name: "View test prices" })).toHaveAttribute("href", "/fees.html#prices");
+  await expect(page.getByRole("link", { name: "View reference prices" })).toHaveAttribute("href", "/fees.html#prices");
   await open.click();
   const dialog = page.locator("dialog.waitlist");
   await expect(page.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();
@@ -185,7 +185,7 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
   // moonfern.com is registered (the fake registries mirror the real ones); the rest of the list says what the registry said, with no price.
   const rows = fb.locator(".shop-results .chip");
   await expect(rows.first()).toContainText("moonfern.comTaken · already registered");
-  await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · test price may change");
+  await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · reference price from 8 Oct 2026");
   expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/simulated/));
   expect(await violations(fb)).toEqual([]);
   await fb.getByRole("main").getByRole("link", { name: "Join the waitlist" }).click();
