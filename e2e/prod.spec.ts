@@ -149,9 +149,9 @@ test("fee page and registry addenda: static HTML under the CSP, axe clean at des
     await expect(nojs.locator("h1"), url).toBeVisible();
     expect(await nojs.locator("script").count(), url).toBe(0);
   }
-  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toHaveCount(0);   // last page is the .io addendum
+  await expect(nojs.getByRole("table", { name: "Reference tariff on 8 October 2026, per extension — not a current quote" })).toHaveCount(0);   // last page is the .io addendum
   await nojs.goto("/fees.html");
-  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toBeVisible();
+  await expect(nojs.getByRole("table", { name: "Reference tariff on 8 October 2026, per extension — not a current quote" })).toBeVisible();
   await expect(nojs.getByText("Openprovider (IANA ID 1647)", { exact: false }).first()).toBeVisible();
   await ctx.close();
   const violations: string[] = [];
