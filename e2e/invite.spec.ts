@@ -27,7 +27,7 @@ test("visitors keep the demo; an invited account gets the shop without the banne
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 20_000 });
   for (const chip of await page.locator("button.chip").all()) {
     await expect(chip).toContainText(/\$\d/);
-    await expect(chip).toContainText('test price may change');
+    await expect(chip).toContainText('reference price from 8 Oct 2026');
   }
   await page.locator('button.chip').first().click();
   await expect(page.getByRole('button', {name:'Preview creature', exact:true})).toBeVisible();
@@ -75,7 +75,7 @@ test("visitors keep the demo; an invited account gets the shop without the banne
   await expect(returned).toBeVisible();
   await expect(returned).toContainText("Total today, before tax");
   await expect(returned.getByRole("button", { name: /Buy domain & hatch/ })).toBeDisabled();
-  await expect(returned.getByText("Published test price", { exact: true })).toHaveCount(0);
+  await expect(returned.getByText("Reference price (8 Oct 2026)", { exact: true })).toHaveCount(0);
   expect(shopCalls).toContain("/api/v1/quote");
 });
 
@@ -91,12 +91,12 @@ for (const width of [1280, 390]) {
     const chip = page.locator('button.chip').filter({ hasText: 'portfoliofern.com' });
     await expect(chip).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: 'Shortlist portfoliofern.com', exact: true }).click();
-    await expect(page.locator('.shortlist')).toContainText('Test price');
+    await expect(page.locator('.shortlist')).toContainText('Reference price');
     await expect(page.locator('.shortlist')).toContainText('not a cart or reservation');
     await page.screenshot({ path: test.info().outputPath(`search-${width}.png`), fullPage: true });
     await chip.click();
     const sheet = page.getByRole('region', { name: 'Hatch portfoliofern.com' });
-    await expect(sheet).toContainText('Test renewal price');
+    await expect(sheet).toContainText('Reference renewal (8 Oct 2026)');
     await sheet.getByRole('button', { name: 'Sign in to review this name' }).click();
     const account = page.getByRole('region', { name: 'Sign in or create an account' });
     await expect(account).toContainText('Continue with portfoliofern.com');
