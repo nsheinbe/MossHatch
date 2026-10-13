@@ -52,10 +52,14 @@ test('cost floor covers payment fees on tax-inclusive charges across costs, term
 });
 
 test('published fee notice must be explicitly configured and age 60 days', () => {
-  const env = { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T00:00:00Z' };
+  const env = { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00.123Z' };
   assert.equal(newComPricingActive(new Date('2027-01-01'), {}), false);
   assert.equal(newComPricingActive(new Date('2026-12-11T23:59:59Z'), env), false);
-  assert.equal(newComPricingActive(new Date('2026-12-12T00:00:00Z'), env), true);
+  assert.equal(newComPricingActive(new Date('2026-12-12T00:00:00Z'), env), false);
+  assert.equal(newComPricingActive(new Date('2026-12-12T17:30:00.122Z'), env), false);
+  assert.equal(newComPricingActive(new Date('2026-12-12T17:30:00.123Z'), env), true);
+  assert.equal(newComPricingActive(new Date('2026-12-13'), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00Z' }), true);
+  assert.throws(() => newComPricingActive(new Date(), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-12T23:59:59Z' }));
   assert.throws(() => newComPricingActive(new Date(), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-02-31T00:00:00Z' }));
 });
 

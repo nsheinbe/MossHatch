@@ -4,7 +4,7 @@ The new-registration target is $14.99 per year before tax. A higher price is ret
 
 ## Activate only after the published fee notice
 
-The existing fee page promises 60 days' notice of a fee increase. The new tariff is **off by default**. First publish the new-registration offer and its effective date, then set `MH_NEW_COM_PRICING_NOTICE_AT` to the actual publication date at midnight UTC (for example `2026-10-13T00:00:00Z`). The tariff activates only after 60 complete days. If published October 13, the earliest activation is December 12, 2026. Do not backdate this value.
+The fee page publishes advance notice of the target new-registration offer on 13 October 2026, with an earliest date of 12 December 2026. The new tariff is **off by default**. After verifying the notice is actually public in production, record that verification's full UTC timestamp in `MH_NEW_COM_PRICING_NOTICE_AT` (for example `2026-10-13T17:30:00.123Z`). Use the real verification time, never this example or the start of the publication day. The tariff activates only after 60 complete 24-hour periods from that timestamp. A publication verified at 17:30 UTC cannot activate at midnight 60 days later. The gate rejects dates before the public notice date. Do not backdate the value. Keep public launch/readiness gates unchanged; this timestamp is not permission to open sales.
 
 Before activation, update the dated fee table and preview price data to the current registration price, while keeping renewal prices separately stated. This change neither opens public purchasing nor deploys/configures production. Complete payment/registration/renewal/refund readiness verification before public launch.
 

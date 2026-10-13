@@ -5,9 +5,10 @@ export const FEE_NOTICE_MS = 60 * 86_400_000;
 export function newComPricingActive(now: Date, env: Record<string, string | undefined> = process.env): boolean {
   const announced = env.MH_NEW_COM_PRICING_NOTICE_AT;
   if (!announced) return false;
-  if (!/^\d{4}-\d{2}-\d{2}T00:00:00Z$/.test(announced)) throw new Error("Invalid MH_NEW_COM_PRICING_NOTICE_AT");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(announced)) throw new Error("Invalid MH_NEW_COM_PRICING_NOTICE_AT");
   const date = new Date(announced);
-  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== announced.slice(0, 10)) throw new Error("Invalid MH_NEW_COM_PRICING_NOTICE_AT");
+  if (!Number.isFinite(date.getTime()) || date.toISOString() !== announced.replace(/(?<!\.\d{3})Z$/, ".000Z")
+    || date.getTime() < Date.parse("2026-10-13T00:00:00Z")) throw new Error("Invalid MH_NEW_COM_PRICING_NOTICE_AT");
   return now.getTime() >= date.getTime() + FEE_NOTICE_MS;
 }
 export interface RegistrationCostPolicy {
