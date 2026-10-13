@@ -18,7 +18,7 @@ test('conversion: phone ideas are checked without sending the brief, the shortli
  expect(lookups.length).toBeGreaterThan(0);expect(lookups.length).toBeLessThanOrEqual(6);
  for(const l of lookups){expect(l.url).not.toContain('name=');const name=JSON.parse(l.body).name as string;expect(name).toMatch(/^[a-z]{3,20}$/);expect(name).not.toMatch(/memorable|friendly|children|name/);}
  const idea=ideas.locator('button.chip').first();
- await expect(idea).toContainText('Current renewal');
+ await expect(idea).toContainText('Reference renewal');
  const ideaName=(await idea.getAttribute('aria-label'))!.split(',')[0]!;
  // AUD-D3: shortlist it; the list is kept in this tab through a reload, with today's price checked again on demand.
  await ideas.getByRole('button',{name:`Shortlist ${ideaName}`}).click();
@@ -37,7 +37,7 @@ test('conversion: phone ideas are checked without sending the brief, the shortli
  const alternatives=page.getByRole('region',{name:'Alternative .com names'});
  await expect(alternatives.getByText(/Each suggestion was checked/)).toBeVisible();
  expect(await alternatives.locator('button.chip').count()).toBeGreaterThan(0);
- await expect(alternatives.locator('button.chip').first()).toContainText('Current renewal');
+ await expect(alternatives.locator('button.chip').first()).toContainText('Reference renewal');
  await expect(alternatives.getByText(/trademark/)).toBeVisible();
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
  expect((await axe(page).analyze()).violations.map(v=>v.id)).toEqual([]);

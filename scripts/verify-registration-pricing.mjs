@@ -14,7 +14,7 @@ test('new .com target is $14.99 and old registration/renewal arithmetic remains 
   assert.equal(quoted.wholesaleMinor, 1046n);
   assert.equal(quoted.feeMinor, 453n);
   assert.equal(quoted.totalMinor, 1649n);
-  // Renewal does not receive the registration policy, nor are stored quotes rewritten.
+  // Renewal arithmetic does not receive the registration policy. Stored checkout quotes are covered by the API lifecycle suites.
   assert.equal(computeAmounts(base).subtotalMinor, 1346n);
 });
 
@@ -51,14 +51,19 @@ test('cost floor covers payment fees on tax-inclusive charges across costs, term
   }
 });
 
-test('published fee notice must be explicitly configured and age 60 days', () => {
-  const env = { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00.123Z' };
+test('activation requires an explicit switch and 60 complete days after the recorded notice', () => {
+  const notice = { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00.123Z' };
+  const env = { ...notice, MH_NEW_COM_PRICING_ENABLED: '1' };
+  for (const enabled of [undefined, '0', 'false', 'true', '']) {
+    assert.equal(newComPricingActive(new Date('2027-01-01'), { ...notice, MH_NEW_COM_PRICING_ENABLED: enabled }), false);
+  }
+  assert.equal(newComPricingActive(new Date('2027-01-01'), { MH_NEW_COM_PRICING_ENABLED: '1' }), false);
   assert.equal(newComPricingActive(new Date('2027-01-01'), {}), false);
   assert.equal(newComPricingActive(new Date('2026-12-11T23:59:59Z'), env), false);
   assert.equal(newComPricingActive(new Date('2026-12-12T00:00:00Z'), env), false);
   assert.equal(newComPricingActive(new Date('2026-12-12T17:30:00.122Z'), env), false);
   assert.equal(newComPricingActive(new Date('2026-12-12T17:30:00.123Z'), env), true);
-  assert.equal(newComPricingActive(new Date('2026-12-13'), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00Z' }), true);
+  assert.equal(newComPricingActive(new Date('2026-12-13'), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-13T17:30:00Z', MH_NEW_COM_PRICING_ENABLED: '1' }), true);
   assert.throws(() => newComPricingActive(new Date(), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-10-12T23:59:59Z' }));
   assert.throws(() => newComPricingActive(new Date(), { MH_NEW_COM_PRICING_NOTICE_AT: '2026-02-31T00:00:00Z' }));
 });

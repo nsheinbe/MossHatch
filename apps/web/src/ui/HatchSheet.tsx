@@ -122,15 +122,15 @@ function CheckoutSheet({ r }: { r: Result }) {
       <p className="notice">{live ? 'Review the price and terms, then pay on Stripe. Your card is only held until our registrar confirms the name is yours; then it is charged and your creature hatches.' : 'Preview only. A practice hatch does not purchase or reserve this name.'}</p>
       {live && quote && !quote.salesOpen && <div className="checkout-status" role="alert"><p><strong>New registrations are paused right now.</strong> Nothing can be charged, and the name isn't held. Please check back later.</p></div>}
       <dl className="rows">
-        <dt>{live ? term : `Test price · ${term.toLowerCase()}`}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
-        <dt>{live ? "Current renewal price" : "Test renewal price"}</dt><dd>{live ? (quote ? (quote.renewalSubtotal ? `${quote.renewalSubtotal} / ${termWords(years)}` : 'Unavailable — confirm before renewal') : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
+        <dt>{live ? term : `Reference price · ${term.toLowerCase()}`}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
+        <dt>{live ? "Current renewal price" : "Reference renewal (8 Oct 2026)"}</dt><dd>{live ? (quote ? (quote.renewalSubtotal ? `${quote.renewalSubtotal} / ${termWords(years)}` : 'Unavailable — confirm before renewal') : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
         {live && quote && <><dt>Renewal date</dt><dd>About {renewsOn.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</dd></>}
         <dt>Public lookups</dt><dd>{privacyRow(tld)}</dd>
-        <dt className="total">{live ? 'Total today, before tax' : 'Published test price'}</dt><dd className="total">{total ?? 'Unavailable'}</dd>
+        <dt className="total">{live ? 'Total today, before tax' : 'Reference price (8 Oct 2026)'}</dt><dd className="total">{total ?? 'Unavailable'}</dd>
       </dl>
       <p className="fineprint">{live
         ? <>Sales tax, if any, is added by Stripe from your billing address before you pay. Renewal prices follow our registrar's price; if it changes we email you at once and again 21 days before any charge. {checked && `Price checked at ${checked}. We check again when you pay. `}<a href="/fees" target="_blank" rel="noreferrer">Fees, renewals and notices</a></>
-        : 'Invite-only test pricing. Public launch prices may change.'}</p>
+        : 'Sample prices from the 8 October 2026 reference tariff, not a current quote. When invited, review a fresh registration quote and separate renewal estimate before checkout.'}</p>
       {live && quote && <details><summary>How the price is made</summary><dl className="rows">
         <dt>Our registrar's price for this term</dt><dd>{quote.registrarNow}</dd>
         {quote.renewalLevel && <><dt>Renewal level</dt><dd>{quote.renewalLevel}</dd></>}

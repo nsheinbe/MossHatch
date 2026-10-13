@@ -1,7 +1,7 @@
 /** New .com registrations only. Renewals, transfers and stored orders retain their existing pricing. */
 export const FEE_NOTICE_MS = 60 * 86_400_000;
 
-/** Activation is explicit and honors the published fee notice; no deployed copy silently starts a new tariff. */
+/** Recording a notice never enables pricing: operators must separately enable it after cost/readiness review. */
 export function newComPricingActive(now: Date, env: Record<string, string | undefined> = process.env): boolean {
   const announced = env.MH_NEW_COM_PRICING_NOTICE_AT;
   if (!announced) return false;
@@ -9,7 +9,7 @@ export function newComPricingActive(now: Date, env: Record<string, string | unde
   const date = new Date(announced);
   if (!Number.isFinite(date.getTime()) || date.toISOString() !== announced.replace(/(?<!\.\d{3})Z$/, ".000Z")
     || date.getTime() < Date.parse("2026-10-13T00:00:00Z")) throw new Error("Invalid MH_NEW_COM_PRICING_NOTICE_AT");
-  return now.getTime() >= date.getTime() + FEE_NOTICE_MS;
+  return env.MH_NEW_COM_PRICING_ENABLED === "1" && now.getTime() >= date.getTime() + FEE_NOTICE_MS;
 }
 export interface RegistrationCostPolicy {
   targetPerYearMinor: bigint;

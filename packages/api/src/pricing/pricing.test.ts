@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { feePerYear, usd } from "@mosshatch/core";
+import { configurePriceTables, resetPriceTables } from "./registrar.ts";
 import { SAMPLE_PRICE } from "@mosshatch/registrar";
 import { MockRegistrarPort } from "@mosshatch/registrar/mock-port";
 import { withNoUser } from "@mosshatch/db";
@@ -133,5 +134,44 @@ describe("pricing: tax ceiling, hash and expiry", () => {
     expect(JSON.stringify(j)).toContain('"total_minor":"'); // bigint travels as a string
     const c = await q({ fqdn: "moonfern.io" }, "2026-11-07T00:00:01Z");
     expect(c.quoteHash).not.toBe(a.quoteHash);
+  });
+});
+
+describe("pricing: new .com activation", () => {
+  it("keeps legacy amounts until both gates pass, preserves renewal/transfer prices and verifies the frozen quote across activation", async () => {
+    const previousNotice = process.env.MH_NEW_COM_PRICING_NOTICE_AT;
+    const previousEnabled = process.env.MH_NEW_COM_PRICING_ENABLED;
+    process.env.MH_NEW_COM_PRICING_NOTICE_AT = "2026-10-13T17:47:23.759Z";
+    configurePriceTables({ MH_REGISTRAR_MODE: "live", MH_REGISTRAR_PROVIDER: "openprovider" });
+    try {
+      // A recorded, fully elapsed notice is not an activation instruction.
+      delete process.env.MH_NEW_COM_PRICING_ENABLED;
+      expect((await q({ fqdn: "notice-only.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1346n);
+      process.env.MH_NEW_COM_PRICING_ENABLED = "0";
+      expect((await q({ fqdn: "switch-off.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1346n);
+      // Even an explicit switch cannot shorten the 60 complete days.
+      process.env.MH_NEW_COM_PRICING_ENABLED = "1";
+      const before = "2026-12-12T17:47:23.758Z", after = "2026-12-12T17:47:23.759Z";
+      const old = await q({ fqdn: "accepted-before.com" }, before);
+      expect(old.subtotalMinor).toBe(1346n);
+      const frozen = quoteToJson(old);
+      const renewedBefore = await q({ fqdn: "existing.com", kind: "renew" }, before);
+      const transferBefore = await q({ fqdn: "transfer.com", kind: "transfer" }, before);
+      const active = await q({ fqdn: "new-offer.com" }, after);
+      expect(active.subtotalMinor).toBe(1499n);
+      expect((await q({ fqdn: "existing.com", kind: "renew" }, after)).subtotalMinor).toBe(renewedBefore.subtotalMinor);
+      expect((await q({ fqdn: "transfer.com", kind: "transfer" }, after)).subtotalMinor).toBe(transferBefore.subtotalMinor);
+      // Checkout's frozen quote remains independently verifiable at its accepted amount.
+      // ST-97 in orders/checkout.test.ts covers the stored-order/Stripe amount lifecycle.
+      expect(verifyQuoteJson(frozen, at(after))).toEqual({ ok: true });
+      expect(frozen.subtotal_minor).toBe("1346");
+      expect(frozen.total_minor).toBe("1481");
+    } finally {
+      resetPriceTables();
+      if (previousNotice === undefined) delete process.env.MH_NEW_COM_PRICING_NOTICE_AT;
+      else process.env.MH_NEW_COM_PRICING_NOTICE_AT = previousNotice;
+      if (previousEnabled === undefined) delete process.env.MH_NEW_COM_PRICING_ENABLED;
+      else process.env.MH_NEW_COM_PRICING_ENABLED = previousEnabled;
+    }
   });
 });
