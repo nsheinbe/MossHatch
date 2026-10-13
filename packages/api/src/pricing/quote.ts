@@ -2,8 +2,10 @@ import crypto from "node:crypto";
 import type { PoolClient } from "@mosshatch/db";
 import { RegistrarError, type RegistrarPort } from "@mosshatch/registrar/port";
 import { parseFqdn } from "../search/labels.ts";
-import { feePerYearMinor } from "./fee.ts";
+import { computeAmounts } from "./amounts.ts";
+export { computeAmounts } from "./amounts.ts";
 import { priceTableFor } from "./registrar.ts";
+import { newComPricingActive, registrationCostPolicy, type RegistrationCostPolicy } from "./registration.ts";
 
 /** The default price table; quotes read the table for the extension's registrar (`priceTableFor`, pricing/registrar.ts). */
 export const REGISTRAR = "opensrs";
@@ -30,9 +32,9 @@ export interface PricedQuote {
   wholesalePerYearMinor: bigint;
   wholesaleMinor: bigint;
   /**
-   * Renewal floor (Mosshatch charges the same price every year): when the upstream's renewal price is above this operation's price
+   * Renewal floor: when the upstream's renewal price is above this operation's price
    * (Openprovider non-member .com: create 11.98, renew 16.98), the difference is charged from the first year so a renewal is never sold
-   * below cost and the price never jumps. Zero when the renewal costs no more. Not part of `wholesaleMinor`, which stays the upstream
+   * below cost. A separately disclosed new-registration fee may differ from the renewal fee. Zero when the renewal costs no more. Not part of `wholesaleMinor`, which stays the upstream
    * charge for this operation (the D-031 price guard and the funding gates compare it with the registrar).
    */
   renewalLevelMinor: bigint;
@@ -65,23 +67,9 @@ export async function taxCeilingBps(c: PoolClient): Promise<number> {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 10000 ? v : DEFAULT_TAX_CEILING_BPS;
 }
 
-/**
- * Pure amount arithmetic shared by quotes and by the search price chips, so both always agree.
- * `renewPerYearMinor` (the extension's renewal price) sets the renewal floor: the customer's per-year price is never below
- * max(this operation, renewal) + fee, so the first year and every renewal cost the same and no renewal is sold below cost.
- * The D-003 fee level is read from the higher of the standard and the renewal price.
- */
-export function computeAmounts(p: { wholesalePerYearMinor: bigint; standardWholesalePerYearMinor: bigint; renewPerYearMinor?: bigint; years: number; taxCeilingBps: number }) {
-  const y = BigInt(p.years);
-  const wholesaleMinor = p.wholesalePerYearMinor * y;
-  const renew = p.renewPerYearMinor ?? 0n;
-  const levelPerYear = renew > p.wholesalePerYearMinor ? renew - p.wholesalePerYearMinor : 0n;
-  const renewalLevelMinor = levelPerYear * y;
-  const fee = feePerYearMinor(renew > p.standardWholesalePerYearMinor ? renew : p.standardWholesalePerYearMinor);
-  const feeMinor = fee * y;
-  const subtotalMinor = wholesaleMinor + renewalLevelMinor + feeMinor;
-  const taxCeilingMinor = (subtotalMinor * BigInt(p.taxCeilingBps) + 9999n) / 10000n;
-  return { wholesaleMinor, renewalLevelMinor, feePerYearMinor: fee, feeMinor, subtotalMinor, taxCeilingMinor, totalMinor: subtotalMinor + taxCeilingMinor };
+/** Shared by search chips and checkout. Existing renewals and stored quotes never enter the new-registration tariff. */
+export function newRegistrationPolicy(tld: string, kind: QuoteKind, now: Date): RegistrationCostPolicy | undefined {
+  return tld === "com" && kind === "register" && priceTableFor(tld) === "openprovider" && newComPricingActive(now) ? registrationCostPolicy() : undefined;
 }
 
 /** Effective price rows on `now`'s UTC date for a set of (tld, kind), each extension from its registrar's table. One query. */
@@ -128,7 +116,7 @@ export async function buildQuote(c: PoolClient, input: QuoteInput, now: Date, op
   const fqdn = `${parsed.label}.${parsed.tld}`;
   // A restore is a one-off fee, not a year of the name: no renewal floor.
   const renew = kind === "restore" ? undefined : rows.get(`${parsed.tld}:renew`)?.amount;
-  const amounts = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: standard.amount, ...(renew !== undefined ? { renewPerYearMinor: renew } : {}), years, taxCeilingBps: bps });
+  const amounts = computeAmounts({ wholesalePerYearMinor: row.amount, standardWholesalePerYearMinor: standard.amount, ...(renew !== undefined ? { renewPerYearMinor: renew } : {}), years, taxCeilingBps: bps, registrationPolicy: newRegistrationPolicy(parsed.tld, kind, now) });
 
   if (opts.registrar && (kind === "register" || kind === "renew")) {
     let rq;

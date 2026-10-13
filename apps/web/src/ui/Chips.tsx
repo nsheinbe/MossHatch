@@ -23,7 +23,7 @@ export function Chip({ r, list, row, onPick }: { r: Result; list: boolean; row: 
   return <button ref={ref as React.RefObject<HTMLButtonElement>} type="button" className="chip" style={style} onClick={() => onPick(r)} aria-label={`${r.domain}, ${demo ? "published test price " : ""}${r.price ?? 'price not available'}${r.years === 2 ? ' for two years' : ' per year'}. ${demo ? 'Preview domain' : 'Buy domain'}.`}>
     {name}<span className="chip-price">{r.price ?? 'Price at launch'}<small>{r.price ? r.years === 2 ? ' / 2 years' : ' / year' : ''}</small></span>
     <small>{demo ? 'Looks unregistered · test price may change' : 'Available · before tax'}</small>
-    {r.price && <small>Current renewal{demo ? " (test)" : ""} {r.renewal ?? r.price}{r.years === 2 ? ' / 2 years' : ' / year'}</small>}
+    {r.price && <small>Current renewal{demo ? " (test)" : ""} {r.renewal ?? (demo ? r.price : 'unavailable')}{r.renewal || demo ? (r.years === 2 ? ' / 2 years' : ' / year') : ''}</small>}
     <span className="chip-action">{demo ? 'Preview your domain' : 'Buy domain & hatch'} <span aria-hidden="true">↗</span></span>
   </button>;
 }

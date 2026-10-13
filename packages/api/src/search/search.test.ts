@@ -88,7 +88,7 @@ describe("search: results", () => {
   });
   it("prices the .ai chip for its two-year minimum", async () => {
     const r = await get("/api/v1/search?name=free-x&tlds=ai");
-    expect(r.json.results[0].price).toEqual({ years: 2, subtotal_minor: String(2 * (11100 + 1000)), currency: "usd" });
+    expect(r.json.results[0].price).toEqual({ years: 2, subtotal_minor: String(2 * (11100 + 1000)), renewal_subtotal_minor: String(2 * (11100 + 1000)), currency: "usd" });
   });
 });
 

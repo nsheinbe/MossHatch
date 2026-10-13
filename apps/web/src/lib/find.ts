@@ -62,7 +62,7 @@ export function staticPrices(): { tld: string; price: string; years: number; ren
   return __MH_PREVIEW_PRICES__.map(p => ({...p}));
 }
 
-interface ServerSearch { results: { fqdn: string; tld: string; kind: string; source: string; unconfirmed?: boolean; price: { years: number; subtotal_minor: string } | null }[] }
+interface ServerSearch { results: { fqdn: string; tld: string; kind: string; source: string; unconfirmed?: boolean; price: { years: number; subtotal_minor: string; renewal_subtotal_minor?: string | null } | null }[] }
 
 /** With a backend behind the page, prices come from the server (the effective-dated table), never from the sample table. */
 export async function searchLive(raw: string, onlyCom = false): Promise<{ results: Result[]; alternatives: string[] } | null> {
@@ -78,6 +78,7 @@ export async function searchLive(raw: string, onlyCom = false): Promise<{ result
       domain: r.fqdn, tld, available: avail, sample: r.source === "sample",
       status: r.kind === "taken" ? "registered" : r.kind === "premium" || r.kind === "reserved" ? r.kind : avail ? "unregistered" : "unknown",
       price: avail ? formatUsd(usd(Number(r.price!.subtotal_minor))) : undefined, years: r.price?.years ?? 1,
+      renewal: r.price?.renewal_subtotal_minor ? formatUsd(usd(Number(r.price.renewal_subtotal_minor))) : undefined,
     };
   });
   return { results, alternatives: [] };
@@ -90,6 +91,8 @@ export async function searchLive(raw: string, onlyCom = false): Promise<{ result
  */
 export interface LiveQuote {
   domain: string; expiresAt: string; quotedAt: string; subtotal: string; years: number;
+  /** Independently priced at today's renewal tariff; never assumed equal to registration. */
+  renewalSubtotal: string | null;
   /** What the registrar charges us for this term. */
   registrarNow: string;
   /** Added so the first term costs what each renewal will (D-059), or null when the renewal costs no more. */
@@ -103,12 +106,13 @@ export interface LiveQuote {
 }
 interface QuoteJson { fqdn: string; expires_at: string; quoted_at?: string; subtotal_minor: string; wholesale_minor: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; sales_open?: boolean; sales_closed_reason?: "paused" | "funding" | null; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
+  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; renewal_quote?: QuoteJson | null; sales_open?: boolean; sales_closed_reason?: "paused" | "funding" | null; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
   if (!out.quote || out.quote.fqdn !== fqdn || out.availability?.kind !== "available" || out.availability.unconfirmed) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
   const level = BigInt(out.quote.renewal_level_minor ?? "0");
   return {
     domain: out.quote.fqdn, expiresAt: out.quote.expires_at, quotedAt: out.quote.quoted_at ?? new Date().toISOString(), subtotal: f(out.quote.subtotal_minor), years: out.quote.years,
+    renewalSubtotal: out.renewal_quote?.fqdn === fqdn && out.renewal_quote.years === out.quote.years ? f(out.renewal_quote.subtotal_minor) : null,
     registrarNow: f(out.quote.wholesale_minor), renewalLevel: level > 0n ? f(level.toString()) : null, fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor),
     salesOpen: out.sales_open !== false,
     salesClosedReason: out.sales_open === false ? out.sales_closed_reason ?? "paused" : null,
