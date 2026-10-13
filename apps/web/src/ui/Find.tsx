@@ -215,7 +215,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
           const r = known.get(d);
           return <li key={d}>
             <span className="sl-name">{d}</span>
-            <span className="sl-price">{r?.available && r.price ? <>{preview ? "Reference price " : ""}{r.price}{per(r)}<small> · {preview ? "reference renewal" : "renews"} {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : "Check for today's price"}</span>
+            <span className="sl-price">{r?.available && r.price ? <>{preview ? "Reference price " : ""}{r.price}{per(r)}<small> · {preview ? "reference renewal" : "renews"} {r.renewal ?? r.price}{per(r)}</small></> : r ? notBuyable(r) : preview ? "Check availability" : "Check for today's price"}</span>
             {r?.available
               ? <button type="button" className="link-btn" aria-label={`${preview ? "Preview" : "Choose"} ${d}`} onClick={() => pick(r)}>{preview ? "Preview" : "Choose"}</button>
               : <button type="button" className="link-btn" aria-label={`Check ${d} now`} onClick={() => { setMode("name"); set({ query: d }); }}>Check</button>}

@@ -20,14 +20,14 @@ test('conversion: phone ideas are checked without sending the brief, the shortli
  const idea=ideas.locator('button.chip').first();
  await expect(idea).toContainText('Reference renewal');
  const ideaName=(await idea.getAttribute('aria-label'))!.split(',')[0]!;
- // AUD-D3: shortlist it; the list is kept in this tab through a reload, with today's price checked again on demand.
+ // AUD-D3: shortlist it; the list is kept in this tab through a reload, with availability checked again on demand.
  await ideas.getByRole('button',{name:`Shortlist ${ideaName}`}).click();
  await expect(ideas.getByRole('button',{name:`Shortlist ${ideaName}`})).toHaveAttribute('aria-pressed','true');
  const shortlist=page.getByRole('region',{name:/^Your shortlist/});
  await expect(shortlist).toContainText(ideaName);
  await page.reload();
  await expect(shortlist).toContainText(ideaName);
- await expect(shortlist).toContainText("Check for today's price");
+ await expect(shortlist).toContainText("Check availability");
  await shortlist.getByRole('button',{name:`Check ${ideaName} now`}).click();
  await expect(shortlist.getByRole('button',{name:`Preview ${ideaName}`})).toBeVisible({timeout:15_000});
  // AUD-D2: a taken .com gets close variations, each checked, with a plain trademark reminder.
