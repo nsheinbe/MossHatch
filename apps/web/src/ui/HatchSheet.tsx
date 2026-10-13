@@ -59,7 +59,7 @@ function CheckoutSheet({ r }: { r: Result }) {
   useEffect(() => {
     if (!live) return;
     let active = true;
-    setQuote(null); setDocs([]); setLoading(true); setLoadError(null); setExpired(false); setAccepted(false);
+    setQuote(null); setDocs([]); setLoading(true); setLoadError(null); setExpired(false); setAccepted(false); setAutoRenew(false);
     void Promise.all([liveQuote(r.domain, years), account ? getDocuments(tld) : Promise.resolve([]), account ? getContact() : Promise.resolve(null)]).then(([q, documents, contact]) => {
       if (!active) return;
       if (!q) setLoadError("We couldn't confirm this name and price. Refresh the quote before continuing.");
@@ -91,7 +91,7 @@ function CheckoutSheet({ r }: { r: Result }) {
     try {
       const accept: Record<string,string> = { terms: doc('terms')!.version, registration_agreement: doc('registration_agreement')!.version };
       if (addendum) accept[addendum.kind] = addendum.version;
-      const renew = autoRenew && !!authorisation;
+      const renew = autoRenew && !!authorisation && !!quote?.renewalSubtotal;
       if (renew) accept.auto_renew_authorisation = authorisation!.version;
       const signature = JSON.stringify([r.domain, years, accept, renew]);
       if (attempt.current?.signature !== signature) attempt.current = { signature, key: crypto.randomUUID() };
@@ -123,7 +123,7 @@ function CheckoutSheet({ r }: { r: Result }) {
       {live && quote && !quote.salesOpen && <div className="checkout-status" role="alert"><p><strong>New registrations are paused right now.</strong> Nothing can be charged, and the name isn't held. Please check back later.</p></div>}
       <dl className="rows">
         <dt>{live ? term : `Test price · ${term.toLowerCase()}`}</dt><dd>{total ?? (loading ? 'Checking…' : 'Unavailable')}</dd>
-        <dt>{live ? "Renews at" : "Test renewal price"}</dt><dd>{live ? (quote ? `${quote.subtotal} / ${termWords(years)}` : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
+        <dt>{live ? "Current renewal price" : "Test renewal price"}</dt><dd>{live ? (quote ? (quote.renewalSubtotal ? `${quote.renewalSubtotal} / ${termWords(years)}` : 'Unavailable — confirm before renewal') : 'Checking…') : `${r.renewal ?? r.price ?? 'At launch'} / ${termWords(years)}`}</dd>
         {live && quote && <><dt>Renewal date</dt><dd>About {renewsOn.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}</dd></>}
         <dt>Public lookups</dt><dd>{privacyRow(tld)}</dd>
         <dt className="total">{live ? 'Total today, before tax' : 'Published test price'}</dt><dd className="total">{total ?? 'Unavailable'}</dd>
@@ -136,7 +136,7 @@ function CheckoutSheet({ r }: { r: Result }) {
         {quote.renewalLevel && <><dt>Renewal level</dt><dd>{quote.renewalLevel}</dd></>}
         <dt>MossHatch fee</dt><dd>{quote.fee}</dd>
         <dt className="total">Total before tax</dt><dd className="total">{quote.subtotal}</dd>
-      </dl>{quote.renewalLevel && <p className="fineprint">Our registrar charges more to renew this name than to register it, so we charge the renewal level from the first year. Your price is then the same every year at today's registrar prices, with no jump at the first renewal.</p>}</details>}
+      </dl>{quote.renewalLevel && <p className="fineprint">Our registrar charges more to renew this name than to register it, so the first term includes that difference. The first-term total and current renewal price are shown separately above.</p>}</details>}
       {live && quote && <dl className="rows rows-small">
         <dt>Refunds</dt><dd>{refundBy ? `Until ${at(refundBy)}, if the name has no DNS records or connections yet. A refund deletes the name.` : 'Not refundable once registered'}</dd>
         {quote.registrar && <><dt>Registrar of record</dt><dd>{quote.registrar.name} (IANA ID {quote.registrar.ianaId}). Mosshatch is a reseller. <a href="/legal/registrant-rights" target="_blank" rel="noreferrer">Your rights</a></dd></>}
@@ -147,9 +147,9 @@ function CheckoutSheet({ r }: { r: Result }) {
       {loading && <p className="checkout-status" role="status">Checking price and checkout details…</p>}
       {(loadError || expired || (live && account && !loading && !docsReady)) && <div className="checkout-status" role="alert"><p>{loadError ?? (expired ? 'This quote expired. Refresh it to see the current price.' : 'The required terms could not be loaded. Checkout is paused until they are available.')}</p><button className="link-btn" type="button" onClick={() => setRevision(v => v + 1)}>Refresh checkout</button></div>}
       {live && account && hasContact === false && <ContactForm email={account.user.email} onSaved={() => setHasContact(true)} />}
-      {live && account && hasContact && authorisation && quote && <div className="auto-renew-choice">
+      {live && account && hasContact && authorisation && quote?.renewalSubtotal && <div className="auto-renew-choice">
         <label className="check"><input type="checkbox" checked={autoRenew} disabled={busy} onChange={e => setAutoRenew(e.target.checked)} /><span>Save my card for auto-renew (optional)</span></label>
-        <p className="fineprint">If you tick this, Stripe saves your card. Auto-renew stays off until you confirm it with your passkey on the domain page after registration. Once on, we charge the renewal price ten days before the name expires, never more than {quote.subtotal} for {years === 1 ? "one year" : `${years} years`} without your passkey, and we email you first. Turn it off any time with one click. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorisation</a>.</p>
+        <p className="fineprint">If you tick this, Stripe saves your card. Auto-renew stays off until you confirm a renewal price limit with your passkey on the domain page after registration. Today's renewal price is {quote.renewalSubtotal} for {years === 1 ? "one year" : `${years} years`}. Once on, we charge ten days before expiry, never above the limit you approved, and we email you first. Turn it off any time with one click. <a href={authorisation.url} target="_blank" rel="noreferrer">Read the authorisation</a>.</p>
       </div>}
       {live && account && hasContact && docsReady && <label className="check"><input type="checkbox" checked={accepted} disabled={busy} onChange={e => setAccepted(e.target.checked)} /><span>I accept the <a href={doc('terms')!.url} target="_blank" rel="noreferrer">terms of service</a>, <a href={doc('registration_agreement')!.url} target="_blank" rel="noreferrer">registration agreement</a>{addendum && <> and <a href={addendum.url} target="_blank" rel="noreferrer">.{tld} registry terms</a></>}.</span></label>}
       {live && <p className="fineprint">No add-ons. Nothing is pre-checked.</p>}

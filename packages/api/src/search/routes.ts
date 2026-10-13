@@ -96,7 +96,7 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
         const p = prices.get(i.tld);
         return {
           fqdn: i.fqdn, tld: i.tld, kind: i.kind, source: i.source, unconfirmed: i.unconfirmed,
-          price: p && (i.kind === "available" || i.kind === "unknown") ? { years: p.years, subtotal_minor: p.subtotalMinor.toString(), currency: "usd" } : null,
+          price: p && (i.kind === "available" || i.kind === "unknown") ? { years: p.years, subtotal_minor: p.subtotalMinor.toString(), renewal_subtotal_minor: p.renewalSubtotalMinor?.toString() ?? null, currency: "usd" } : null,
         };
       }),
     });
@@ -114,6 +114,13 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
       if (e instanceof PricingError) throw new HttpError(e.code === "no_price" ? 503 : e.code === "premium_refused" || e.code === "price_mismatch" ? 422 : 400, e.code);
       throw e;
     }
+    // A new-registration tariff may differ from renewal; never infer renewal from the first charge.
+    let renewalQuote = null;
+    try {
+      renewalQuote = await withNoUser(req.ctx.runtime, (c) => buildQuote(c, { fqdn: quote.fqdn, years: quote.years, kind: "renew" }, req.ctx.clock.now()));
+    } catch (e) {
+      if (!(e instanceof PricingError) || e.code !== "no_price") throw e;
+    }
     const registrar = registrarOf(req, opts.registrar);
     const { items } = await searchAvailability(req.ctx, { registrar, cache }, fq.label, [fq.tld as never]);
     const a = items[0]!;
@@ -129,7 +136,7 @@ export function registerSearchRoutes(router: Router, opts: { registrar?: Registr
     const rec = registrarOfRecord(table);
     // C-58: the HTTPS notice for .dev and .app travels with the quote (closure/tld-https.ts), so every client shows it before checkout.
     return json({
-      availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, notices: tldNotices(a.fqdn),
+      availability: { fqdn: a.fqdn, kind: a.kind, source: a.source, unconfirmed: a.unconfirmed }, quote: purchasable ? quoteToJson(quote) : null, renewal_quote: purchasable && renewalQuote ? quoteToJson(renewalQuote) : null, notices: tldNotices(a.fqdn),
       sales_open: closed === null, sales_closed_reason: closed,
       registrar: { name: rec.name, short: rec.short, iana_id: rec.ianaId },
       refund: { refundable: facts.refund.refundable, window_days: facts.refund.refundable ? Math.min(5, facts.refund.windowDays ?? 5) : 0 },
