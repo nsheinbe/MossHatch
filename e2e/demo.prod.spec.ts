@@ -97,6 +97,35 @@ test("demo: registered-or-not comes from the registry lookup, no made-up prices,
   expect(bad).toEqual([]);
 });
 
+test("phone: the name field is on the first screen, above the bottom bar, and the panel does not repeat the waitlist", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.waitForSelector("html[data-booted='1']");
+  await cancelDemo(page);
+  const input = page.locator("#name-input");
+  const search = page.getByRole("button", { name: "Search", exact: true });
+  const nav = page.getByRole("navigation", { name: "Views" });
+  await expect(page.getByRole("heading", { name: /Find your domain/ })).toBeVisible();
+  await expect(input).toBeVisible();
+  await expect(search).toBeVisible();
+  // The banner is the waitlist. The in-panel copy of that button, and the rest of the welcome, are off this screen.
+  await expect(page.getByRole("complementary", { name: "Preview notice" }).getByRole("link", { name: "Join the waitlist" })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Join the waitlist" })).toHaveCount(0);
+  await expect(page.getByRole("main").getByText("A home for your next idea")).toBeHidden();
+  await expect(page.getByRole("main").getByText("Clear renewal pricing")).toBeHidden();
+  const box = await input.boundingBox();
+  const navBox = await nav.boundingBox();
+  const searchBox = await search.boundingBox();
+  expect(box).toBeTruthy();
+  expect(navBox).toBeTruthy();
+  expect(searchBox).toBeTruthy();
+  // Fully on screen, and fully above the bar (8px of room, plus whatever the safe-area inset already reserved).
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(navBox!.y - 8);
+  expect(searchBox!.y + searchBox!.height).toBeLessThanOrEqual(navBox!.y - 8);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+});
+
 test("waitlist dialog: consent unticked and required, says it reserves nothing, submits, focus returns; axe clean", async ({ page }) => {
   const bad = watch(page);
   await page.goto("/");
