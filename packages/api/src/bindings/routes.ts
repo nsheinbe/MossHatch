@@ -88,7 +88,8 @@ async function patch(req: HandlerReq): Promise<HandlerResult> {
   const id = req.params.id ?? "";
   if (!UUID.test(id)) throw notFound();
   return withUser(req.ctx.runtime, userId, async (c) => {
-    const { row } = await bindingState(c, userId, id);
+    // Serialize the comparison and update: two free narrowings must not restore access removed by the other.
+    const { row } = await bindingState(c, userId, id, true);
     const body = PatchBody.safeParse(req.body);
     const widening = () => new HttpError(403, "step_up_required", undefined, undefined, { type: "agent.token.widen" });
     if (!body.success) throw widening();
@@ -120,14 +121,16 @@ async function widen(req: HandlerReq): Promise<HandlerResult> {
   if (req.params.id !== p.binding_id) throw notFound();
   return withUser(req.ctx.runtime, userId, async (c) => {
     await markExecuted(c, action);
-    const cur = await bindingState(c, userId, p.binding_id);
+    const cur = await bindingState(c, userId, p.binding_id, true);
     if (cur.beforeHash !== p.before_hash) throw new HttpError(409, "params_changed");
     const now = req.ctx.clock.now();
     const exp = p.after.expires_in_days ? new Date(now.getTime() + Math.min(p.after.expires_in_days * DAY, AGENT_MAX_MS)) : null;
     const r = await c.query(
       `update bindings set name = $3, scopes = $4, spend_cap_minor = $5, paused_at = null,
-              expires_at = case when kind = 'agent' and $6::timestamptz is not null then $6 else expires_at end,
-              family_expires_at = case when kind = 'cli' and $6::timestamptz is not null then least($6, created_at + interval '90 days') else family_expires_at end
+              expires_at = case when $6::timestamptz is null then expires_at
+                                when family_expires_at is null then $6
+                                else least(expires_at, $6, created_at + interval '90 days') end,
+              family_expires_at = case when family_expires_at is not null and $6::timestamptz is not null then least($6, created_at + interval '90 days') else family_expires_at end
         where id = $1 and user_id = $2 and revoked_at is null returning *`,
       [p.binding_id, userId, p.after.name, JSON.stringify(p.after.scopes), String(p.after.spend_cap_minor), exp]);
     if (r.rowCount !== 1) throw notFound();

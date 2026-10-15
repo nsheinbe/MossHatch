@@ -30,6 +30,7 @@ const bearerRoutes = router.routes.filter((r) => r.principals.includes("binding"
 const key = (r: Route) => `${r.method} ${r.path}`;
 
 const ENTRIES: Record<string, Entry> = {
+  "POST /api/v1/agent/domains/:fqdn/nameservers/proposals": { cap: "nameservers.propose", env: false, call: (p, _e, t) => bearer(k, t, "POST", `/api/v1/agent/domains/${p.domain.fqdn}/nameservers/proposals`, { nameservers: ["ns1.destination.example", "ns2.destination.example"] }) },
   "POST /api/v1/domains/:fqdn/secrets/:env/read": { cap: "secrets.read", env: true, call: (p, env, t) => bearer(k, t, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/${env}/read`, {}) },
   "GET /api/v1/domains/:fqdn/nest/:env/names": { cap: "nest.names", env: true, call: (p, env, t) => bearer(k, t, "GET", `/api/v1/domains/${p.domain.fqdn}/nest/${env}/names`) },
   "POST /api/v1/domains/:fqdn/secrets/:env/write": { cap: "secrets.write", env: true, call: (p, env, t) => bearer(k, t, "POST", `/api/v1/domains/${p.domain.fqdn}/secrets/${env}/write`, { secrets: { MATRIX_VALUE: "v" } }) },
@@ -103,6 +104,7 @@ function variants(cap: string, dom: string, env: Env | null): { name: string; sc
 }
 /** Reference semantics, written independently of the code under test. */
 function expected(scopes: S[], cap: string, dom: string, env: Env | null): boolean {
+  if (cap === "nameservers.propose") return scopes.some((s) => s.capability === cap && s.domain_id === dom);
   const cov = (c: string, e: Env | null) => scopes.some((s) => s.capability === c && (s.domain_id === dom || s.domain_id === "*") && (e === null || s.env === e || (s.env === "*" && e !== "prod")));
   if (cap === "recipes.apply") return cov("recipes.apply", env) && cov("secrets.write", env);
   if (cap === "recipes.plan") return cov("recipes.plan", null) || cov("recipes.apply", null);
@@ -164,6 +166,7 @@ describe("ST-91 (bearer half): user B's widest token never reaches user A's reso
     const aRequest = (await k.app.db.owner.query("insert into agent_requests (user_id, binding_id, kind, request_hash, params, created_at, expires_at) values ($1,$2,'scope',$3,'{}', now(), now() + interval '1 hour') returning id", [a.user.userId, aBinding.id, sha256("matrix-a-request")])).rows[0].id as string;
     const shape = (x: { status: number; text: string }) => JSON.stringify([x.status, x.text]);
     const probes: [string, string, string, unknown?][] = [
+      ["POST", `/api/v1/agent/domains/${a.domain.fqdn}/nameservers/proposals`, "/api/v1/agent/domains/matrix-missing.com/nameservers/proposals", { nameservers: ["ns1.destination.example", "ns2.destination.example"] }],
       ["POST", `/api/v1/domains/${a.domain.fqdn}/secrets/dev/read`, `/api/v1/domains/nobody-here-matrix.com/secrets/dev/read`, {}],
       ["GET", `/api/v1/domains/${a.domain.fqdn}/nest/dev/names`, `/api/v1/domains/nobody-here-matrix.com/nest/dev/names`],
       ["POST", `/api/v1/domains/${a.domain.fqdn}/secrets/dev/write`, `/api/v1/domains/nobody-here-matrix.com/secrets/dev/write`, { secrets: { X: "y" } }],

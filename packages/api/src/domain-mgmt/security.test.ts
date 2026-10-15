@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { hashOf, sha256 } from "../util/bytes.ts";
 import { RegistrarError } from "@mosshatch/registrar/port";
 import { call, everythingStored, makeDomain, makeKit, makePerson, refreshSession, resetFuse, resetPrepareLimit, stepUp, tick, type Kit, type Person } from "./testkit.ts";
 
@@ -15,6 +16,12 @@ function expectNotice(p: Person, kind: string) {
     expect(m.length, `${kind} to ${to}`).toBe(1);
     expect(linkOf(m[0]!.text), `freeze link in ${kind} to ${to}`).toBeTruthy();
   }
+}
+
+/** A fixture for an action committed by the pre-upgrade code, not an approval minted by the new gate. */
+async function historicalNameserverAction(d: { id: string; fqdn: string }, op = "nameservers") {
+  const params = { op, ds: { keyTag: 1, algorithm: 13, digestType: 2, digest: "cd".repeat(32) }, domain_id: d.id, fqdn: d.fqdn, nameservers: ["ns1.example.net", "ns2.example.net"], target_signed: true };
+  return (await k.app.db.owner.query("insert into actions (user_id, session_id_hash, type, params, params_hash, state, expires_at, committed_at, credential_id, uv, be, bs, client_data_json, authenticator_data, signature) values ($1,$2,'domain.nameservers.change',$3,$4,'committed',$5,$6,'historical-fixture',true,false,false,'fixture','fixture','fixture') returning id", [alice.user.userId, sha256(Buffer.from(alice.user.cookie.split("=")[1]!, "base64url")), params, hashOf(params), new Date(k.app.clock.now().getTime() + 120_000), k.app.clock.now()])).rows[0].id as string;
 }
 
 describe("ST-122: gated routes refuse without a committed action", () => {
@@ -53,29 +60,30 @@ describe("ST-122: gated routes refuse without a committed action", () => {
     const d = await makeDomain(k, alice, "st122-ds.com");
     await k.registrar.addDs(d.fqdn, { keyTag: 12345, algorithm: 13, digestType: 2, digest: "ab".repeat(32) });
     // Our copy is stale (ds_present false): the route asks the registrar, which refuses.
-    const id = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "nameservers", nameservers: ["ns1.example.net", "ns2.example.net"] });
+    const id = await historicalNameserverAction(d);
     const res = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/nameservers`, {}, id);
-    expect(res.status).toBe(409); expect(res.json.error.code).toBe("dnssec_would_break");
+    expect(res.status).toBe(409); expect(res.json.error.code).toBe("nameserver_migration_unavailable");
     expect(k.registrar.domainRecord(d.fqdn)!.nameservers.every((n) => n.endsWith("systemdns.com"))).toBe(true);
     // The refusal rolled back the use of the action: it is still committed, not executed.
     expect((await k.app.db.owner.query("select state from actions where id = $1", [id])).rows[0].state).toBe("committed");
     // Once our copy knows, the change is refused at prepare, before any passkey touch.
     await k.app.db.owner.query("update domains set ds_present = true where id = $1", [d.id]);
     const prep = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "nameservers", nameservers: ["ns1.example.net", "ns2.example.net"] } });
-    expect(prep.status).toBe(409); expect(prep.json.error.code).toBe("dnssec_would_break");
+    expect(prep.status).toBe(409); expect(prep.json.error.code).toBe("nameserver_migration_unavailable");
   });
 
-  it("nameserver change works with a committed action, is bound to the params, and glue is refused plainly", async () => {
+  it("ST-NS-02: pre-upgrade committed actions cannot bypass the migration gate, and glue is refused plainly", async () => {
     const d = await makeDomain(k, alice, "st122-ns.com");
     const glue = await call(k, alice, "POST", "/api/v1/actions/prepare", { type: "domain.nameservers.change", target_id: d.fqdn, user_input: { kind: "nameservers", nameservers: [`ns1.${d.fqdn}`, `ns2.${d.fqdn}`] } });
     expect(glue.status).toBe(422); expect(glue.json.error.code).toBe("glue_unsupported");
-    const id = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "nameservers", nameservers: ["ns1.example.net", "ns2.example.net"] });
+    const id = await historicalNameserverAction(d);
     const ok = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/nameservers`, { nameservers: ["evil.example.org", "evil2.example.org"] }, id);
-    expect(ok.status).toBe(200);
-    expect(ok.json.nameservers).toEqual(["ns1.example.net", "ns2.example.net"]);          // the body is ignored; the committed params rule
-    expect(k.registrar.domainRecord(d.fqdn)!.nameservers).toEqual(["ns1.example.net", "ns2.example.net"]);
+    expect(ok.status).toBe(409);
+    expect(ok.json.error.code).toBe("nameserver_migration_unavailable");
+    expect(k.registrar.calls.setNameservers).toBe(0);
     const row = (await k.app.db.owner.query("select nameservers, dns_hosted_here from domains where id = $1", [d.id])).rows[0];
-    expect(row.nameservers).toEqual(["ns1.example.net", "ns2.example.net"]); expect(row.dns_hosted_here).toBe(false);
+    expect(row.nameservers.every((n: string) => n.endsWith("systemdns.com"))).toBe(true);
+    expect(row.dns_hosted_here).toBe(true);
   });
 
   it("a recovery hold refuses the four specs at prepare", async () => {
@@ -108,19 +116,25 @@ describe("ST-123: every unlock, code issue, nameserver change and contact change
     expectNotice(alice, "domain.unlocked");
   });
 
-  it("code issue, nameserver change and DS change", async () => {
+  it("ST-NS-03: code issue notifies; blocked delegation and legacy DS actions never write or claim success", async () => {
     const d = await makeDomain(k, alice, "st123-code.com");
     await k.app.db.owner.query("update domains set locked = false where id = $1", [d.id]); await k.registrar.setLock(d.fqdn, false);
     const code = await stepUp(k, alice, "domain.transfer_out", d.fqdn);
     expect((await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/transfer-out`, {}, code)).status).toBe(200);
     expectNotice(alice, "domain.code_issued");
-    const ns = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "nameservers", nameservers: ["ns1.example.net", "ns2.example.net"] });
-    expect((await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/nameservers`, {}, ns)).status).toBe(200);
-    expectNotice(alice, "domain.nameservers_changed");
-    const ds = await stepUp(k, alice, "domain.nameservers.change", d.fqdn, { kind: "ds_add", ds: { keyTag: 1, algorithm: 13, digestType: 2, digest: "cd".repeat(32) } });
-    expect((await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/ds`, {}, ds)).status).toBe(200);
-    expectNotice(alice, "domain.ds_changed");
-    expect((await k.app.db.owner.query("select ds_present from domains where id = $1", [d.id])).rows[0].ds_present).toBe(true);
+    const ns = await historicalNameserverAction(d);
+    expect((await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/nameservers`, {}, ns)).status).toBe(409);
+    expect(k.app.email.sent.filter((m) => m.kind === "domain.nameservers_changed")).toHaveLength(0);
+    const addCalls = k.registrar.calls.addDs, removeCalls = k.registrar.calls.removeDs;
+    for (const op of ["ds_add", "ds_remove"]) {
+      const ds = await historicalNameserverAction(d, op);
+      const result = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/ds`, {}, ds);
+      expect(result.status).toBe(409); expect(result.json.error.code).toBe("ds_change_unavailable");
+    }
+    expect(k.registrar.calls.addDs).toBe(addCalls);
+    expect(k.registrar.calls.removeDs).toBe(removeCalls);
+    expect(k.app.email.sent.filter((m) => m.kind === "domain.ds_changed")).toHaveLength(0);
+    expect((await k.app.db.owner.query("select ds_present from domains where id = $1", [d.id])).rows[0].ds_present).toBe(false);
   });
 
   it("contact change, and the freeze link in the notice really freezes the account without unlocking or changing anything", async () => {

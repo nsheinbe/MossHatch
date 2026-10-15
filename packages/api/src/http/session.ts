@@ -1,5 +1,5 @@
 import type { AppContext } from "../ports.ts";
-import { withNoUser, withUser } from "@mosshatch/db";
+import { withNoUser, withUser, type PoolClient } from "@mosshatch/db";
 import { b64u, randomBytes, sha256 } from "../util/bytes.ts";
 
 export const SESSION_COOKIE = "__Host-mh_session";
@@ -25,15 +25,17 @@ export function parseCookies(header: string | null): Record<string, string> {
 export interface NewSession { cookie: string; idHash: Buffer; expiresAt: Date }
 
 /** Issue a session. The id is 256 random bits; only its SHA-256 is stored. Always a new id (login, credential change, recovery). */
-export async function createSession(ctx: AppContext, userId: string, opts: { credentialId?: string; ipPrefix?: string; uaFamily?: string }): Promise<NewSession> {
+export async function createSession(ctx: AppContext, userId: string, opts: { credentialId?: string; ipPrefix?: string; uaFamily?: string }, client?: PoolClient): Promise<NewSession> {
   const raw = randomBytes(32);
   const idHash = sha256(raw);
   const now = ctx.clock.now();
   const expiresAt = new Date(now.getTime() + ABSOLUTE_MS);
-  await withUser(ctx.runtime, userId, (c) => c.query(
+  const insert = (c: PoolClient) => c.query(
     "insert into sessions (id_hash, user_id, created_at, last_seen_at, expires_at, idle_expires_at, auth_credential_id, ip_prefix, ua_family) values ($1,$2,$3,$3,$4,$5,$6,$7,$8)",
     [idHash, userId, now, expiresAt, new Date(now.getTime() + IDLE_MS), opts.credentialId ?? null, opts.ipPrefix ?? null, opts.uaFamily ?? null],
-  ));
+  );
+  // Authentication can issue the session under the same locks as its final credential/account recheck.
+  if (client) await insert(client); else await withUser(ctx.runtime, userId, insert);
   return { cookie: cookieHeader(SESSION_COOKIE, b64u(raw)), idHash, expiresAt };
 }
 

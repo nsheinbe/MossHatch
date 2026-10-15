@@ -7,6 +7,7 @@ import type { HandlerReq, HandlerResult } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
 import { hashOf, safeEqual } from "../util/bytes.ts";
 import { markExecuted, requireAction } from "../stepup/gate.ts";
+import { assertNotHeld } from "../stepup/holds-port.ts";
 import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
 import { createOrder, ensureSession } from "../orders/create.ts";
 import { loadOrder, ordersSvc } from "../orders/support.ts";
@@ -16,7 +17,8 @@ import { ensureTerm } from "../domains/terms.ts";
 import { ensureRenewalOrder, startRenewalCheckout } from "../domains/renewals.ts";
 import { StripeError } from "../stripe/port.ts";
 import type { OrderRow } from "../orders/types.ts";
-import { approvedZonePlan } from "./dns.ts";
+import { approvedZonePlan, dnsGrantHash, assertDnsGrant } from "./dns.ts";
+import { assertDnsOwnerSession, registerSessionDnsApproval } from "../domain-mgmt/dns-approval.ts";
 import { mapRegistrarError, notifyDomainEvent } from "../domain-mgmt/common.ts";
 import { writeZoneLocked, type ZoneWriter } from "../domain-mgmt/dns.ts";
 import { approvalExpired, confirmRule, expireIfDue, loadRequest, priceRegistration, priceRenewal, voidRequest, type RequestRow } from "./requests.ts";
@@ -93,13 +95,17 @@ export const dnsApproveSpec: ActionSpec<Record<string, never>> = {
     const id = targetId.slice(3);
     const r = await loadRequest(c, userId, id);
     if (!r || r.kind !== "dns_change") throw notFound();
+    // Older pending requests displayed shortened values and did not bind the live grant version.
+    // Their full removal diff cannot be reconstructed safely: the agent must propose afresh.
+    if (r.params.review_format !== "exact-v1" || typeof r.params.grant_hash !== "string") throw new HttpError(409, "request_unavailable");
     if (r.state !== "pending") throw new HttpError(409, "request_unavailable");
     const now = ctx.clock.now();
     if (new Date(r.expires_at) <= now) { await expireIfDue(ctx, userId, r); throw new HttpError(409, "request_expired"); }
     const b = await liveBinding(c, userId, r.binding_id, now);
     if (!b) throw new HttpError(409, "binding_unavailable");
+    await assertDnsGrant(ctx, c, userId, r.binding_id, r.domain_id!, r.params.grant_hash);
     return {
-      params: { route: "agent_request", request_id: r.id, binding_id: r.binding_id, binding_name: b.name, domain: r.params.fqdn, request_hash: Buffer.from(r.request_hash).toString("hex"), before_hash: r.params.before_hash, after_hash: r.params.after_hash, sensitive: (r.params.sensitive as unknown[]).length },
+      params: { route: "agent_request", request_id: r.id, binding_id: r.binding_id, binding_name: b.name, domain: r.params.fqdn, domain_id: r.domain_id, user_id: userId, expires_at: new Date(r.expires_at).toISOString(), grant_hash: dnsGrantHash(b), request_hash: Buffer.from(r.request_hash).toString("hex"), before_hash: r.params.before_hash, after_hash: r.params.after_hash, sensitive: (r.params.sensitive as unknown[]).length },
       resourceId: r.id,
     };
   },
@@ -109,6 +115,7 @@ export const dnsApproveSpec: ActionSpec<Record<string, never>> = {
 export function registerApprovalSpecs(): void {
   registerActionSpec(purchaseApproveSpec);
   registerRoutedSpec("dns.sensitive.approve", (t) => /^ar_[0-9a-f-]{36}$/i.test(t), "agent_request", dnsApproveSpec as ActionSpec);
+  registerSessionDnsApproval();
 }
 
 // ---- the gated routes ----------------------------------------------------------------------------------------------------------
@@ -316,14 +323,21 @@ export async function checkoutHandler(req: HandlerReq): Promise<HandlerResult> {
  * still be pending, unexpired and its binding live; it becomes `approved` by this assertion. `decline` locks the same row first, so
  * whichever of the two commits second sees the other's result.
  */
-async function claimDnsRequest(ctx: AppContext, c: PoolClient, userId: string, requestId: string, actionId: string): Promise<void> {
+async function claimDnsRequest(ctx: AppContext, c: PoolClient, userId: string, requestId: string, actionId: string, expected: Record<string, unknown>): Promise<void> {
   await lockUser(c, userId);
   const r = await loadRequest(c, userId, requestId, true);
   if (!r || r.kind !== "dns_change") throw notFound();
   if (r.state !== "pending") throw new HttpError(409, "request_unavailable");
   const now = ctx.clock.now();
   if (new Date(r.expires_at) <= now) throw new HttpError(409, "request_expired");
-  if (!(await liveBinding(c, userId, r.binding_id, now, true))) throw new HttpError(409, "binding_unavailable");
+  await assertDnsGrant(ctx, c, userId, r.binding_id, r.domain_id!, expected.grant_hash as string, true);
+  if (r.binding_id !== expected.binding_id || r.domain_id !== expected.domain_id || r.user_id !== expected.user_id ||
+    new Date(r.expires_at).toISOString() !== expected.expires_at || Buffer.from(r.request_hash).toString("hex") !== expected.request_hash ||
+    r.params.before_hash !== expected.before_hash || r.params.after_hash !== expected.after_hash) throw new HttpError(409, "params_changed");
+  const action = (await c.query("select expires_at, session_id_hash from actions where id=$1 and user_id=$2 and state='executed'", [actionId, userId])).rows[0];
+  if (!action || new Date(action.expires_at) <= now) throw new HttpError(409, "approval_expired");
+  await assertDnsOwnerSession(ctx, c, userId, action.session_id_hash);
+  await assertNotHeld(ctx, c, userId, "dns.sensitive.approve");
   await markApproved(ctx, c, userId, r, actionId, "approved");
 }
 
@@ -331,10 +345,10 @@ async function claimDnsRequest(ctx: AppContext, c: PoolClient, userId: string, r
  * The person approving an agent's sensitive DNS change: the snapshot and the audit name the person; the notice for an applied change is
  * sent from `after` with the approval (null here), and the one for a write whose outcome is unknown says it may have landed.
  */
-const approvalWriter = (userId: string): ZoneWriter => ({
-  snapshotKind: "user", actorKind: "user", actorId: userId,
+const approvalWriter = (userId: string, requestId: string): ZoneWriter => ({
+  requestId, snapshotKind: "user", actorKind: "user", actorId: userId,
   notice: ({ fqdn, sensitive, maybe }) => maybe
-    ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `You approved a change from one of your tokens to ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}. It may have been applied: our registrar did not confirm it. You can roll it back from the DNS tab, under History.` }
+    ? { subject: "A sensitive DNS record on your Mosshatch domain may have changed", text: `You approved a change from one of your tokens to ${sensitive.length} sensitive DNS record${sensitive.length === 1 ? "" : "s"} on ${fqdn}. It may have been applied: our registrar did not confirm it. Review the saved receipt in the DNS tab, under History. An uncertain outcome must be reconciled before another change or rollback. Rollback needs a new review and cannot undo cached answers or lost mail.` }
     : null,
 });
 
@@ -353,12 +367,12 @@ export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult>
   const { ctx } = req;
   const userId = sessionUserOf(req);
   const action = requireAction(req, "dns.sensitive.approve");
-  const p = action.params as { route?: string; request_id: string; before_hash: string; after_hash: string };
+  const p = action.params as Record<string, unknown> & { route?: string; request_id: string; before_hash: string; after_hash: string };
   if (p.route !== "agent_request" || !UUID.test(req.params.id ?? "") || p.request_id !== req.params.id) throw notFound();
   const s = await withUser(ctx.runtime, userId, async (c): Promise<Settled> => {
     const st = await settle(ctx, c, userId, { id: action.id, type: "dns.sensitive.approve" }, p.request_id, ["dns_change"]);
     if (!("ok" in st)) return st;
-    if (st.ok.params.before_hash !== p.before_hash || st.ok.params.after_hash !== p.after_hash) return { refuse: "params_changed", status: 409 };
+    if (st.ok.binding_id !== p.binding_id || st.ok.domain_id !== p.domain_id || st.ok.user_id !== p.user_id || Buffer.from(st.ok.request_hash).toString("hex") !== p.request_hash || st.ok.params.before_hash !== p.before_hash || st.ok.params.after_hash !== p.after_hash) return { refuse: "params_changed", status: 409 };
     return st;
   });
   if (!("ok" in s)) throw new HttpError(s.status, s.refuse);
@@ -366,9 +380,9 @@ export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult>
   if (!r.domain_id) throw notFound();
   let w;
   try {
-    w = await writeZoneLocked(ctx, userId, r.domain_id, approvalWriter(userId), (live, d) => approvedZonePlan(d.fqdn_ascii, { before_hash: p.before_hash, after_hash: p.after_hash, desired: r.params.desired })(live), {
+    w = await writeZoneLocked(ctx, userId, r.domain_id, approvalWriter(userId, r.id), (live, d) => approvedZonePlan(d.fqdn_ascii, { before_hash: p.before_hash, after_hash: p.after_hash, desired: r.params.desired })(live), {
       detail: { actor: "user" },
-      claim: (c) => claimDnsRequest(ctx, c, userId, r.id, action.id),
+      claim: (c) => claimDnsRequest(ctx, c, userId, r.id, action.id, p),
       // Refused: nothing changed, so the approval ends here (the agent can propose again). Unknown: it stays approved, with its snapshot.
       failed: async (c, outcome) => {
         if (outcome === "refused") await c.query("update agent_requests set state = 'failed', decision_reason = 'write_refused' where id = $1 and state = 'approved' and decided_by_action_id = $2", [r.id, action.id]);
@@ -380,7 +394,7 @@ export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult>
         const n = done.change?.sensitive.length ?? 0;
         await notifyDomainEvent(ctx, c, userId, {
           kind: "dns.sensitive_changed", domainId: done.domain.id, subject: "A sensitive DNS record on your Mosshatch domain changed",
-          text: `You approved a change from one of your tokens that touched ${n} sensitive DNS record${n === 1 ? "" : "s"} on ${done.domain.fqdn_ascii}. You can roll it back from the DNS tab, under History.`,
+          text: `You approved a change from one of your tokens that touched ${n} sensitive DNS record${n === 1 ? "" : "s"} on ${done.domain.fqdn_ascii}. Review the saved receipt in the DNS tab, under History. An uncertain outcome must be reconciled before another change or rollback. Rollback needs a new review and cannot undo cached answers or lost mail.`,
         });
       },
     });
@@ -392,5 +406,5 @@ export async function approveDnsHandler(req: HandlerReq): Promise<HandlerResult>
     }
     throw mapRegistrarError(e);
   }
-  return json({ id: p.request_id, state: "applied", zone_hash: w.zoneHash, snapshot_id: w.snapshotId });
+  return json({ id: p.request_id, state: "applied", zone_hash: w.zoneHash, snapshot_id: w.snapshotId, operation_id: w.snapshotId, accepted: true, provider_state: "desired_observed", authoritative_visibility: "not_checked", propagation: "not_sampled" });
 }

@@ -8,7 +8,7 @@ import { FakeHorizonTransport, opsReply } from "./fake-horizon.ts";
 import { DOCUMENTED_FIXTURES } from "./fixtures.ts";
 import { MemoryCredentials, MemoryKillSwitch, type AdapterAlert, type KillSwitch } from "./guards.ts";
 import { opsSignature } from "./sign.ts";
-import { decodeOps, encodeOps } from "./xml.ts";
+import { decodeOps, encodeOps, type OpsObject } from "./xml.ts";
 
 const KEY = "k".repeat(32);
 let n = 0;
@@ -26,6 +26,31 @@ const scripted = (responses: (string | { status: number; body: string } | Error)
   return t;
 };
 const bare = (t: HttpTransport) => new OpenSrsAdapter({ mode: "sandbox", deployment: "staging", credentials: new MemoryCredentials({ username: "u", apiKey: KEY }), transport: t, killSwitch: new MemoryKillSwitch() });
+
+describe("SystemDNS fidelity refusal (source: documented)", () => {
+  it("ST-108: never overwrites a zone containing unrepresentable records or upstream TTL", async () => {
+    const cases: OpsObject[] = [
+      { CAA: [{ subdomain: "", value: '0 issue "ca.example"' }] },
+      { A: [{ subdomain: "", ip_address: "192.0.2.1", ttl: "60" }] },
+      { A: [{ subdomain: "" }] },
+    ];
+    for (const records of cases) {
+      const transport = scripted([opsReply(200, { nameservers_ok: "1", records })]);
+      await expect(bare(transport).replaceZone("abc.com", [{ type: "A", name: "", value: "192.0.2.2" }])).rejects.toMatchObject({ code: "dns_fidelity_unavailable", outcomeUnknown: false });
+      expect(transport.sent).toBe(1);
+    }
+  });
+
+  it("ST-108: refuses explicit TTL writes and stale plans before SET_DNS_ZONE", async () => {
+    const response = opsReply(200, { nameservers_ok: "1", records: { A: [] } });
+    const ttl = scripted([response]);
+    await expect(bare(ttl).replaceZone("abc.com", [{ type: "A", name: "", value: "192.0.2.1", ttl: 60 }])).rejects.toMatchObject({ code: "dns_ttl_unsupported" });
+    expect(ttl.sent).toBe(1);
+    const stale = scripted([response]);
+    await expect(bare(stale).replaceZone("abc.com", [], { expectedHash: "0".repeat(64) })).rejects.toMatchObject({ code: "dns_state_changed" });
+    expect(stale.sent).toBe(1);
+  });
+});
 
 describe("OPS codec and signature", () => {
   it("round-trips nested values with escaping and empty arrays", () => {

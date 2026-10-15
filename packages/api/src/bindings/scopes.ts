@@ -10,7 +10,7 @@ import type { Principal } from "../http/types.ts";
  */
 
 export const CAPABILITIES = [
-  "domains.read", "dns.read", "dns.write", "nest.names", "secrets.read", "secrets.write",
+  "domains.read", "dns.read", "dns.write", "nameservers.propose", "nest.names", "secrets.read", "secrets.write",
   "recipes.plan", "recipes.apply", "register.propose", "renew.propose", "transfer.status",
   // C-34: an agent may turn auto-renew off (never on); used by the domains module's DELETE /domains/:id/auto-renew.
   "mandate.off",
@@ -50,6 +50,7 @@ export function parseScope(raw: string, owned: ReadonlyMap<string, string>): Sco
   if (cap === "*") throw new ScopeError("star_capability");
   if (!(CAPABILITIES as readonly string[]).includes(cap)) throw new ScopeError("unknown_capability");
   const capability = cap as Capability;
+  if (capability === "nameservers.propose" && res === "*") throw new ScopeError("domain_required");
   let envSel: EnvSel | null = null;
   if (env !== undefined) {
     if (!ENV_REQUIRED.has(capability) && !ENV_OPTIONAL.has(capability)) throw new ScopeError("env_forbidden");
@@ -94,6 +95,7 @@ export function storedScopes(raw: unknown): Scope[] {
     if (!s || typeof s !== "object") continue;
     const o = s as Record<string, unknown>;
     if (!(CAPABILITIES as readonly string[]).includes(o.capability as string) || typeof o.domain_id !== "string") continue;
+    if (o.capability === "nameservers.propose" && o.domain_id === "*") continue;
     const env = o.env === null || o.env === undefined ? null : (["dev", "preview", "prod", "*"].includes(o.env as string) ? o.env as EnvSel : undefined);
     if (env === undefined) continue;
     out.push({ capability: o.capability as Capability, domain_id: o.domain_id, env, label: typeof o.label === "string" ? o.label : o.domain_id });
@@ -104,6 +106,7 @@ export function storedScopes(raw: unknown): Scope[] {
 /** Does `s` cover the (capability, domain, env) asked for? `*` covers any domain; an env `*` never covers `prod`. */
 export function covers(s: Pick<Scope, "capability" | "domain_id" | "env">, capability: string, domainId: string, env: Env | null): boolean {
   if (s.capability !== capability) return false;
+  if (capability === "nameservers.propose" && s.domain_id === "*") return false;
   if (s.domain_id !== "*" && s.domain_id !== domainId) return false;
   if (env === null) return true;
   return s.env === env || (s.env === "*" && env !== "prod");
@@ -113,6 +116,7 @@ export const allows = (scopes: readonly Scope[], capability: Capability, domainI
 /** Coverage of one proposed entry by one stored entry, for the widening classifier. */
 function entryCovered(stored: Pick<Scope, "capability" | "domain_id" | "env">, p: Pick<Scope, "capability" | "domain_id" | "env">): boolean {
   if (stored.capability !== p.capability) return false;
+  if (stored.capability === "nameservers.propose" && (stored.domain_id === "*" || p.domain_id === "*")) return false;
   if (stored.domain_id !== "*" && stored.domain_id !== p.domain_id) return false;
   if (stored.env === p.env) return true;
   if (p.env === null) return stored.env === null;

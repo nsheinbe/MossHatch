@@ -3,7 +3,9 @@ import type { AppContext } from "../ports.ts";
 import { HttpError, json, type Router } from "../http/router.ts";
 import type { HandlerReq, HandlerResult, Route } from "../http/types.ts";
 import { callerOf } from "../agents/common.ts";
+import { ownedDomainMap, parseScope, scopeString } from "../bindings/scopes.ts";
 import { dispatch, isRpcRequest, LATEST, RPC, SUPPORTED, type CallMeta } from "./server.ts";
+import { TOOLS } from "./tools.ts";
 
 /**
  * `POST /mcp` (Streamable HTTP, one endpoint, JSON responses; the router answers GET and DELETE with 405 as the 2026-07-28
@@ -58,6 +60,23 @@ export async function mcpHandler(req: HandlerReq): Promise<HandlerResult> {
     return json({ jsonrpc: "2.0", id: msg.id ?? null, error: { code: RPC.internal, message: "Internal error" } }, 500);
   }
   if (out === null) return { status: 202, json: {} };
+  const result = out.result as { structuredContent?: { error?: { code?: string } } } | undefined;
+  if (b.audience && result?.structuredContent?.error?.code === "scope_missing") {
+    // OAuth clients discover optional access through RFC 6750's challenge. Suggest only the exact owned resource asked
+    // for; the client must return through owner consent. Static bearer clients retain the tool-error contract.
+    const tool = TOOLS.find((t) => t.name === msg.params?.name);
+    const args = msg.params?.arguments as Record<string, unknown> | undefined;
+    let scope: string | undefined;
+    if (tool && typeof tool.capability === "string") {
+      const resource = tool.capability === "register.propose" ? "*" : typeof args?.domain === "string" ? args.domain : undefined;
+      if (resource) {
+        const owned = await withUser(ctx.runtime, caller.userId, (c) => ownedDomainMap(c, caller.userId));
+        try { scope = scopeString(parseScope(`${tool.capability}:${resource}${typeof args?.env === "string" ? `:${args.env}` : ""}`, owned)); }
+        catch { /* No valid owned scope to suggest. Never widen to a wildcard as a fallback. */ }
+      }
+    }
+    return json(out, 403, { headers: { "Cache-Control": "no-store, private", "WWW-Authenticate": `${mcpChallenge(ctx, "insufficient_scope")}${scope ? `, scope="${scope}"` : ""}` } });
+  }
   return json(out, 200, { headers: { "Cache-Control": "no-store, private", ...(meta.era === "2026" ? { "MCP-Protocol-Version": LATEST } : {}) } });
 }
 

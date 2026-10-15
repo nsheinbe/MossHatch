@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   DNS_RECORD_TYPES, RegistrarError,
-  type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
+  type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult, type RegistrarCapabilities, type RegistrarPort,
   type TransferAway, type TransferAwayStatus, type UpstreamOrder,
   type TransferInBlock, type TransferInCheck, type TransferInFailure, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
@@ -53,7 +53,7 @@ const RESTORE_TLDS: Record<string, boolean> = { com: true, dev: true, studio: tr
 const NO_PRIVACY_SERVICE = new Set(["ai", "io"]);
 const SYSTEMDNS = ["ns1.systemdns.com", "ns2.systemdns.com", "ns3.systemdns.com"];
 /** UNVERIFIED: the per-type value key names inside SET_DNS_ZONE / GET_DNS_ZONE records. From toolkit memory, not the dossier; one place to fix after a Horizon test. */
-export const DNS_VALUE_KEY: Record<DnsRecordType, string> = { A: "ip_address", AAAA: "ipv6_address", CNAME: "hostname", MX: "hostname", SRV: "hostname", TXT: "text" };
+export const DNS_VALUE_KEY: Record<(typeof DNS_RECORD_TYPES)[number], string> = { A: "ip_address", AAAA: "ipv6_address", CNAME: "hostname", MX: "hostname", SRV: "hostname", TXT: "text" };
 
 const err = (kind: RegistrarError["kind"], code: string, o: { retryable?: boolean; outcomeUnknown?: boolean } = {}, message = "registrar request failed") =>
   new RegistrarError(kind, message, { retryable: o.retryable ?? false, outcomeUnknown: o.outcomeUnknown ?? false, code });
@@ -335,9 +335,15 @@ export class OpenSrsAdapter implements RegistrarPort {
   async setNameservers(fqdn: string, nameservers: string[], opts: { targetSigned?: boolean } = {}): Promise<void> {
     const d = this.norm(fqdn); const tld = this.tldOf(d);
     if (nameservers.length < 2 || nameservers.length > 13 || nameservers.some((n) => !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(n))) throw rejected("bad_nameservers");
-    if (tld !== "io" && !opts.targetSigned && (await this.getDs(d)).length > 0) throw rejected("dnssec_would_break");
+    void opts;
+    if (tld !== "io" && (await this.getDs(d)).length > 0) throw rejected("dnssec_would_break");
     // UNVERIFIED attribute names: op_type / assign_ns.
     await this.call("ADVANCED_UPDATE_NAMESERVERS", "DOMAIN", { domain: d, op_type: "assign", assign_ns: nameservers.map((n) => n.toLowerCase()) }, { fuse: "ns_change" });
+  }
+
+  async getDnssecCapabilities(fqdn: string) {
+    const supported = this.tldOf(this.norm(fqdn)) !== "io";
+    return { supported, addMode: supported ? "ds" as const : "unsupported" as const, removeSupported: supported, managedSigning: false };
   }
 
   async issueAuthCode(fqdn: string): Promise<{ code: string; issuedAt: Date }> {
@@ -355,12 +361,16 @@ export class OpenSrsAdapter implements RegistrarPort {
 
   // ---- DNS --------------------------------------------------------------------------------------------------------
   private parseZone(attrs: OpsObject): DnsRecord[] {
-    const recs = obj(attrs.records) ?? {};
+    const recs = obj(attrs.records);
+    if (!recs || Object.keys(recs).some((t) => !(DNS_RECORD_TYPES as readonly string[]).includes(t) || !Array.isArray(recs[t]))) throw rejected("dns_fidelity_unavailable");
     const out: DnsRecord[] = [];
     for (const t of DNS_RECORD_TYPES) {
       for (const x of arr(recs[t])) {
-        const o = obj(x); if (!o) continue;
-        const rec: DnsRecord = { type: t, name: str(o.subdomain) ?? "", value: str(o[DNS_VALUE_KEY[t]]) ?? "" };
+        const o = obj(x);
+        if (!o || Object.keys(o).some((k) => !["subdomain", DNS_VALUE_KEY[t], "priority", "weight", "port"].includes(k))) throw rejected("dns_fidelity_unavailable");
+        const name = str(o.subdomain), value = str(o[DNS_VALUE_KEY[t]]);
+        if (name === undefined || value === undefined || /[\x00-\x20\x7f]/.test(name)) throw rejected("dns_fidelity_unavailable");
+        const rec: DnsRecord = { type: t, name, value };
         const pr = str(o.priority); if (pr !== undefined) rec.priority = Number(pr);
         const w = str(o.weight); if (w !== undefined) rec.weight = Number(w);
         const p = str(o.port); if (p !== undefined) rec.port = Number(p);
@@ -377,11 +387,12 @@ export class OpenSrsAdapter implements RegistrarPort {
     if (!flag(ok)) return { hosted: false, records: [] };
     return { hosted: true, records: this.parseZone(r.attrs) };
   }
-  async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+  async replaceZone(fqdn: string, records: DnsRecord[], opts?: { expectedHash?: string }): Promise<{ hash: string; records: DnsRecord[] }> {
     const d = this.norm(fqdn);
     validateZone(records);
     const cur = await this.getDns(d);
     if (!cur.hosted) throw rejected("dns_not_hosted");
+    if (opts?.expectedHash !== undefined && opts.expectedHash !== zoneHash(cur.records)) throw rejected("dns_state_changed");
     // Every type is sent, empty ones as empty arrays, so the result is right whether SET_DNS_ZONE overwrites the whole zone or only the types it is
     // sent (the dossier says neither; a Horizon test settles it). UNVERIFIED that an empty array clears a type: the read-back below is the guard.
     const payload = zonePayload(records);
@@ -394,10 +405,14 @@ export class OpenSrsAdapter implements RegistrarPort {
       });
     }
     await this.call("SET_DNS_ZONE", "DOMAIN", { domain: d, records: wire });
-    const back = await this.getDns(d);
-    const want = canonicalZone(records);
-    if (!back.hosted || zoneHash(back.records) !== zoneHash(want)) throw rejected("dns_readback_mismatch");
-    return { hash: zoneHash(back.records), records: back.records };
+    try {
+      const back = await this.getDns(d);
+      const want = canonicalZone(records);
+      if (!back.hosted || zoneHash(back.records) !== zoneHash(want)) throw err("unknown", "dns_readback_mismatch", { outcomeUnknown: true });
+      return { hash: zoneHash(back.records), records: back.records };
+    } catch (e) {
+      throw err("unknown", e instanceof RegistrarError ? e.code ?? "dns_partial_or_unknown" : "dns_partial_or_unknown", { outcomeUnknown: true });
+    }
   }
 
   // ---- DNSSEC -----------------------------------------------------------------------------------------------------

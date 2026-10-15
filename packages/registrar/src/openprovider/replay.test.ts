@@ -29,11 +29,12 @@ describe("Openprovider replay: shared contract (source: recorded-sandbox)", () =
 });
 
 describe("Openprovider replay: lifecycle (source: recorded-sandbox)", () => {
-  it("replays register, lock, codes, DNS, DNSSEC, nameservers, contacts, renew and transfer refusals exactly as recorded", async () => {
+  it("replays the safe lifecycle prefix and blocks the historical unverified signed nameserver bypass", async () => {
     const rig = replayRig(LIFECYCLE_FIXTURE);
     vi.setSystemTime(new Date(rig.fixture.exchanges[0]!.at));
-    const obs = await runLifecycle(makeAdapter(rig.transport, "replay-password"), rig.freshName);
-    expect(obs).toMatchObject({ quoteCom1y: "1198", debit: "1198", renewQuote: "1698", quoteAi2y: "21800", managedKeyAlgorithm: 8 });
-    expect(rig.replay.remaining).toBe(0);
+    const obs = await runLifecycle(makeAdapter(rig.transport, "replay-password"), rig.freshName, { safePrefixOnly: true });
+    expect(obs).toMatchObject({ quoteCom1y: "1198", debit: "1198", managedKeyAlgorithm: 8, stoppedAt: "unverified_signed_delegation" });
+    // Untouched historical fixture: unsafe delegation and later steps are not represented as current integration proof.
+    expect(rig.replay.remaining).toBeGreaterThan(0);
   });
 });

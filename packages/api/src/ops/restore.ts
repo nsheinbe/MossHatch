@@ -12,7 +12,9 @@ import { verifyAllChains, verifyAnchors } from "./anchor.ts";
 import { erasureHash, purgeFromLedger, type ErasureLedger } from "./erasure.ts";
 
 const run = promisify(execFile);
-export const DEFAULT_PG_BIN = "/usr/lib/postgresql/16/bin";
+// An explicit local tools directory supports non-root cloud workspaces and macOS;
+// the deployment/CI default remains PostgreSQL 16's Debian location.
+export const DEFAULT_PG_BIN = process.env.MH_PG_BIN ?? "/usr/lib/postgresql/16/bin";
 /** Own targets (PLAN 4.3b): reads back within 4 hours, writes within 8. */
 export const RECOVERY_TARGET_MS = { reads: 4 * 3_600_000, writes: 8 * 3_600_000 };
 

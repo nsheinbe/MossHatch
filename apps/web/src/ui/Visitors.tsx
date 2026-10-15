@@ -87,7 +87,7 @@ export default function Visitors() {
                   <ul className="plain">
                     {pending.map((r) => (
                       <li key={r.id}>
-                        <strong>{r.requester.name}</strong> asks to {r.kind === "register" ? "register" : r.kind === "renew" ? "renew" : r.kind === "dns_change" ? "change DNS on" : "get more access"} {r.domain ? r.domain.unicode : ""}{r.max_total_minor !== "0" ? `, up to ${usd(r.max_total_minor)}` : ""}.{" "}
+                        <strong>{r.requester.name}</strong> asks to {r.kind === "register" ? "register" : r.kind === "renew" ? "renew" : r.kind === "nameservers_change" ? "request nameservers for" : r.kind === "dns_change" ? "change DNS on" : "get more access"} {r.domain ? r.domain.unicode : ""}{r.max_total_minor !== "0" ? `, up to ${usd(r.max_total_minor)}` : ""}.{" "}
                         <button type="button" className="btn secondary small" onClick={() => { setMsg(null); setOpen(r.id); }}>Review</button>
                       </li>
                     ))}
@@ -154,7 +154,7 @@ export default function Visitors() {
                     <input id="tok-name" className="text-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
                     <label htmlFor="tok-scopes">What it can do, one scope per line</label>
                     <textarea id="tok-scopes" className="text-input" rows={3} value={form.scopes} onChange={(e) => setForm({ ...form, scopes: e.target.value })} spellCheck={false} aria-describedby="tok-scopes-hint" />
-                    <p id="tok-scopes-hint" className="fineprint">For example <code>dns.read:example.com</code>, <code>secrets.read:example.com:dev</code> or <code>register.propose:*</code>. Production needs <code>:prod</code> by name.</p>
+                    <p id="tok-scopes-hint" className="fineprint">For example <code>dns.read:example.com</code>, <code>secrets.read:example.com:dev</code> or <code>register.propose:*</code>. Production needs <code>:prod</code> by name. Optional writes need explicit consent: <code>dns.write:example.com</code> or proposal-only <code>nameservers.propose:example.com</code>. Nameserver proposals never execute automatically.</p>
                     <label htmlFor="tok-cap">Spend cap in dollars, for purchases you approve</label>
                     <input id="tok-cap" className="text-input" inputMode="decimal" value={form.cap} onChange={(e) => setForm({ ...form, cap: e.target.value })} />
                     <label htmlFor="tok-days">Days until it expires (at most 90)</label>

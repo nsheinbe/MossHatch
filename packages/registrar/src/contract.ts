@@ -329,7 +329,7 @@ export function runRegistrarContract(makeAdapter: () => ContractSubject | Promis
       await s.adapter.addDs(fqdn, DS);
       expect((await s.adapter.getDomain(fqdn))?.dsPresent).toBe(true);
       await expect(s.adapter.setNameservers(fqdn, ["ns1.other-dns.net", "ns2.other-dns.net"])).rejects.toMatchObject({ kind: "rejected", code: "dnssec_would_break" });
-      await s.adapter.setNameservers(fqdn, ["ns1.other-dns.net", "ns2.other-dns.net"], { targetSigned: true });
+      await expect(s.adapter.setNameservers(fqdn, ["ns1.other-dns.net", "ns2.other-dns.net"], { targetSigned: true })).rejects.toMatchObject({ kind: "rejected", code: "dnssec_would_break" });
     });
 
     t("both", "DS records add (idempotently) and remove; .io has no DNSSEC", async (s) => {
@@ -358,12 +358,12 @@ export function runRegistrarContract(makeAdapter: () => ContractSubject | Promis
       const { fqdn } = await reg(s);
       const full = [rec("A", "", "192.0.2.1"), rec("A", "www", "192.0.2.2"), rec("MX", "", "mail.example.net", { priority: 10 }), rec("TXT", "", "v=spf1 -all"), rec("CNAME", "app", "target.example.net")];
       const r1 = await s.adapter.replaceZone(fqdn, full);
-      expect(r1.hash).toBe(zoneHash(full));
+      expect(r1.hash).toBe(zoneHash(full.map((r) => r1.records[0]?.ttl === undefined ? r : { ...r, ttl: r1.records[0].ttl })));
       expect((await s.adapter.getDns(fqdn)).records).toHaveLength(5);
       const r2 = await s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.9")]);
       const z = await s.adapter.getDns(fqdn);
       expect(z.hosted).toBe(true);
-      expect(z.records).toEqual([rec("A", "", "192.0.2.9")]);
+      expect(z.records).toEqual([rec("A", "", "192.0.2.9", z.defaultTtl === undefined ? {} : { ttl: z.defaultTtl })]);
       expect(r2.hash).toBe(zoneHash(z.records));
       await s.adapter.replaceZone(fqdn, []);
       expect((await s.adapter.getDns(fqdn)).records).toEqual([]);
@@ -470,7 +470,7 @@ export function runRegistrarContract(makeAdapter: () => ContractSubject | Promis
       const m = needMock(s); const { fqdn } = await reg(s);
       await s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.1")]);
       m.faults.set("dnsWriteIgnored", { times: 1 });
-      await expect(s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.77")])).rejects.toMatchObject({ kind: "rejected", code: "dns_readback_mismatch" });
+      await expect(s.adapter.replaceZone(fqdn, [rec("A", "", "192.0.2.77")])).rejects.toMatchObject({ kind: "unknown", code: "dns_readback_mismatch", outcomeUnknown: true });
       expect((await s.adapter.getDns(fqdn)).records).toEqual([rec("A", "", "192.0.2.1")]); // unchanged: the caller's snapshot is still the truth
     });
 

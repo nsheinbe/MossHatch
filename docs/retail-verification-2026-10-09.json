@@ -1,0 +1,193 @@
+{
+  "production_commit": "e311dae",
+  "source_worktree": "/tmp/mosshatch-retail-audit",
+  "date": "2026-10-09",
+  "environment": "Local PostgreSQL at 127.0.0.1:54329; fake Stripe/registrar/Redis effects; no live provider calls",
+  "success": true,
+  "numTotalTests": 270,
+  "numPassedTests": 270,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "files": [
+    {
+      "path": "packages/api/src/golive.test.ts",
+      "status": "passed",
+      "passed": 15,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/golive/preflight.test.ts",
+      "status": "passed",
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/golive/registration-policy.test.ts",
+      "status": "passed",
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/domains/dashboard-refund.test.ts",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/domains/funding-decline.test.ts",
+      "status": "passed",
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/domains/gate.test.ts",
+      "status": "passed",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/domains/refunds.test.ts",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/domains/renewals.test.ts",
+      "status": "passed",
+      "passed": 18,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/audit-fulfillment.test.ts",
+      "status": "passed",
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/capture.test.ts",
+      "status": "passed",
+      "passed": 26,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/checkout.test.ts",
+      "status": "passed",
+      "passed": 15,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/extras.test.ts",
+      "status": "passed",
+      "passed": 16,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/funding.test.ts",
+      "status": "passed",
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/guard.test.ts",
+      "status": "passed",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/happy.test.ts",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/registrar.test.ts",
+      "status": "passed",
+      "passed": 14,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/review.test.ts",
+      "status": "passed",
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/tax.test.ts",
+      "status": "passed",
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/orders/webhook.test.ts",
+      "status": "passed",
+      "passed": 13,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/pricing/pricing.test.ts",
+      "status": "passed",
+      "passed": 14,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/registrar-rpc/funding-control.test.ts",
+      "status": "passed",
+      "passed": 4,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/registrar-rpc/paid-operation.test.ts",
+      "status": "passed",
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/stripe/compliance.test.ts",
+      "status": "passed",
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/stripe/stripe.test.ts",
+      "status": "passed",
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/gate.test.ts",
+      "status": "passed",
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/guards.test.ts",
+      "status": "passed",
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/interleave.test.ts",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/jobs.test.ts",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/rescue.test.ts",
+      "status": "passed",
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "path": "packages/api/src/transfers/review.test.ts",
+      "status": "passed",
+      "passed": 3,
+      "failed": 0
+    }
+  ]
+}

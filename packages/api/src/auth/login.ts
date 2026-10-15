@@ -98,9 +98,20 @@ async function loginVerify(req: HandlerReq): Promise<HandlerResult> {
   }
 
   // Everything below commits together.
-  const newDevice = await withUser(ctx.runtime, userId, async (c) => {
+  const { newDevice, session: s } = await withUser(ctx.runtime, userId, async (c) => {
+    // Serialize account recovery/freeze with the final check and session issuance, in the same user → passkey lock order.
+    const freshUser = (await c.query("select status, hardened_mode from users where id = $1 for update", [userId])).rows[0];
+    if (!freshUser || freshUser.status !== cred.user_status || (freshUser.hardened_mode && verified.backupEligible)) throw new HttpError(401, "login_failed");
+    // Revocation/suspension and another assertion can win while signature verification runs. Never restore stale state.
+    const updated = await c.query(
+      `update passkeys set sign_count = $3, backup_state = $4, last_used_at = $5
+       where id = $1 and user_id = $2 and revoked_at is null and sign_count = $6
+       and suspended_at is not distinct from $7::timestamptz
+       and suspended_by_recovery_id is not distinct from $8::uuid returning id`,
+      [passkeyId, userId, verified.newCounter, verified.backupState, now, cred.sign_count, cred.suspended_at, extra?.suspended_by_recovery_id ?? null],
+    );
+    if (updated.rowCount !== 1) throw new HttpError(401, "login_failed");
     const seen = await c.query("select 1 from sessions where user_id = $1 and ip_prefix is not distinct from $2 and ua_family is not distinct from $3 limit 1", [userId, req.ipPrefix, req.uaFamily]);
-    await c.query("update passkeys set sign_count = $2, backup_state = $3, last_used_at = $4 where id = $1", [passkeyId, verified.newCounter, verified.backupState, now]);
     if (cred.backup_state && !verified.backupState) {
       await raiseAlert(c, "warn", "auth.backup_state_cleared", userId, { passkey: passkeyId });
       await auditUser(ctx, c, userId, "auth.passkey.backup_state_cleared", { resourceKind: "passkey", resourceId: passkeyId });
@@ -114,11 +125,11 @@ async function loginVerify(req: HandlerReq): Promise<HandlerResult> {
     const un = await c.query("update users set frozen_at = null where id = $1 and frozen_at is not null returning id", [userId]);
     if (un.rowCount === 1) await auditUser(ctx, c, userId, "auth.unfreeze", { resourceKind: "user", resourceId: userId });
     await auditUser(ctx, c, userId, "auth.login", { resourceKind: "passkey", resourceId: passkeyId, detail: { be: verified.backupEligible, bs: verified.backupState, restored: !!restoreRecoveryId } });
-    return (seen.rowCount ?? 0) === 0;
+    const session = await createSession(ctx, userId, { credentialId: response.id, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily }, c);
+    return { newDevice: (seen.rowCount ?? 0) === 0, session };
   });
 
   await revokePresentedSession(ctx, req.request);
-  const s = await createSession(ctx, userId, { credentialId: response.id, ipPrefix: req.ipPrefix, uaFamily: req.uaFamily });
   if (newDevice) {
     await withUser(ctx.runtime, userId, (c) => notifyUser(ctx, c, userId, {
       kind: "login.new_device", dedupeKey: `login-new:${b64u(s.idHash).slice(0, 16)}`, subject: "New sign-in to your Mosshatch account",

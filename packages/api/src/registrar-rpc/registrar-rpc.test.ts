@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MockRegistrarPort } from "@mosshatch/registrar/mock-port";
-import { RegistrarError } from "@mosshatch/registrar/port";
+import { RegistrarError, type DnsRecord } from "@mosshatch/registrar/port";
+import { zoneHash } from "@mosshatch/registrar/dns";
 import { loadConfig, ModeError } from "../config/modeguard.ts";
 import { connectRegistrarRpc, createRegistrarRpc, MemoryNonceStore, RPC_COMMANDS, RPC_HEADERS, sign, encodeJson, registrarScopeReasons, type RpcRequest, type RpcResponse } from "./index.ts";
 
@@ -26,6 +27,59 @@ function rig(over: { secrets?: string[]; windowSeconds?: number } = {}) {
 const json = (r: RpcResponse) => JSON.parse(r.body);
 
 describe("ST-118: signed web -> registrar calls", () => {
+  it("redacts rejected transport callbacks and treats every lost response as unknown without resending", async () => {
+    const { mock, handler } = rig();
+    let writes = 0;
+    const port = await connectRegistrarRpc({ secret: SECRET, clock: mock.clock, send: async (r) => {
+      if (r.path.endsWith("/capabilities")) return handler(r);
+      writes++;
+      throw new RegistrarError("rejected", "password=SECRET-CANARY", { outcomeUnknown: false, retryable: true, code: "SECRET-CANARY" });
+    } });
+    const error = await port.replaceZone("free-rpc.com", []).catch((e) => e);
+    expect(error).toMatchObject({ kind: "unknown", code: "rpc_transport", outcomeUnknown: true, retryable: false });
+    expect(JSON.stringify(error)).not.toContain("SECRET-CANARY");
+    expect(error.message).not.toContain("SECRET-CANARY");
+    expect(writes).toBe(1);
+  });
+
+  it("does not echo arbitrary provider error text disguised as a code", async () => {
+    const { mock, handler, signed } = rig();
+    mock.getBalance = async () => { throw new RegistrarError("unknown", "SECRET-CANARY", { outcomeUnknown: true, retryable: false, code: "password=SECRET-CANARY" }); };
+    const r = await handler(signed("getBalance", []));
+    expect(r.status).toBe(502); expect(r.body).not.toContain("SECRET-CANARY");
+    expect(json(r).error).toMatchObject({ code: "registrar_error", outcomeUnknown: true, retryable: false });
+  });
+
+  it("ST-128: preserves opaque records, TTL and the exact state precondition across signed RPC", async () => {
+    const { mock, handler } = rig();
+    const records: DnsRecord[] = [
+      { type: "CAA", name: "", value: '0 issue "ca.example"', ttl: 7200 },
+      { type: "TYPE65280", name: "opaque", value: "Exact|Case\\# 2 ABcd", ttl: 0 },
+      { type: "A", name: "test", value: "192.0.2.10", ttl: 300 },
+    ];
+    const expectedHash = zoneHash(records);
+    let received: unknown;
+    mock.getDns = async () => ({ hosted: true, records, defaultTtl: 900 });
+    mock.replaceZone = async (fqdn, next, opts) => {
+      received = { fqdn, next, opts };
+      return { records: next, hash: zoneHash(next) };
+    };
+    const port = await connectRegistrarRpc({ secret: SECRET, clock: mock.clock, send: (r) => handler(r) });
+    expect(await port.getDns("free-rpc.com")).toEqual({ hosted: true, records, defaultTtl: 900 });
+    expect(await port.replaceZone("free-rpc.com", records, { expectedHash })).toEqual({ records, hash: expectedHash });
+    expect(received).toEqual({ fqdn: "free-rpc.com", next: records, opts: { expectedHash } });
+  });
+
+  it("ST-118: refuses malformed TTL and hash arguments before invoking the provider without echoing content", async () => {
+    const { mock, handler, signed } = rig();
+    for (const ttl of [-1, 0.5, 2147483648]) {
+      const r = await handler(signed("replaceZone", ["free-rpc.com", [{ type: "A", name: "secret-canary", value: "192.0.2.1", ttl }]]));
+      expect(r.status).toBe(400); expect(r.body).not.toContain("secret-canary");
+    }
+    expect((await handler(signed("replaceZone", ["free-rpc.com", [], { expectedHash: "secret-canary" }]))).status).toBe(400);
+    expect(mock.calls.replaceZone).toBe(0);
+  });
+
   it("a correctly signed call runs; bigint, Date and typed errors survive the round trip through the client", async () => {
     const { mock, handler } = rig();
     const port = await connectRegistrarRpc({ secret: SECRET, clock: mock.clock, send: (r) => handler(r) });
@@ -126,7 +180,7 @@ describe("ST-118: signed web -> registrar calls", () => {
     const bad = [
       signed("setLock", ["free-a.com"]), signed("setLock", [123, true]), signed("register", [{ fqdn: "free-a.com", years: 99, regUsername: "abc", regPassword: "x", registrant: REG }]),
       signed("register", [{ fqdn: "free-a.com", years: 1, regUsername: "abcdef", regPassword: "0123456789abcdef", registrant: REG, extra: "SECRET-CANARY" }]),
-      signed("cancelPendingOrder", ["1; DROP TABLE"]), signed("replaceZone", ["free-a.com", [{ type: "CAA", name: "", value: "x" }]]),
+      signed("cancelPendingOrder", ["1; DROP TABLE"]), signed("replaceZone", ["free-a.com", [{ type: "CAA\nINJECT", name: "", value: "x" }]]),
     ];
     for (const b of bad) { const r = await handler(b); expect(r.status).toBe(400); expect(json(r)).toEqual({ error: { code: "bad_request" } }); }
     const big = createRegistrarRpc({ port: new MockRegistrarPort(), secrets: [SECRET], clock: new MockRegistrarPort().clock, nonces: new MemoryNonceStore(), maxBodyBytes: 100 });

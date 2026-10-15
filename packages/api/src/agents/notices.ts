@@ -18,9 +18,10 @@ async function send(ctx: AppContext, c: PoolClient, userId: string, kind: string
   await notifyUser(ctx, c, userId, { kind, dedupeKey, subject: m.subject, text: m.text, immediate });
 }
 
-export interface RequestFacts { bindingName: string; kind: "register" | "renew" | "dns_change" | "scope"; fqdn: string | null; years: number | null; totalMinor: bigint; sensitive?: number; scopes?: string[] }
+export interface RequestFacts { bindingName: string; kind: "register" | "renew" | "dns_change" | "nameservers_change" | "scope"; fqdn: string | null; years: number | null; totalMinor: bigint; sensitive?: number; scopes?: string[] }
 
 function describe(f: RequestFacts): string {
+  if (f.kind === "nameservers_change") return `request a registry nameserver change for ${f.fqdn}; execution is blocked until migration safety checks are supported`;
   if (f.kind === "register") return `register ${f.fqdn} for ${f.years} ${f.years === 1 ? "year" : "years"}, up to ${usd(f.totalMinor)} including tax`;
   if (f.kind === "renew") return `renew ${f.fqdn} for ${f.years} ${f.years === 1 ? "year" : "years"}, up to ${usd(f.totalMinor)} including tax`;
   if (f.kind === "dns_change") return `change ${f.sensitive ?? 0} sensitive DNS record${f.sensitive === 1 ? "" : "s"} on ${f.fqdn}`;

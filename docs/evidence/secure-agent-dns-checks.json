@@ -1,0 +1,195 @@
+{
+  "date_utc": "2026-10-09",
+  "repository": "nsheinbe/MossHatch",
+  "branch": "codex/secure-agent-dns-owner-auth",
+  "base_commit": "689ea51d348a3e74b72fb745cb9e5ed6fc944c52",
+  "reviewed_production_commit": "e311dae06f75d41131f92d4421355a3934b9bcda",
+  "draft_pr": "https://github.com/nsheinbe/MossHatch/pull/45",
+  "scope": "Isolated local PostgreSQL, synthetic identities, fake effects, documented/historical provider fixtures; no live provider writes.",
+  "environment": {
+    "node": "24.19.0",
+    "npm": "11.9.0",
+    "postgres": "16.15",
+    "chromium": "151.0.7922.173",
+    "pinned_browser_download": "blocked HTTP403; no network policy changed"
+  },
+  "checks": [
+    {
+      "command": "npm test",
+      "started_at_utc": "14:07:40",
+      "seconds": 194.59,
+      "passed_files": 135,
+      "skipped_files": 1,
+      "passed_tests": 1405,
+      "skipped_tests": 119,
+      "failed_tests": 0,
+      "log": "/tmp/mosshatch-frozen-tests.log"
+    },
+    {
+      "command": "npm run typecheck",
+      "result": "passed",
+      "log": "/tmp/mosshatch-frozen-typecheck.log"
+    },
+    {
+      "command": "npm run build",
+      "result": "passed",
+      "initial_js_gzip_kb": 91.8,
+      "hard_budget_kb": 130,
+      "log": "/tmp/mosshatch-frozen-build.log"
+    },
+    {
+      "command": "node scripts/build-registrar.mjs",
+      "result": "passed",
+      "log": "/tmp/mosshatch-frozen-registrar-build.log"
+    },
+    {
+      "command": "npm run build:cards",
+      "result": "passed",
+      "pages": 9,
+      "log": "/tmp/mosshatch-final-cards-favicon-build.log"
+    },
+    {
+      "command": "MH_PERF=1 npx vitest run packages/api/src/ops/engine.test.ts",
+      "result": "passed",
+      "passed_tests": 22,
+      "seconds": 3.35,
+      "log": "/tmp/mosshatch-frozen-perf.log"
+    },
+    {
+      "command": "node scripts/check-supply-chain.mjs",
+      "result": "passed"
+    },
+    {
+      "command": "npm audit --audit-level=low",
+      "result": "passed",
+      "vulnerabilities": 0
+    },
+    {
+      "command": "npm run check:st",
+      "result": "passed",
+      "defined": 155,
+      "due": 155
+    },
+    {
+      "command": "node scripts/cloud-check.mjs",
+      "result": "passed",
+      "environment_overrides": [
+        "npm_config_cache",
+        "MH_PG_BIN",
+        "MH_CHROMIUM_EXECUTABLE_PATH"
+      ]
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "npm ci --ignore-scripts",
+      "result": "passed",
+      "installed_packages": 115,
+      "seconds": 2,
+      "log": "/tmp/mosshatch-final-clean-install.log"
+    },
+    {
+      "command": "node scripts/cloud-check.mjs (after final clean install)",
+      "result": "passed",
+      "log": "/tmp/mosshatch-final-cloud-check.log"
+    }
+  ],
+  "skipped_case_note": "Live sandbox and contract tag/adapter exclusions are not provider proof.",
+  "browser_checks": {
+    "prod": {
+      "passed": 27,
+      "log": "/tmp/mosshatch-final-public-browser.log"
+    },
+    "public": {
+      "passed": 5,
+      "log": "/tmp/mosshatch-final-public-browser.log"
+    },
+    "dev": {
+      "passed": 13,
+      "duration": "1.5m",
+      "log": "/tmp/mosshatch-final-dev-browser.log",
+      "isolated_port": 5189,
+      "fake_lookup": true
+    },
+    "cards": {
+      "passed": 7,
+      "duration": "20.7s",
+      "log": "/tmp/mosshatch-final-cards-browser.log"
+    },
+    "publish": {
+      "passed": 1,
+      "seconds": 179.329,
+      "isolated_port": 5184
+    },
+    "invite": {
+      "passed": 1,
+      "seconds": 24.18,
+      "isolated_port": 5186
+    },
+    "publish_invite_log": "/tmp/mosshatch-publish-invite-verification.log",
+    "account": {
+      "verified_unique_cases": 26,
+      "full_run": {
+        "passed": 25,
+        "failed": 1,
+        "duration": "13.5m",
+        "log": "/tmp/mosshatch-account-final.log"
+      },
+      "failure": "Stale unquoted-text test expectation after exact quoted DNS display; assertion updated to exact full quoted text.",
+      "final_sensitive_screens": {
+        "passed": 15,
+        "failed": 0,
+        "duration": "1.9m",
+        "log": "/tmp/mosshatch-sensitive-final.log"
+      },
+      "no_assertions_suppressed": true
+    },
+    "verified_unique_cases_total": 80,
+    "note": "Counts are unique cases across final project/file results, not one all-project invocation; superseded setup and expectation failures remain disclosed."
+  },
+  "remote_ci": {
+    "commit": "72c1cf0b83c8cfd8c54a48c8f9dd44099e993d24",
+    "run_url": "https://github.com/nsheinbe/MossHatch/actions/runs/37943002429",
+    "passed_steps": [
+      "clean npm ci",
+      "dependency audit",
+      "typecheck",
+      "vitest",
+      "performance",
+      "security IDs",
+      "build",
+      "cards build",
+      "pinned Chromium install"
+    ],
+    "browser_step": "in progress; no completed CI result claimed"
+  },
+  "no_deployment_check": "Read-only Vercel branch lookup after PR creation returned zero deployments.",
+  "live_release_gates": "See ../SECURE-AGENT-DNS-VERIFICATION.md",
+  "browser_commands": [
+    "npx playwright test --config=/tmp/mosshatch-static-playwright.config.ts --project=prod --project=public --project=cards --project=dev",
+    "npx playwright test --config=/tmp/mosshatch-dev-playwright.config.ts --project=dev",
+    "npx playwright test --config=/tmp/mosshatch-cards-playwright.config.ts --project=cards",
+    "npx playwright test --config=/tmp/mosshatch-publish-invite-playwright.config.mjs",
+    "npx playwright test --config=/tmp/mosshatch-all-account-playwright.config.mjs --project=account",
+    "npx playwright test e2e/sensitive-screens.account.spec.ts --config=/tmp/mosshatch-all-account-playwright.config.mjs --project=account"
+  ],
+  "browser_config_note": "Temporary configs import the committed Playwright config and preserve project options; they select test-owned preflight servers and isolated ports. Use the documented Chromium override. Normal reproduction: npx playwright test with fresh reserved listeners.",
+  "log_sha256": {
+    "/tmp/mosshatch-account-final.log": "75005ced18e60be671b79fd873d44b0677c95a18489a29190a405491998b488b",
+    "/tmp/mosshatch-final-cards-browser.log": "32697b9d50989b4b6690eca7afc09054624419dbc9e06e94ecbb51e4c85a5604",
+    "/tmp/mosshatch-final-cards-favicon-build.log": "caac3795f04104eb8e4d4347209568254d624e3fb5af16b9dbae43416c33006b",
+    "/tmp/mosshatch-final-clean-install.log": "77c18f5c26888b4ee120519df09efa079f6ba755b26e89d2d28cb5f0dc96aed7",
+    "/tmp/mosshatch-final-cloud-check.log": "879ffe0d854c75ce93ef11e0162e6a87d74dbc5be83f0a407ca3fa3d4c4f4464",
+    "/tmp/mosshatch-final-dev-browser.log": "bb416c5ff760f078f4d2ed26d8bc09328739aa9796fdb50bafdcae456d2e683e",
+    "/tmp/mosshatch-final-public-browser.log": "ff3e97d93ab55f8312e12fdad9b62ea4b82d2b4cc3e6e61566094ad0e077d521",
+    "/tmp/mosshatch-frozen-build.log": "9a47f4da830ca398a40ce61b10545b111d10c7d6045a66263de61d94d21d595e",
+    "/tmp/mosshatch-frozen-perf.log": "1fbc493340d66bc49fc6056ad6afd83ad9ad7babe14dc6927a6b63e93dc8e4fe",
+    "/tmp/mosshatch-frozen-registrar-build.log": "5ec0abd9475ce603ad07ebee3458be9293cdb1633aa69d5aad943ee8a3595d31",
+    "/tmp/mosshatch-frozen-tests.log": "fbffe48e023637cfeadc5706298c9b81cc42c5af942bdaa8f44fff9a3ed98188",
+    "/tmp/mosshatch-frozen-typecheck.log": "5633847a8da814c1433f149327d1d23d83d1b45b3dbbd9890698c977b4a83ebd",
+    "/tmp/mosshatch-publish-invite-verification.log": "8331eab12c90da54b3eb7d98ffde6ed59ba27ab6009c12936c17f610702290ed",
+    "/tmp/mosshatch-sensitive-final.log": "7f378ee8d68dd05eca71334833af24829f4248ded80508e9f462232dc7eb2808"
+  }
+}

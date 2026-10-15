@@ -8,7 +8,7 @@ import { hashOf } from "../util/bytes.ts";
 import { buildQuote, loadPolicy, PricingError, type PricedQuote } from "../pricing/index.ts";
 import { parseFqdn } from "../search/labels.ts";
 import { checkNewAccountLimits, spendFuseOf } from "../compliance/velocity.ts";
-import { allows, lintScopes, scopeString, storedScopes, type Scope } from "../bindings/scopes.ts";
+import { allows, lintScopes, scopeString, storedScopes, type Scope, type Capability } from "../bindings/scopes.ts";
 import { canonical, parseForUser } from "../bindings/specs.ts";
 import type { OrdersServices } from "../orders/types.ts";
 import { agentState, assertAgentPurchasesOpen, displayName, iso, LIMITS, liveBinding, lockUser, notFound, REQUEST_TTL_MS, UUID, type Caller, DAY_MS, HOUR_MS } from "./common.ts";
@@ -23,7 +23,7 @@ import { requestNotice, type RequestFacts } from "./notices.ts";
  * Reservations are released by the database when a request leaves `pending` any way but approval, and consumed at capture.
  */
 
-export type RequestKind = "register" | "renew" | "dns_change" | "scope";
+export type RequestKind = "register" | "renew" | "dns_change" | "nameservers_change" | "scope";
 export interface RequestRow {
   id: string; user_id: string; binding_id: string; kind: RequestKind; state: string; params: Record<string, any>; domain_id: string | null; fqdn_ascii: string | null;
   years: number | null; quoted_minor: string; reservation: string; price_hash: Buffer | null; ip_prefix: string | null; new_network: boolean; created_at: Date; expires_at: Date;
@@ -83,7 +83,7 @@ export async function priceRenewal(ctx: AppContext, c: PoolClient, fqdn: string,
 
 // ---- creating a request ----------------------------------------------------------------------------------------------------
 
-interface NewRequest { kind: RequestKind; requestHash: Buffer; params: Record<string, unknown>; domainId: string | null; fqdn: string | null; years: number | null; quotedMinor: bigint; priceHash: Buffer | null; facts: RequestFacts }
+interface NewRequest { kind: RequestKind; requestHash: Buffer; params: Record<string, unknown>; domainId: string | null; fqdn: string | null; years: number | null; quotedMinor: bigint; priceHash: Buffer | null; facts: RequestFacts; requiredCapability?: Capability }
 
 /** Record a refused proposal (audit row and an operator alert, committed) and throw the refusal after the commit. */
 async function limited(ctx: AppContext, caller: Caller, reason: string, status = 429): Promise<never> {
@@ -109,6 +109,7 @@ export async function createRequest(ctx: AppContext, caller: Caller, r: NewReque
     const due = (await c.query("select id from agent_requests where binding_id = $1 and user_id = $2 and state = 'pending' and expires_at <= $3 order by id for update", [caller.bindingId, caller.userId, now])).rows.map((x) => x.id as string);
     let b = await liveBinding(c, caller.userId, caller.bindingId, now, true);
     if (!b) throw new HttpError(401, "unauthorized");
+    if (r.requiredCapability && (!r.domainId || !allows(storedScopes(b.scopes), r.requiredCapability, r.domainId, null))) throw new HttpError(403, "scope_missing");
     if (due.length) {
       await c.query("update agent_requests set state = 'expired', decision_reason = 'expired', decided_at = $2 where id = any($1::uuid[]) and state = 'pending'", [due, now]);
       b = (await liveBinding(c, caller.userId, caller.bindingId, now, true))!;
@@ -214,7 +215,7 @@ const ScopeInput = z.strictObject({ scopes: z.array(z.string().max(300)).min(1).
 
 /** Coverage of one wanted entry by one held entry (the same rule as the widening classifier: `*` never covers `prod`). */
 export const coveredBy = (s: Pick<Scope, "capability" | "domain_id" | "env">, w: Pick<Scope, "capability" | "domain_id" | "env">) =>
-  s.capability === w.capability && (s.domain_id === "*" || s.domain_id === w.domain_id)
+  s.capability === w.capability && !(s.capability === "nameservers.propose" && (s.domain_id === "*" || w.domain_id === "*")) && (s.domain_id === "*" || s.domain_id === w.domain_id)
   && (s.env === w.env || (w.env !== null && s.env === "*" && w.env !== "prod" && w.env !== "*"));
 
 /**
@@ -323,6 +324,8 @@ export async function cardView(ctx: AppContext, userId: string, id: string) {
       spend: { cap_minor: String(b.spend_cap_minor), spent_minor: String(b.spent_minor), reserved_minor: String(b.reserved_minor) },
       confirm: out.confirm,
     });
+  } else if (r.kind === "nameservers_change") {
+    Object.assign(card, { domain: displayName(String(p.fqdn)), delegation: { before: p.before, nameservers: p.nameservers, before_hash: p.before_hash, plan_hash: p.plan_hash, executable: false, blockers: p.blockers, source_records_preserved: true, parent_ds: "unverified", destination_dnskey_signatures: "unverified" } });
   } else if (r.kind === "dns_change") {
     Object.assign(card, { domain: displayName(String(p.fqdn)), dns: { added: p.added, removed: p.removed, sensitive: p.sensitive, before_hash: p.before_hash, after_hash: p.after_hash } });
   } else {

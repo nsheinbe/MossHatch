@@ -5,6 +5,7 @@ import { NO_STORE } from "../vault/context.ts";
 import { agentView, cardView, decline, listForUser, propose, requestScope, resolveScope } from "./requests.ts";
 import { approveDnsHandler, checkoutHandler, decideHandler, registerApprovalSpecs } from "./approve.ts";
 import { agentDnsChange, agentDnsRead } from "./dns.ts";
+import { agentNameserverPropose } from "./nameservers.ts";
 import { getDomainFor, listDomainsFor, nestNamesFor, secretGetFor, secretSetFor, transferStatusFor } from "./capabilities.ts";
 import { callerOf, sessionUserOf } from "./common.ts";
 import { guarded } from "./guard.ts";
@@ -66,6 +67,7 @@ export const agentRoutes: Route[] = [
   { ...bearer, method: "GET", path: `${A}/domains`, capability: "domains.read", handler: rest("list_domains", "read", (req) => listDomainsFor(req.ctx, callerOf(req)).then((d) => ({ domains: d }))) },
   { ...bearer, method: "GET", path: `${A}/domains/:fqdn`, capability: "domains.read", handler: rest("get_domain", "read", (req) => getDomainFor(req.ctx, callerOf(req), p(req, "fqdn"))) },
   { ...bearer, method: "GET", path: `${A}/domains/:fqdn/dns`, capability: "dns.read", handler: rest("dns_list", "read", (req) => agentDnsRead(req.ctx, callerOf(req), p(req, "fqdn"))) },
+  { ...bearer, method: "POST", path: `${A}/domains/:fqdn/nameservers/proposals`, capability: "nameservers.propose", handler: rest("nameservers_propose", "write", (req) => agentNameserverPropose(req.ctx, callerOf(req), p(req, "fqdn"), req.body), 202) },
   { ...bearer, method: "POST", path: `${A}/domains/:fqdn/dns`, capability: "dns.write", handler: async (req) => {
     const caller = callerOf(req);
     const out = await guarded(req.ctx, caller, "dns_upsert", "write", "rest", () => agentDnsChange(req.ctx, caller, p(req, "fqdn"), req.body));

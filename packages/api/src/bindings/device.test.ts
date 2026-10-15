@@ -301,4 +301,19 @@ describe("ST-71: refresh rotation, reuse and revoke", () => {
     k.app.clock.advance(31 * 86_400_000);
     expect((await refresh(r.json.refresh_token)).status).toBe(400);
   });
+
+  it("ST-71: a shortened expired CLI grant refuses its previously issued refresh token", async () => {
+    const p = await makePerson(k, "st71-shortened");
+    const s = await login(k, p);
+    const me = await cli(k.app, "GET", "/api/v1/whoami", undefined, s.access);
+    const narrowed = await web(k.app, p.user, "PATCH", `/api/v1/bindings/${me.json.binding.id}`, { expires_in_days: 1 });
+    expect(narrowed.status, narrowed.text).toBe(200);
+    k.app.clock.advance(86_400_001);
+    const refused = await refresh(s.refresh);
+    expect(refused.status, refused.text).toBe(400);
+    expect(refused.json.error.code).toBe("invalid_grant");
+    const tokens = (await k.app.db.owner.query("select rotated_at from binding_refresh_tokens where binding_id = $1", [me.json.binding.id])).rows;
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].rotated_at).toBeNull();
+  });
 });

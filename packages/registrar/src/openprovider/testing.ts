@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { expect, vi } from "vitest";
 import { RegistrarError, type DnsRecord } from "../port.ts";
-import { zoneHash } from "../dns.ts";
+import { validateZone, zoneHash } from "../dns.ts";
 import { claimRegistration, registrantFingerprint } from "../claim.ts";
 import type { ContractExclusion, ContractSubject } from "../contract.ts";
 import { MemoryKillSwitch } from "../opensrs/guards.ts";
@@ -75,7 +75,7 @@ export const REGISTRANT = { name: "Test Person", email: "person@example.test", p
 /**
  * The whole lifecycle against one throwaway .com, asserting what the sandbox actually did on 2026-09-30. Returns observations for the report.
  */
-export async function runLifecycle(a: OpenproviderAdapter, freshName: (tld: string) => string): Promise<Record<string, unknown>> {
+export async function runLifecycle(a: OpenproviderAdapter, freshName: (tld: string) => string, opts: { safePrefixOnly?: boolean } = {}): Promise<Record<string, unknown>> {
   const obs: Record<string, unknown> = {};
   const fqdn = freshName("com");
   const regUsername = "mhlifecycle01";
@@ -109,16 +109,18 @@ export async function runLifecycle(a: OpenproviderAdapter, freshName: (tld: stri
   await a.rerandomizeAuthCode(fqdn);
 
   // DNS: replace-all over per-record operations, read back each time
-  const rec = (type: DnsRecord["type"], name: string, value: string, extra: Partial<DnsRecord> = {}): DnsRecord => ({ type, name, value, ...extra });
-  expect(await a.getDns(fqdn)).toEqual({ hosted: true, records: [] });
+  const rec = (type: DnsRecord["type"], name: string, value: string, extra: Partial<DnsRecord> = {}): DnsRecord => ({ type, name, value, ttl: 900, ...extra });
+  expect(await a.getDns(fqdn)).toEqual({ hosted: true, records: [], defaultTtl: 900 });
   const full = [rec("A", "", "192.0.2.1"), rec("A", "www", "192.0.2.2"), rec("AAAA", "", "2001:db8::1"), rec("MX", "", "mail.example.net", { priority: 10 }),
     rec("TXT", "", "v=spf1 -all"), rec("CNAME", "app", "target.example.net"), rec("SRV", "_sip._tcp", "sip.example.net", { priority: 10, weight: 5, port: 5060 })];
   const z1 = await a.replaceZone(fqdn, full);
   expect(z1.hash).toBe(zoneHash(full));
   const z2 = await a.replaceZone(fqdn, [rec("A", "", "192.0.2.9"), rec("TXT", "", "v=spf1 -all")]);
   expect(z2.records).toEqual([rec("A", "", "192.0.2.9"), rec("TXT", "", "v=spf1 -all")]);
-  await expect(a.replaceZone(fqdn, [{ type: "CAA" as never, name: "", value: "0 issue x" }])).rejects.toMatchObject({ code: "unsupported_record_type" });
-  await expect(a.replaceZone(fqdn, [rec("TXT", "", "x".repeat(255))])).rejects.toMatchObject({ code: "txt_too_long" });
+  // Local validation, with no new calls inserted into the historical recorded exchange sequence.
+  // Adapter preservation/refusal and complete inventory are covered separately by documented DNS fidelity fixtures.
+  expect(() => validateZone([{ type: "CAA", name: "", value: "0 issue x" }])).toThrow(expect.objectContaining({ code: "unsupported_record_type" }));
+  expect(() => validateZone([rec("TXT", "", "x".repeat(255))])).toThrow(expect.objectContaining({ code: "txt_too_long" }));
   await a.replaceZone(fqdn, []);
   expect((await a.getDns(fqdn)).records).toEqual([]);
 
@@ -129,7 +131,15 @@ export async function runLifecycle(a: OpenproviderAdapter, freshName: (tld: stri
   await expect(a.addDs(fqdn, ds0[0]!)).rejects.toMatchObject({ code: "dnssec_dnskey_required" });
   await expect(a.addDnskey(fqdn, TEST_DNSKEY)).rejects.toMatchObject({ code: "dnssec_key_not_applied" });
 
-  // nameservers: a signed domain cannot move to unsigned DNS; with targetSigned it can, and the zone is then read-only here
+  // The old recording contains an unsafe signed-delegation bypass. Current policy stops before it.
+  // Replaying the safe prefix makes no claim that the historical remainder still passes or is safe.
+  if (opts.safePrefixOnly) {
+    await expect(a.setNameservers(fqdn, ["a.iana-servers.net", "ns1.openprovider.nl"], { targetSigned: true })).rejects.toMatchObject({ code: "dnssec_would_break" });
+    obs.stoppedAt = "unverified_signed_delegation";
+    return obs;
+  }
+
+  // Historical unsafe sequence is intentionally unreachable in current-policy replay; sandbox re-recording requires a supported transition.
   const away = ["a.iana-servers.net", "ns1.openprovider.nl"];
   await expect(a.setNameservers(fqdn, away)).rejects.toMatchObject({ code: "dnssec_would_break" });
   await expect(a.setNameservers(fqdn, ["ns1.example-dns.net", "ns2.example-dns.net"], { targetSigned: true })).rejects.toMatchObject({ kind: "rejected", code: "399" });

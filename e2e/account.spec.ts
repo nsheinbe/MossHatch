@@ -63,7 +63,8 @@ const clean = async (page: Page, what: string) => { const v = (await axe(page).a
 test("my domains: grove, overview, auto-renew on and off, DNS add and roll back, ledger", async ({ page, request, baseURL }) => {
   test.setTimeout(420_000);
   const errors: string[] = [];
-  page.on("console", (m) => { if (["error", "warning"].includes(m.type()) && !/GPU stall|GL Driver|Download the React DevTools/.test(m.text())) errors.push(m.text()); });
+  // A DNS mutation first answers 403 step_up_required; the response assertions below verify that expected challenge.
+  page.on("console", (m) => { if (["error", "warning"].includes(m.type()) && !/GPU stall|GL Driver|Download the React DevTools|Failed to load resource: the server responded with a status of 403/.test(m.text())) errors.push(m.text()); });
   await virtualAuthenticator(page);
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
@@ -81,7 +82,9 @@ test("my domains: grove, overview, auto-renew on and off, DNS add and roll back,
   await expect(tag).toBeVisible({ timeout: 30_000 });
   expect(await page.getByText("Sample grove.").count()).toBe(0);
   await clean(page, "grove");
-  await tag.click();
+  // Grove tags follow moving creatures. Keyboard activation does not wait for an animated hit target to stop.
+  await tag.focus();
+  await page.keyboard.press("Enter");
 
   // Overview.
   const panel = page.getByRole("region", { name: `Details for ${fqdn}` });
@@ -103,7 +106,7 @@ test("my domains: grove, overview, auto-renew on and off, DNS add and roll back,
   await expect(panel.getByText("Auto-renew is off.", { exact: true })).toBeVisible();
   await expect(panel.getByRole("group", { name: "Confirm with your passkey" })).toHaveCount(0);
 
-  // DNS: keyboard to the tab, add a record, see it, roll back, see it gone.
+  // DNS: adding a low-impact record works; deleting it by rollback or directly needs exact-change approval.
   await panel.getByRole("tab", { name: "Overview" }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(panel.getByRole("tab", { name: "DNS", selected: true })).toBeVisible();
@@ -111,10 +114,34 @@ test("my domains: grove, overview, auto-renew on and off, DNS add and roll back,
   await panel.getByLabel("Name, or @ for the domain itself").fill("blog");
   await panel.getByLabel("Value", { exact: true }).fill("192.0.2.10");
   await panel.getByRole("button", { name: "Add record" }).click();
-  await expect(panel.getByRole("cell", { name: "192.0.2.10" })).toBeVisible({ timeout: 20_000 });
+  const records = panel.getByRole("list", { name: `DNS records for ${fqdn}` });
+  await expect(records.getByText("192.0.2.10", { exact: true })).toBeVisible({ timeout: 20_000 });
   await clean(page, "dns");
+  const rollbackChallenge = page.waitForResponse((response) => response.url().includes("/dns-snapshots/") && response.url().endsWith("/rollback") && response.status() === 403);
   await panel.getByRole("button", { name: /^Roll back to before the change/ }).first().click();
-  await expect(panel.getByRole("cell", { name: "192.0.2.10" })).toHaveCount(0, { timeout: 20_000 });
+  expect((await (await rollbackChallenge).json()).error.code).toBe("step_up_required");
+  const review = panel.getByRole("region", { name: "Review exact DNS change" });
+  await expect(review).toContainText("192.0.2.10");
+  await expect(review).toContainText("3600");
+  await expect(records.getByText("192.0.2.10", { exact: true })).toBeVisible();
+  await review.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(review).toHaveCount(0);
+  await expect(records.getByText("192.0.2.10", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: /^Roll back to before the change/ }).first().click();
+  await approve(page, review, "DNS rollback");
+  await expect(records.getByText("192.0.2.10", { exact: true })).toHaveCount(0, { timeout: 20_000 });
+  await panel.getByLabel("Name, or @ for the domain itself").fill("blog");
+  await panel.getByLabel("Value", { exact: true }).fill("192.0.2.11");
+  await panel.getByRole("button", { name: "Add record" }).click();
+  await expect(records.getByText("192.0.2.11", { exact: true })).toBeVisible();
+  const deleteChallenge = page.waitForResponse((response) => response.request().method() === "DELETE" && response.url().includes("/dns/") && response.status() === 403);
+  await panel.getByRole("button", { name: "Delete the A record for blog", exact: true }).click();
+  expect((await (await deleteChallenge).json()).error.code).toBe("step_up_required");
+  await expect(review).toContainText("192.0.2.11");
+  await expect(review).toContainText("3600");
+  await expect(records.getByText("192.0.2.11", { exact: true })).toBeVisible();
+  await approve(page, review, "DNS delete");
+  await expect(records.getByText("192.0.2.11", { exact: true })).toHaveCount(0);
   await expect(panel.getByRole("heading", { name: "DNSSEC", exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "Close" }).click();
 
@@ -203,7 +230,8 @@ async function openDomain(page: Page, label: string) {
   await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "My grove" }).click();
   const tag = page.getByRole("button", { name: new RegExp(`${label}\\.com.*Open details`) });
   await expect(tag).toBeVisible({ timeout: 30_000 });
-  await tag.click();
+  await tag.focus();
+  await page.keyboard.press("Enter");
   const panel = page.getByRole("region", { name: `Details for ${label}.com` });
   await expect(panel.getByRole("heading", { name: `${label}.com` })).toBeVisible();
   return panel;
@@ -272,27 +300,38 @@ test("domain management: transfer code shown once, Stop a hostile transfer, DNSS
   await expect(xfer.getByText("Locked again.", { exact: false })).toBeVisible({ timeout: 20_000 });
   await expect(panel.getByText("Transfer lock", { exact: true }).locator("xpath=following-sibling::dd")).toHaveText("On");
 
-  // ---- DNS tab: DNSSEC first, then a nameserver change that keeps DNSSEC working (C-20, ST-122) -----------------------------------------
+  // ---- DNSSEC and delegation changes remain gated until their verified, durable execution paths exist. ------------------------------
+  const delegationWrites: string[] = [];
+  page.on("request", (req) => { if (req.method() === "POST" && /\/domains\/[^/]+\/(?:ds|nameservers)$/.test(new URL(req.url()).pathname)) delegationWrites.push(req.url()); });
+  const securityBefore = await (await page.request.get(`/api/v1/domains/${fqdn}/security`)).json();
+  const dnsBefore = await (await page.request.get(`/api/v1/domains/${fqdn}/dns`)).json();
+  const dsBefore = await (await page.request.get(`/api/v1/domains/${fqdn}/ds`)).json();
   await panel.getByRole("tab", { name: "DNS" }).click();
   const dnssec = panel.getByRole("group", { name: "DNSSEC" });
   await expect(dnssec.getByText("No DNSSEC records are set.")).toBeVisible({ timeout: 20_000 });
-  await dnssec.getByLabel("Key tag").fill("12345");
-  await dnssec.getByLabel("Digest, in hex").fill("a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90");
-  await dnssec.getByRole("button", { name: "Add DNSSEC record" }).click();
-  await approve(page, dnssec, "ds add");
-  await expect(panel.getByText("DNSSEC record added.")).toBeVisible({ timeout: 20_000 });
-  await expect(dnssec.getByText("Key tag 12345", { exact: false })).toBeVisible({ timeout: 20_000 });
+  expect(dsBefore.changes_supported).toBe(false);
+  expect(dsBefore.remove_supported).toBe(false);
+  await expect(dnssec.getByRole("button", { name: "Add DNSSEC record" })).toHaveCount(0);
+  await expect(dnssec.getByLabel("Key tag")).toHaveCount(0);
   await clean(page, "dnssec");
 
   const ns = panel.getByRole("group", { name: "Nameservers" });
-  await ns.getByLabel("Nameservers, one per line").fill("ns1.example-dns.net\nns2.example-dns.net");
-  await ns.getByLabel("These nameservers serve a DNSSEC-signed zone").check();
-  await ns.getByRole("button", { name: "Change nameservers" }).click();
-  await approve(page, ns, "nameservers");
-  await expect(panel.getByText("Nameservers changed. We emailed you.")).toBeVisible({ timeout: 20_000 });
-  await expect(panel.getByText("hosted elsewhere", { exact: false }).first()).toBeVisible({ timeout: 20_000 });
+  await ns.getByRole("textbox", { name: /Nameservers/ }).fill("ns1.example-dns.net\nns2.example-dns.net");
+  await expect(ns.getByLabel("These nameservers serve a DNSSEC-signed zone")).toHaveCount(0);
+  await expect(ns.getByRole("button", { name: "Change nameservers" })).toHaveCount(0);
+  const previewResponse = page.waitForResponse((response) => response.url().endsWith(`/${fqdn}/nameserver-proposals`) && response.status() === 200);
+  await ns.getByRole("button", { name: "Review nameserver request" }).click();
+  const preview = await (await previewResponse).json();
+  expect(preview).toMatchObject({ executable: false, source_records_preserved: true, parent_ds: "unverified", destination_dnskey_signatures: "unverified" });
+  expect(preview.blockers).toContain("delegation_verification_unavailable");
+  await expect(ns).toContainText("Execution is blocked");
+  await expect(ns.getByRole("button", { name: "Approve with passkey" })).toHaveCount(0);
+  expect(delegationWrites).toEqual([]);
+  expect((await (await page.request.get(`/api/v1/domains/${fqdn}/security`)).json()).nameservers).toEqual(securityBefore.nameservers);
+  expect((await (await page.request.get(`/api/v1/domains/${fqdn}/ds`)).json()).records).toEqual(dsBefore.records);
+  expect((await (await page.request.get(`/api/v1/domains/${fqdn}/dns`)).json()).records).toEqual(dnsBefore.records);
   const nsMail = await (await request.get(`/__dev/mail?to=${encodeURIComponent(email)}`)).json();
-  expect(nsMail.some((m: { kind: string }) => /nameserver/i.test(m.kind))).toBe(true);
+  expect(nsMail.some((m: { kind: string }) => /nameserver/i.test(m.kind))).toBe(false);
   await clean(page, "nameservers");
 
   // ---- Registrant verification (C-16): the code goes to the registrant address -----------------------------------------------------------

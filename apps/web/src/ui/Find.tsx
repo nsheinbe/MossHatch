@@ -74,8 +74,8 @@ export function Find() {
       </div>
 
       {list
-        ? <div className="chips-list" aria-label="Results">{results.map((r) => chip(r, true))}</div>
-        : <>{checked.map((r) => chip(r, false))}{unchecked.length > 0 && <div className="chips-list" aria-label="Not checked">{unchecked.map((r) => chip(r, true))}</div>}</>}
+        ? <div className="chips-list" role="group" aria-label="Results">{results.map((r) => chip(r, true))}</div>
+        : <>{checked.map((r) => chip(r, false))}{unchecked.length > 0 && <div className="chips-list" role="group" aria-label="Not checked">{unchecked.map((r) => chip(r, true))}</div>}</>}
 
       {alternatives.length > 0 && (
         <div className="alternatives" role="group" aria-label="Open alternatives">

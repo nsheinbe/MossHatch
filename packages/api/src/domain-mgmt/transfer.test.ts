@@ -144,8 +144,9 @@ describe("ST-148: freeze", () => {
     // State the freeze must leave alone: an unlocked domain, changed nameservers, a live renewal mandate.
     const un = await stepUp(k, p, "domain.unlock", d.fqdn).then((id) => call(k, p, "POST", `/api/v1/domains/${d.fqdn}/unlock`, {}, id));
     expect(un.status, un.text).toBe(200);
-    const nsId = await stepUp(k, p, "domain.nameservers.change", other.fqdn, { kind: "nameservers", nameservers: ["ns1.example.net", "ns2.example.net"] });
-    await call(k, p, "POST", `/api/v1/domains/${other.fqdn}/nameservers`, {}, nsId);
+    // Seed an existing external delegation: new migrations are gated, and this test covers preserving it during freeze.
+    k.registrar.oob.setNameservers(other.fqdn, ["ns1.example.net", "ns2.example.net"]);
+    await k.app.db.owner.query("update domains set nameservers = $2 where id = $1", [other.id, ["ns1.example.net", "ns2.example.net"]]);
     const codeId = await stepUp(k, p, "domain.transfer_out", d.fqdn);
     const code = (await call(k, p, "POST", `/api/v1/domains/${d.fqdn}/transfer-out`, {}, codeId)).json.code as string;
     const m = mintToken("live");
