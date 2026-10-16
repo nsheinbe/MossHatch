@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
-  ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, blockedCopy, consentPath, explainConnect, planLines, presetsRequestsOn, presetsSectionOn, readPlanError,
+  ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, NOT_VISIBLE_YET, VISIBLE_NOW, blockedCopy, consentPath, explainConnect, planLines, presetsRequestsOn, presetsSectionOn, readPlanError, verifyNote,
   type ConnectCapabilities, type ConnectPlanView,
 } from "./connect";
 
@@ -62,5 +62,17 @@ describe("DC-08: the consent page is only the two-segment path", () => {
     expect(consentPath("/domainconnect/consent/example.com%2Fevil/site")).toBeNull();
     expect(consentPath("/device")).toBeNull();
     expect(consentPath("/domainconnect/consent/example.com")).toBeNull();
+  });
+});
+
+describe("DC-12: the panel does not call a name visible early", () => {
+  it("says the name is not visible until propagation says spread", () => {
+    expect(verifyNote(null)).toBe(NOT_VISIBLE_YET);
+    expect(verifyNote("pending")).toBe(NOT_VISIBLE_YET);
+    expect(verifyNote("shedding")).toBe(NOT_VISIBLE_YET);
+    expect(verifyNote("spread")).toBe(VISIBLE_NOW);
+    const section = readFileSync(new URL("../ui/ConnectPresets.tsx", import.meta.url), "utf8");
+    expect(section).toContain("caps.verify");
+    expect(section).toContain("verifyNote(verifyState)");
   });
 });

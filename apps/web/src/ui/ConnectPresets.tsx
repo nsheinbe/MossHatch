@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ALIAS_DELEGATE, APPLIED_NOTE, CHANGED_NOTE, approveConnectPlan, applyConnectPlan, blockedCopy, createConnectPlan, explainConnect,
-  getCapabilities, listConnectPresets, planLines, presetsRequestsOn, presetsSectionOn, readPlanError,
+  getCapabilities, getConnectPlan, listConnectPresets, planLines, presetsRequestsOn, presetsSectionOn, readPlanError, verifyNote,
   type ConnectCapabilities, type PresetInfo, type StoredPlan,
 } from "../lib/connect";
 import type { DomainDetail } from "../lib/domains";
@@ -24,6 +24,7 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
   const [applied, setApplied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [req, setReq] = useState<StepUpRequest | null>(null);
+  const [verifyState, setVerifyState] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -37,6 +38,15 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
     }).catch(() => { if (live) setCaps(null); });
     return () => { live = false; };
   }, [d.fqdn]);
+  useEffect(() => {
+    if (!applied || !caps?.verify || !planned) return;
+    let live = true;
+    const id = planned.plan_id;
+    const load = () => { getConnectPlan(d.fqdn, id).then((r) => { if (live) setVerifyState(r.verify_state); }).catch(() => undefined); };
+    load();
+    const t = window.setInterval(load, 30_000);
+    return () => { live = false; window.clearInterval(t); };
+  }, [applied, caps?.verify, d.fqdn, planned]);
 
   if (!presetsSectionOn(caps) || !caps) return null;
   const preset = presets.find((p) => p.id === id) ?? null;
@@ -124,6 +134,7 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
       )}
       {note && <p role="status" className="notice">{note}</p>}
       {note === ALIAS_DELEGATE && <p className="fineprint">The nameserver form is on the DNS tab.</p>}
+      {applied && caps.verify && <p role="status">{verifyNote(verifyState)}</p>}
       {applied && <div className="row-actions"><button type="button" className="btn secondary" onClick={() => set({ domainTab: "dns" })}>Open the DNS tab</button></div>}
     </section>
   );

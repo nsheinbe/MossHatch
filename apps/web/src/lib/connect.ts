@@ -31,6 +31,8 @@ export const createConnectPlan = (fqdn: string, body: { source: "preset"; source
   api<StoredPlan>("POST", `${D(fqdn)}/connect/plans`, body);
 export const applyConnectPlan = (fqdn: string, id: string, planHash: string) =>
   api<{ plan_id: string; state: string; changed: boolean }>("POST", `${D(fqdn)}/connect/plans/${enc(id)}/apply`, { plan_hash: planHash });
+export const getConnectPlan = (fqdn: string, id: string) =>
+  api<{ plan_id: string; state: string; verify_state: string | null }>("GET", `${D(fqdn)}/connect/plans/${enc(id)}`);
 export const approveConnectPlan = (id: string, actionId: string) =>
   api<{ plan_id: string; state: string }>("POST", `/api/v1/connect/plans/${enc(id)}/approve`, {}, gated(actionId));
 
@@ -85,6 +87,11 @@ export const blockedCopy = (code: string, serverMessage: string, delegate: boole
   code === "needs_alias" ? (delegate ? ALIAS_DELEGATE : ALIAS_STAYS) : (serverMessage || "That plan cannot be applied.");
 
 export const APPLIED_NOTE = "Applied. You can roll this back from the DNS tab.";
+export const NOT_VISIBLE_YET = "Not visible yet.";
+export const VISIBLE_NOW = "Visible from the public resolvers.";
+
+/** Anything short of `spread` is not a promise that the name resolves for other people. */
+export const verifyNote = (state: string | null | undefined): string => state === "spread" ? VISIBLE_NOW : NOT_VISIBLE_YET;
 export const CHANGED_NOTE = "The zone changed before this was applied. Nothing was written. This is the plan now.";
 
 export type PlanFault =
