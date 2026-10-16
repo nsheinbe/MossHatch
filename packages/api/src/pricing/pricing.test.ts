@@ -41,7 +41,7 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
     }
   });
   it("fee bands agree with packages/core feePerYear across the thresholds", () => {
-    for (const w of [0, 1450, 4999, 5000, 5100, 9999, 10000, 11100, 50000]) expect(feePerYearMinor(BigInt(w))).toBe(BigInt(feePerYear(usd(w)).cents));
+    for (const w of [0, 1450, 2999, 3000, 3120, 4999, 5000, 5100, 9999, 10000, 11100, 50000]) expect(feePerYearMinor(BigInt(w))).toBe(BigInt(feePerYear(usd(w)).cents));
   });
   it("steps .com from 14.50 to 15.25 on 2026-11-01 UTC, and .studio from 42 to 51 on 2026-10-06 (which moves it to the 9.00 band)", async () => {
     const before = await q({ fqdn: "moonfern.com" }, "2026-10-31T23:59:59Z");
@@ -51,7 +51,7 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
     expect(after.wholesalePriceId).not.toBe(before.wholesalePriceId);
     const s1 = await q({ fqdn: "moonfern.studio" }, "2026-10-05T23:59:59Z");
     const s2 = await q({ fqdn: "moonfern.studio" }, "2026-10-06T00:00:00Z");
-    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 300n, 4500n]);
+    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 500n, 4700n]);
     expect([s2.wholesalePerYearMinor, s2.feePerYearMinor, s2.subtotalMinor]).toEqual([5100n, 900n, 6000n]);
   });
   it("pins the wholesale price row id into the quote and refuses a date with no price", async () => {
@@ -146,26 +146,26 @@ describe("pricing: new .com activation", () => {
     try {
       // A recorded, fully elapsed notice is not an activation instruction.
       delete process.env.MH_NEW_COM_PRICING_ENABLED;
-      expect((await q({ fqdn: "notice-only.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1346n);
+      expect((await q({ fqdn: "notice-only.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1417n);
       process.env.MH_NEW_COM_PRICING_ENABLED = "0";
-      expect((await q({ fqdn: "switch-off.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1346n);
+      expect((await q({ fqdn: "switch-off.com" }, "2027-01-01T00:00:00Z")).subtotalMinor).toBe(1417n);
       // Even an explicit switch cannot shorten the 60 complete days.
       process.env.MH_NEW_COM_PRICING_ENABLED = "1";
       const before = "2026-12-12T17:47:23.758Z", after = "2026-12-12T17:47:23.759Z";
       const old = await q({ fqdn: "accepted-before.com" }, before);
-      expect(old.subtotalMinor).toBe(1346n);
+      expect(old.subtotalMinor).toBe(1417n);
       const frozen = quoteToJson(old);
       const renewedBefore = await q({ fqdn: "existing.com", kind: "renew" }, before);
       const transferBefore = await q({ fqdn: "transfer.com", kind: "transfer" }, before);
       const active = await q({ fqdn: "new-offer.com" }, after);
-      expect(active.subtotalMinor).toBe(1499n);
+      expect(active.subtotalMinor).toBe(1548n);
       expect((await q({ fqdn: "existing.com", kind: "renew" }, after)).subtotalMinor).toBe(renewedBefore.subtotalMinor);
       expect((await q({ fqdn: "transfer.com", kind: "transfer" }, after)).subtotalMinor).toBe(transferBefore.subtotalMinor);
       // Checkout's frozen quote remains independently verifiable at its accepted amount.
       // ST-97 in orders/checkout.test.ts covers the stored-order/Stripe amount lifecycle.
       expect(verifyQuoteJson(frozen, at(after))).toEqual({ ok: true });
-      expect(frozen.subtotal_minor).toBe("1346");
-      expect(frozen.total_minor).toBe("1481");
+      expect(frozen.subtotal_minor).toBe("1417");
+      expect(frozen.total_minor).toBe("1559");
     } finally {
       resetPriceTables();
       if (previousNotice === undefined) delete process.env.MH_NEW_COM_PRICING_NOTICE_AT;
