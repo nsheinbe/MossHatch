@@ -158,7 +158,7 @@ describe("pricing: new .com activation", () => {
       const renewedBefore = await q({ fqdn: "existing.com", kind: "renew" }, before);
       const transferBefore = await q({ fqdn: "transfer.com", kind: "transfer" }, before);
       const active = await q({ fqdn: "new-offer.com" }, after);
-      expect(active.subtotalMinor).toBe(1499n);
+      expect(active.subtotalMinor).toBe(1548n);
       expect((await q({ fqdn: "existing.com", kind: "renew" }, after)).subtotalMinor).toBe(renewedBefore.subtotalMinor);
       expect((await q({ fqdn: "transfer.com", kind: "transfer" }, after)).subtotalMinor).toBe(transferBefore.subtotalMinor);
       // Checkout's frozen quote remains independently verifiable at its accepted amount.

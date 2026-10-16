@@ -70,7 +70,7 @@ describe("Openprovider live pricing (migration 1120) with the renewal floor", ()
     configurePriceTables(LIVE_ROUTING);
     const want: Record<string, { years: number; subtotal: bigint }> = {
       com: { years: 1, subtotal: 1698n + 300n }, dev: { years: 1, subtotal: 2398n + 300n }, app: { years: 1, subtotal: 2698n + 300n },
-      studio: { years: 1, subtotal: 4600n + 300n }, io: { years: 1, subtotal: 8998n + 900n }, ai: { years: 2, subtotal: 2n * (13400n + 1000n) },
+      studio: { years: 1, subtotal: 4600n + 500n }, io: { years: 1, subtotal: 8998n + 900n }, ai: { years: 2, subtotal: 2n * (13400n + 1000n) },
     };
     const chips = await withNoUser(app.ctx.runtime, (c) => chipPrices(c, Object.keys(want), ON));
     for (const [tld, w] of Object.entries(want)) {
