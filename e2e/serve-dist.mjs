@@ -40,6 +40,11 @@ http.createServer((q, r) => {
   for (const [re, hs, has] of pathRules) if (re.test(decodeURIComponent(q.url.split("?")[0])) && has.every((c) => c.type === "query" && qs.has(c.key))) for (const h of hs) r.setHeader(h.key, h.value);
   // A fake of the standalone waitlist endpoint (packages/api/src/waitlist), for the prod e2e: same shapes, no database.
   if (q.url.split("?")[0] === "/api/waitlist" || q.url.startsWith("/__e2e/waitlist")) return fakeWaitlist(q, r);
+  // Same stand-in as the Vite dev server: the real script exists only on Vercel, and a 404 would trip /boot.js.
+  if (q.url.split("?")[0] === "/_vercel/insights/script.js") {
+    r.writeHead(200, { ...base, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
+    return r.end("/* local stub; Vercel serves the Web Analytics script */\n");
+  }
   if (q.url.split("?")[0] === "/api/lookup") return void fakeLookup(q, r);
   let p = path.join(dist, decodeURIComponent(q.url.split("?")[0])); if (p.endsWith("/")) p += "index.html";
   if (!p.startsWith(dist)) { r.writeHead(404); return r.end(); }

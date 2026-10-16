@@ -6,6 +6,26 @@ import { bannerKind, siteMode, transformHome } from "../../scripts/site-mode.mjs
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
+/**
+ * Local stand-in for Vercel's Web Analytics script. The app shell requests `/_vercel/insights/script.js`;
+ * on Vercel that path is the platform script, which is not part of this build. A missing file would 404 and
+ * trip the boot sentinel. Never write a file at that path: a deployed copy would hide the real script.
+ */
+function insightsStub(): Plugin {
+  return {
+    name: "mosshatch-insights-stub",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if ((req.url ?? "").split("?")[0] !== "/_vercel/insights/script.js") return next();
+        res.setHeader("content-type", "text/javascript; charset=utf-8");
+        res.setHeader("cache-control", "no-store");
+        res.end("/* local stub; Vercel serves the Web Analytics script */\n");
+      });
+    },
+  };
+}
+
 /** The price list in the static HTML is generated at build time from the published Fees table. */
 function staticPrices(): Plugin {
   return {
@@ -188,7 +208,7 @@ function devLookup(): Plugin {
 const withDebug = process.env.MOSSHATCH_DEBUG_ENTRY === "1";
 
 export default defineConfig({
-  plugins: [glslMinify(), react(), staticPrices(), siteMeta(), devLookup(), devApi()],
+  plugins: [insightsStub(), glslMinify(), react(), staticPrices(), siteMeta(), devLookup(), devApi()],
   build: {
     target: "es2022",
     modulePreload: { polyfill: false },
