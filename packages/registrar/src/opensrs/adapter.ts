@@ -53,7 +53,7 @@ const RESTORE_TLDS: Record<string, boolean> = { com: true, dev: true, studio: tr
 const NO_PRIVACY_SERVICE = new Set(["ai", "io"]);
 const SYSTEMDNS = ["ns1.systemdns.com", "ns2.systemdns.com", "ns3.systemdns.com"];
 /** UNVERIFIED: the per-type value key names inside SET_DNS_ZONE / GET_DNS_ZONE records. From toolkit memory, not the dossier; one place to fix after a Horizon test. */
-export const DNS_VALUE_KEY: Record<DnsRecordType, string> = { A: "ip_address", AAAA: "ipv6_address", CNAME: "hostname", MX: "hostname", SRV: "hostname", TXT: "text" };
+export const DNS_VALUE_KEY: Record<DnsRecordType, string> = { A: "ip_address", AAAA: "ipv6_address", CAA: "value", CNAME: "hostname", MX: "hostname", SRV: "hostname", TXT: "text" };
 
 const err = (kind: RegistrarError["kind"], code: string, o: { retryable?: boolean; outcomeUnknown?: boolean } = {}, message = "registrar request failed") =>
   new RegistrarError(kind, message, { retryable: o.retryable ?? false, outcomeUnknown: o.outcomeUnknown ?? false, code });
@@ -380,6 +380,7 @@ export class OpenSrsAdapter implements RegistrarPort {
   async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
     const d = this.norm(fqdn);
     validateZone(records);
+    if (records.some((r) => r.type === "CAA")) throw rejected("unsupported_record_type");
     const cur = await this.getDns(d);
     if (!cur.hosted) throw rejected("dns_not_hosted");
     // Every type is sent, empty ones as empty arrays, so the result is right whether SET_DNS_ZONE overwrites the whole zone or only the types it is
@@ -387,6 +388,7 @@ export class OpenSrsAdapter implements RegistrarPort {
     const payload = zonePayload(records);
     const wire: OpsObject = {};
     for (const t of DNS_RECORD_TYPES) {
+      if (t === "CAA") continue; // SystemDNS has no CAA; an empty array would change the wire for every zone
       wire[t] = payload[t].map((r) => {
         const o: OpsObject = { subdomain: r.name, [DNS_VALUE_KEY[t]]: r.value };
         if (r.priority !== undefined) o.priority = r.priority; if (r.weight !== undefined) o.weight = r.weight; if (r.port !== undefined) o.port = r.port;

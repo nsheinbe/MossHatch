@@ -243,6 +243,43 @@ describe("Openprovider DNS writes", () => {
     const r = rig([listHit(7), dom, ok({ results: [], total: 0 }), ok({ success: true }), dom, ok({ results: [], total: 0 })]);
     await expect(r.adapter.replaceZone("abc.com", [{ type: "A", name: "", value: "192.0.2.1" }])).rejects.toMatchObject({ code: "dns_readback_mismatch" });
   });
+  it("leaves unmodeled types in place, accepts CAA, and quotes only TXT longer than 255", async () => {
+    const zone = "abc.com";
+    const dom = ok({ id: 7, domain: { name: "abc", extension: "com" }, status: "ACT", name_servers: [{ name: "ns1.openprovider.nl" }, { name: "ns2.openprovider.be" }, { name: "ns3.openprovider.eu" }] });
+    const recs = (list: unknown[]) => ok({ results: list, total: list.length });
+    const soa = { name: zone, type: "SOA", value: "ns1.openprovider.nl dns@openprovider.eu 1 2 3 4 5", ttl: 86400 };
+    const tlsa = { name: `_443._tcp.${zone}`, type: "TLSA", value: "3 1 1 abcd", ttl: 900 };
+    const a = { name: zone, type: "A", value: "192.0.2.1", ttl: 900 };
+    const kept = rig([listHit(7), dom, recs([soa, tlsa, a]), dom, recs([soa, tlsa, a])]);
+    await kept.adapter.replaceZone(zone, [{ type: "A", name: "", value: "192.0.2.1" }]);
+    expect(kept.transport.sent.filter((x) => x.method === "PUT")).toEqual([]);
+
+    const caa = { name: zone, type: "CAA", value: '0 issue "letsencrypt.org"', ttl: 900 };
+    const added = rig([listHit(7), dom, recs([soa]), ok({ success: true }), dom, recs([soa, caa])]);
+    const out = await added.adapter.replaceZone(zone, [{ type: "CAA", name: "", value: '0 issue "letsencrypt.org"' }]);
+    expect(out.records).toEqual([{ type: "CAA", name: "", value: '0 issue "letsencrypt.org"' }]);
+    const caaPut = added.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
+    expect(caaPut).toEqual([{ add: [{ name: "", type: "CAA", value: '0 issue "letsencrypt.org"', ttl: 900 }] }]);
+
+    const bad = rig([]);
+    await expect(bad.adapter.replaceZone(zone, [{ type: "CAA", name: "", value: "0 issue letsencrypt.org" }])).rejects.toMatchObject({ code: "unsupported_record_type" });
+    expect(bad.transport.sent).toHaveLength(0);
+
+    const long = "a".repeat(300);
+    const quoted = `"${"a".repeat(255)}" "${"a".repeat(45)}"`;
+    const stored = { name: zone, type: "TXT", value: quoted, ttl: 900 };
+    const txt = rig([listHit(7), dom, recs([soa]), ok({ success: true }), dom, recs([soa, stored])]);
+    const wrote = await txt.adapter.replaceZone(zone, [{ type: "TXT", name: "", value: long }]);
+    expect(wrote.records).toEqual([{ type: "TXT", name: "", value: long }]);
+    const txtPut = txt.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
+    expect(txtPut).toEqual([{ add: [{ name: "", type: "TXT", value: quoted, ttl: 900 }] }]);
+
+    const short = rig([listHit(7), dom, recs([soa]), ok({ success: true }), dom, recs([soa, { name: zone, type: "TXT", value: '"hi"', ttl: 900 }])]);
+    await short.adapter.replaceZone(zone, [{ type: "TXT", name: "", value: "hi" }]);
+    const shortPut = short.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
+    expect(shortPut).toEqual([{ add: [{ name: "", type: "TXT", value: "hi", ttl: 900 }] }]);
+    await expect(rig([]).adapter.replaceZone(zone, [{ type: "TXT", name: "", value: "x".repeat(4097) }])).rejects.toMatchObject({ code: "txt_too_long" });
+  });
 });
 
 describe("registrar selection (MH_REGISTRAR_PROVIDER)", () => {
