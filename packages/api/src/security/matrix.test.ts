@@ -54,6 +54,7 @@ const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding
 const PUBLIC_PARAM_ROUTES = [
   /^\/v2\/domainconnect\/:domain\/settings$/,
   /^\/v2\/domainTemplates\/providers\/:providerId\/services\/:serviceId$/,
+  /^\/v2\/domainTemplates\/providers\/:providerId\/services\/:serviceId\/apply$/,
 ];
 /** Routes with no path parameter: tenant comes from the credential only, so the check is "B never sees A's data". */
 const isParam = (r: Route) => r.path.includes(":");
