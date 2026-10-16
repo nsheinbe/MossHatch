@@ -6,16 +6,19 @@ import { Find } from "./Find";
 import { HatchSheet } from "./HatchSheet";
 import { CardPanel } from "./CardPanel";
 import { Grove, dropRealGrove } from "./Grove";
-import { Fallback } from "./Fallback";
 import { handle } from "../world/handle";
 import { sound } from "../audio/synth";
 import { AccountPanel } from "./AccountPanel";
 import { OrderReturn } from "./OrderReturn";
+import { CheckoutResume } from "./CheckoutResume";
+import { pendingCheckout } from "../lib/orders";
 import { apiAvailable } from "../lib/api";
 import { whoAmI } from "../lib/account";
+import { useSessionKeepalive } from "../lib/session";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
 import { applySiteChrome, buildSiteMode, liveFor } from "../lib/site";
+import { useWaiting, WaitingNotice } from "./Waiting";
 
 const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
@@ -28,8 +31,23 @@ const OAuthConsent = lazy(() => import("./OAuthConsent"));
 const Rescue = lazy(() => import("./Rescue"));
 
 /** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
+/**
+ * A buy link from an assistant (the public MCP search) names the domain in the fragment, which never reaches a server log
+ * (AUDIT-2026-10-07 V1). It is read before the first render: Find then searches the name, and the arrival demo, which would type
+ * its own word over it, never starts. The fragment is dropped from the address bar.
+ */
+function takeFindLink(): void {
+  const m = /^#find=([A-Za-z0-9.%-]{1,300})$/.exec(location.hash);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  let name = "";
+  try { name = decodeURIComponent(m[1]!).toLowerCase(); } catch { return; }
+  if (/^[a-z0-9-]{1,63}(\.[a-z0-9-]{2,24})?$/.test(name)) useUi.getState().set({ view: "find", query: name, demo: "done" });
+}
+if (typeof window !== "undefined") takeFindLink();
+
 function noindexAppRoutes() {
-  if (!["/device", "/checkout/return", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
+  if (!["/device", "/checkout/return", "/checkout/cancelled", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
   const m = document.createElement("meta");
   m.name = "robots"; m.content = "noindex";
   document.head.append(m);
@@ -47,14 +65,22 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
-  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, apiReachable, set } = useUi();
+  const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, accountOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
+  // While someone signed in is active on the page, their session's idle clock is renewed (ST-52 ends an abandoned one).
+  useSessionKeepalive(!!account);
+  // Requests and recipe plans waiting for a decision: the count on Account, the page's notice, the grove.
+  useWaiting();
 
   useEffect(() => { if (soundOn) sound.setEnabled(false); /* never start audio without a fresh gesture */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // After a hatch the camera frames the newborn; restore the Find view once the card is dismissed.
     if (ready && hatchPhase === "none") handle.world?.setView(view === "grove" || view === "ledger" ? "grove" : "find");
   }, [hatchPhase, ready, view]);
+
+  // Account and Connected apps share the same space: opening one closes the other, whichever button opened it.
+  useEffect(() => { if (accountOpen && useUi.getState().visitorsOpen) set({ visitorsOpen: false }); }, [accountOpen, set]);
+  useEffect(() => { if (visitorsOpen && useUi.getState().accountOpen) set({ accountOpen: false }); }, [visitorsOpen, set]);
 
   // Signing out (or losing the session) takes the account's domains out of the scene and closes their panel.
   useEffect(() => { if (!account) { dropRealGrove(); set({ domainPanel: null, view: useUi.getState().view === "ledger" ? "find" : useUi.getState().view }); } }, [account, set]);
@@ -79,15 +105,19 @@ export function App() {
       const q = new URLSearchParams(location.search);
       const id = q.get("order"), sid = q.get("session_id");
       if (location.pathname === "/checkout/return" && id && /^[0-9a-f-]{36}$/i.test(id) && sid && /^[A-Za-z0-9_]{6,200}$/.test(sid)) set({ orderId: id, orderSession: sid });
+      // Stripe's back link lands here (it was a 404 before: docs/AUDIT-2026-10-07.md D4): offer the same checkout back.
+      else if (location.pathname === "/checkout/cancelled" && id && /^[0-9a-f-]{36}$/i.test(id)) { set({ resume: { orderId: id, reason: "cancelled" } }); history.replaceState(null, "", "/"); }
+      // Back from Stripe, or a reload, with a checkout this tab started and did not finish (D5).
+      else if (ready && me) { const p = pendingCheckout(); if (p) set({ resume: { orderId: p.orderId, reason: "returned" } }); }
     })();
   }, [set]);
 
-  if (!gl || failed) return <><Fallback /><WaitlistHost source="fallback" /></>;
+  const simple = !gl || failed;
   return (
     <>
-      <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />
+      {!simple && <WorldHost onReady={() => setReady(true)} onFail={() => setFailed(true)} />}
       <Header />
-      {view === "find" ? <Find /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
+      {view === "find" ? <Find simple={simple} /> : view === "grove" ? <Grove /> : <Suspense fallback={null}><Ledger /></Suspense>}
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
       {rescue && <Suspense fallback={null}><Rescue /></Suspense>}
       {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
@@ -97,8 +127,11 @@ export function App() {
       <CardPanel />
       <AccountPanel />
       <OrderReturn />
+      <CheckoutResume />
       <WaitlistHost source="app" />
+      <WaitingNotice />
       <div key={flash} className={`flash${flash ? " on" : ""}`} aria-hidden="true" />
     </>
   );
 }
+

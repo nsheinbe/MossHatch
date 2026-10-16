@@ -1,0 +1,44 @@
+<!-- title: Use Mosshatch from Claude and other assistants -->
+<!-- description: Connect Claude, ChatGPT, Cursor or another assistant to Mosshatch to check names and prices, manage DNS and connect your names to Vercel, Resend and Neon, with your passkey on anything that matters. -->
+<!-- draft: none -->
+<h1>Use Mosshatch from Claude and other assistants</h1>
+<p>Mosshatch speaks the Model Context Protocol (MCP), so the assistant you already use can work with your names. It can check whether a name is free and what it costs, read and change DNS records, connect a name to Vercel, Resend or Neon, and suggest names to buy or renew. It runs on your own assistant plan; Mosshatch charges nothing for it.</p>
+<h2>Two addresses</h2>
+<ul>
+  <li><code>https://mosshatch.com/mcp/search</code> needs no account. Any assistant can check names and prices there. Nothing is reserved; to buy, you open the link it gives you.</li>
+  <li><code>https://mosshatch.com/mcp</code> works with your account. Your assistant opens Mosshatch so you can sign in, choose what it may do, and confirm with your passkey.</li>
+</ul>
+<h2>Claude: claude.ai and the Claude apps</h2>
+<ol>
+  <li>Open Settings, then Connectors, and choose Add custom connector.</li>
+  <li>Name it Mosshatch and paste one of the addresses above.</li>
+  <li>For your account, connect and sign in. Choose what Claude may do, then confirm with your passkey.</li>
+</ol>
+<p>A connector added on claude.ai also works in the Claude desktop and mobile apps.</p>
+<h2>Claude Code</h2>
+<p><code>claude mcp add --transport http mosshatch https://mosshatch.com/mcp</code></p>
+<p>Then type <code>/mcp</code> in Claude Code and choose Mosshatch to sign in. For search only, use <code>https://mosshatch.com/mcp/search</code> instead; it needs no sign-in.</p>
+<h2>ChatGPT</h2>
+<p>Turn on developer mode under Settings, Apps and connectors, Advanced. Then create a connector with one of the addresses and sign in when asked. Developer mode is still a beta in ChatGPT, so if its menus differ, follow ChatGPT's own help.</p>
+<h2>Cursor and other editors</h2>
+<p>Add this to <code>~/.cursor/mcp.json</code>, and Cursor opens your browser to sign in:</p>
+<p><code>{ "mcpServers": { "mosshatch": { "url": "https://mosshatch.com/mcp" } } }</code></p>
+<p>Any assistant or editor that connects to remote MCP servers with sign-in works the same way.</p>
+<h2>Scripts, servers and people</h2>
+<p>For a program that cannot sign in, or a developer working on one of your names, make a token under Account, Connected apps. Tick only what it needs, on one name if you can, and send it as <code>Authorization: Bearer</code> followed by the token. Tokens end within 90 days.</p>
+<h2>Things to ask</h2>
+<ul>
+  <li>Is fernhollow.com free on Mosshatch, and what does it cost?</li>
+  <li>Which of my names expire this year?</li>
+  <li>Point my domain at my Vercel project.</li>
+  <li>Set up email for my domain with Resend.</li>
+</ul>
+<p>The Vercel, Resend and Neon recipes need that provider connected once, on the name's Connect tab in Mosshatch.</p>
+<h2>What an assistant cannot do on its own</h2>
+<ul>
+  <li>Buy anything. It can suggest a name or a renewal; you approve it with your passkey and pay on Stripe. A token that may suggest purchases has a cap you set.</li>
+  <li>Change sensitive DNS records (mail, nameservers, the name itself, www, verification records) without your passkey. We email you when one changes.</li>
+  <li>Make a change you cannot undo from DNS: before every change, by you or a token, we keep a copy of the records for 30 days, and Roll back puts them back.</li>
+  <li>Keep access forever. Every connection ends within 90 days. You can pause it with one click, resume it with your passkey, or disconnect everything at once under Account, Connected apps.</li>
+</ul>
+<p>Report a security problem with the MCP servers to <a href="mailto:security@mosshatch.com">security@mosshatch.com</a>; see the <a href="/security.html">security policy</a>.</p>

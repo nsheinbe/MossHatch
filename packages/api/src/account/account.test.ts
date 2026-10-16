@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { makeHarness, makeBuyer, type Buyer, type OrdersHarness } from "../orders/testkit.ts";
 import { registerAccountRoutes } from "./routes.ts";
+import { loadRegistrant } from "../orders/registrant.ts";
 import { syncDocuments } from "./documents.ts";
 
 let h: OrdersHarness; let ada: Buyer; let cy: Buyer;
@@ -37,6 +38,20 @@ describe("C-15: registrant contact form", () => {
   });
   it("needs a session", async () => {
     expect((await h.app.call("POST", "/api/v1/contact", { body: { ...CONTACT, email: ada.email } })).status).toBe(401);
+  });
+  // 2026-10-08: the first live buyer typed 3107747497 into a field asking for +1.5555550100. The phone is read any usual way now and stored in the EPP form.
+  it("reads a phone typed the everyday way and stores the EPP form the registrar needs", async () => {
+    const buyer = await makeBuyer(h, "dee-acct@example.org", { contact: false });
+    for (const [typed, country, want] of [["(310) 774-7497", "US", "+1.3107747497"], ["020 7946 0958", "gb", "+44.2079460958"], ["+44 (0)20 7946 0958", "US", "+44.2079460958"], ["+1.5555550100", "US", "+1.5555550100"]] as const) {
+      const r = await post(buyer, "/api/v1/contact", { ...CONTACT, email: buyer.email, phone: typed, country });
+      expect(r.status, typed).toBe(201);
+      const stored = await loadRegistrant(h.app.ctx, buyer.userId);
+      expect(stored?.phone, typed).toBe(want);
+      expect(stored?.country).toBe(country.toUpperCase());
+    }
+    const bad = await post(buyer, "/api/v1/contact", { ...CONTACT, email: buyer.email, phone: "443107747497", country: "US" });
+    expect(bad.status).toBe(422); expect(bad.json.error.code).toBe("invalid_contact");
+    expect((await post(buyer, "/api/v1/contact", { ...CONTACT, email: buyer.email, country: "U1" })).status).toBe(422);
   });
 });
 

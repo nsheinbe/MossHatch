@@ -1,8 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
+import { axe } from "./axe";
 
 /**
  * The invite-only live build (VITE_SITE_MODE=invite; docs/GO-LIVE.md). One build: a visitor keeps the demo (banner, practice hatch from
- * the public registry lookup, no prices, waitlist); an account that signed up with an invite gets the shop and no banner; signing out
+ * the public registry lookup, labelled test prices, waitlist); an account that signed up with an invite gets the shop and no banner; signing out
  * brings the demo back. Real API router on a local PostgreSQL (scripts/e2e-server.mjs) with MH_INVITE_ONLY=1 and MH_LIVE_GATE=1.
  */
 async function virtualAuthenticator(page: Page) {
@@ -20,11 +21,18 @@ test("visitors keep the demo; an invited account gets the shop without the banne
   await page.waitForSelector("html[data-booted='1']");
   await page.keyboard.press("Escape");
   await expect(banner(page)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Invited? Sign in" })).toBeVisible();
-  // The demo search: registered-or-not from the public registry lookup, no price, and never the registrar-backed shop routes.
+  await expect(page.getByRole("button", { name: "Invited? Sign in" })).toBeVisible({ timeout: 20_000 });
+  // The demo search: registered-or-not from the public registry lookup, labelled test pricing, and never the registrar-backed shop routes.
   await page.fill("#name-input", "moonfern");
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 20_000 });
-  for (const chip of await page.locator(".chip").all()) expect(await chip.textContent()).not.toMatch(/\$\d/);
+  for (const chip of await page.locator("button.chip").all()) {
+    await expect(chip).toContainText(/\$\d/);
+    await expect(chip).toContainText('reference price from 8 Oct 2026');
+  }
+  await page.locator('button.chip').first().click();
+  await expect(page.getByRole('button', {name:'Preview creature', exact:true})).toBeVisible();
+  await expect(page.getByRole('button', {name:/Buy domain & hatch/})).toHaveCount(0);
+  await page.getByRole('button', {name:'Keep exploring',exact:true}).click();
   expect(shopCalls).toEqual([]);
 
   // The owner invites themself (scripts/waitlist-invite.mjs --email; here through the dev server) and follows the emailed link.
@@ -56,5 +64,58 @@ test("visitors keep the demo; an invited account gets the shop without the banne
   await page.getByRole("button", { name: "Account" }).click();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(banner(page)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Invited? Sign in" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invited? Sign in" })).toBeVisible({ timeout: 20_000 });
+
+  // Return to the same selection after passkey sign-in; only then fetch the live quote.
+  await page.fill("#name-input", "portfoliofern");
+  await page.locator("button.chip").filter({ hasText: "portfoliofern.com" }).click();
+  await page.getByRole("button", { name: "Sign in to review this name" }).click();
+  await page.getByRole("button", { name: "Sign in with a passkey", exact: true }).click();
+  const returned = page.getByRole("region", { name: "Hatch portfoliofern.com" });
+  await expect(returned).toBeVisible();
+  await expect(returned).toContainText("Total today, before tax");
+  await expect(returned.getByRole("button", { name: /Buy domain & hatch/ })).toBeDisabled();
+  await expect(returned.getByText("Reference price (8 Oct 2026)", { exact: true })).toHaveCount(0);
+  expect(shopCalls).toContain("/api/v1/quote");
 });
+
+for (const width of [1280, 390]) {
+  test(`purchase entry keeps the name through sign-in and waitlist dismissal at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const shopCalls: string[] = [];
+    page.on('request', r => { if (/\/api\/v1\/(search|quote|orders)/.test(r.url())) shopCalls.push(r.url()); });
+    await page.goto('/#find=portfoliofern.com');
+    await expect(page.locator('#name-input')).toHaveValue('portfoliofern.com');
+    await expect(page.locator('.intro-access')).toContainText('public purchases are not open');
+    await expect(page.getByText(/Website hosting and email service are separate/)).toBeVisible();
+    const chip = page.locator('button.chip').filter({ hasText: 'portfoliofern.com' });
+    await expect(chip).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'Shortlist portfoliofern.com', exact: true }).click();
+    await expect(page.locator('.shortlist')).toContainText('Reference price');
+    await expect(page.locator('.shortlist')).toContainText('not a cart or reservation');
+    await page.screenshot({ path: test.info().outputPath(`search-${width}.png`), fullPage: true });
+    await chip.click();
+    const sheet = page.getByRole('region', { name: 'Hatch portfoliofern.com' });
+    await expect(sheet).toContainText('Reference renewal (8 Oct 2026)');
+    await sheet.getByRole('button', { name: 'Sign in to review this name' }).click();
+    const account = page.getByRole('region', { name: 'Sign in or create an account' });
+    await expect(account).toContainText('Continue with portfoliofern.com');
+    await expect(sheet).toBeHidden();
+    await account.getByRole('button', { name: 'Join the waitlist', exact: true }).click();
+    const waitlist = page.getByRole('dialog', { name: 'Join the waitlist', exact: true });
+    await expect(waitlist.locator('input[value="portfoliofern.com"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(waitlist).toHaveCount(0);
+    await expect(account).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(account).toHaveCount(0);
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByRole("heading", { name: "portfoliofern.com" })).toBeFocused();
+    await expect(sheet.getByRole('button', { name: /Buy domain/ })).toHaveCount(0);
+    expect((await axe(page).include('.checkout-sheet').analyze()).violations).toEqual([]);
+    await page.screenshot({ path: test.info().outputPath(`preview-${width}.png`), fullPage: true });
+    expect(shopCalls).toEqual([]);
+    expect(new URL(page.url()).hash).toBe('');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}

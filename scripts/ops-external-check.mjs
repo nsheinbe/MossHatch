@@ -14,12 +14,12 @@ export const MAX_AGE_SECONDS = 180;
 
 /** Pure decision: `{ok:true}` or `{ok:false, reason}`. The reason is an enumerated code, never response text. */
 export function evaluateTicks(status, body, maxAge = MAX_AGE_SECONDS) {
-  if (status !== 200) return { ok: false, reason: "bad_status" };
+  if (status !== 200 && status !== 503) return { ok: false, reason: "bad_status" };
   const age = body && typeof body === "object" ? body.ageSeconds : undefined;
   if (age === null) return { ok: false, reason: "no_tick_yet" };
   if (typeof age !== "number" || !Number.isFinite(age) || age < 0) return { ok: false, reason: "bad_body" };
   if (age > maxAge) return { ok: false, reason: "stale", ageSeconds: age };
-  return { ok: true, ageSeconds: age };
+  return status === 200 ? { ok: true, ageSeconds: age } : { ok: false, reason: "bad_status" };
 }
 
 export async function checkTicks({ baseUrl, fetchImpl = fetch, pageWebhook, cronSecret, maxAge = MAX_AGE_SECONDS, timeoutMs = 10_000 }) {
@@ -43,7 +43,7 @@ export async function checkTicks({ baseUrl, fetchImpl = fetch, pageWebhook, cron
   // Second trigger: an external scheduler also ticks, so one dead Vercel cron does not stop the queue.
   let ticked = null;
   if (cronSecret) {
-    try { ticked = (await fetchImpl(new URL("/api/cron/tick", baseUrl), { headers: { authorization: `Bearer ${cronSecret}` }, signal: t(60_000) })).status; } catch { ticked = 0; }
+    try { ticked = (await fetchImpl(new URL("/api/cron/tick", baseUrl), { headers: { authorization: `Bearer ${cronSecret}` }, signal: t(800_000) })).status; } catch { ticked = 0; }
   }
   return { ...verdict, paged, ticked };
 }

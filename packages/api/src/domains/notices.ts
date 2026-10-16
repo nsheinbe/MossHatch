@@ -4,7 +4,7 @@ import { mintEmailActionToken } from "../auth/email-actions.ts";
 import { sendMail } from "../email.ts";
 import { buildMail } from "../mail/templates.ts";
 import { customerAddresses } from "../orders/support.ts";
-import { DAY_MS, HOUR_MS, rowToDomain, type DomainRow } from "./common.ts";
+import { DAY_MS, HOUR_MS, rowToDomain, type DomainRow, renewalYears } from "./common.ts";
 import { activeMandate } from "./mandate.ts";
 import { renewalQuote, rowToTerm, type TermRow } from "./terms.ts";
 
@@ -90,7 +90,7 @@ export async function renewalNoticeJob(ctx: AppContext): Promise<number> {
         const token = mandate && w.stage !== "e_plus_1" ? await offToken(ctx, c, d) : undefined;
         return buildMail("renewal_notice", {
           fqdn: d.fqdn, stage: w.stage, expiresAt: t.termEnd.toISOString(), chargeAt: t.chargeAt.toISOString(), priceMinor: t.currentPriceMinor.toString(),
-          autoRenew: !!mandate && w.stage !== "e_plus_1", ...(token ? { offToken: token } : {}),
+          autoRenew: !!mandate && w.stage !== "e_plus_1", ...(token ? { offToken: token } : {}), years: renewalYears(d.tld),
         }, { to, dedupeKey: `notice:renewal.${w.stage}:${d.id}:${dayOf(t.termEnd)}`, userId: d.userId, origin: ctx.config.origin });
       });
       if (ok) sent++;
@@ -129,7 +129,7 @@ export async function expiryLastchanceJob(ctx: AppContext): Promise<number> {
     for (const w of LASTCHANCE_STAGES) {
       if (!inWindow(now, t.termEnd, w)) continue;
       const ok = await once(x, `expiry.lastchance.${w.stage}`, dayOf(t.termEnd), w.stage, async (_c, to) =>
-        buildMail("expiry_lastchance", { fqdn: d.fqdn, stage: w.stage, expiredAt: t.termEnd.toISOString(), priceMinor: t.currentPriceMinor.toString() },
+        buildMail("expiry_lastchance", { fqdn: d.fqdn, stage: w.stage, expiredAt: t.termEnd.toISOString(), priceMinor: t.currentPriceMinor.toString(), years: renewalYears(d.tld) },
           { to, dedupeKey: `notice:expiry.lastchance.${w.stage}:${d.id}:${dayOf(t.termEnd)}`, userId: d.userId, origin: ctx.config.origin }));
       if (ok) sent++;
     }
@@ -162,7 +162,7 @@ export async function priceChangeNoticeJob(ctx: AppContext): Promise<{ known: nu
       const token = mandate ? await offToken(ctx, c, d) : undefined;
       return buildMail("price_change_notice", {
         fqdn: d.fqdn, kind, oldMinor: oldMinor.toString(), newMinor: t.currentPriceMinor.toString(), chargeAt: t.chargeAt.toISOString(), autoRenew: !!mandate,
-        aboveCap: !!mandate && t.currentPriceMinor > mandate.priceCeilingMinor, ...(token ? { offToken: token } : {}),
+        aboveCap: !!mandate && t.currentPriceMinor > mandate.priceCeilingMinor, ...(token ? { offToken: token } : {}), years: renewalYears(d.tld),
       }, { to, dedupeKey: `notice:price_change.${kind}:${d.id}:${dayOf(t.termEnd)}:${t.currentPriceMinor}`, userId: d.userId, origin: ctx.config.origin });
     };
     if (t.currentPriceMinor !== t.notifiedPriceMinor) {

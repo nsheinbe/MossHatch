@@ -1,15 +1,15 @@
 import { withNoUser } from "@mosshatch/db";
 import { json, type Router } from "../http/router.ts";
 import type { Route } from "../http/types.ts";
-import { runTick, tickAgeSeconds } from "../jobs/engine.ts";
+import { runTick, tickAgeSeconds, TICK_STALE_SECONDS } from "../jobs/engine.ts";
+import { tickBudget, tickConcurrency } from "../jobs/lifecycle.ts";
 import { registerOpsJobs } from "./jobs.ts";
 
 /** Cron tick: the router compares the Authorization value only with CRON_SECRET. Idempotent; safe when duplicated. */
 export const tickRoute: Route = {
   method: "GET", path: "/api/cron/tick", principals: ["cron"], tag: "ops",
   handler: async (r) => {
-    const budget = Number(process.env.MH_TICK_BUDGET_MS ?? 50_000);
-    const res = await runTick(r.ctx, { budgetMs: Number.isFinite(budget) && budget > 0 ? budget : 50_000 });
+    const res = await runTick(r.ctx, { budgetMs: tickBudget(process.env), concurrency: tickConcurrency(process.env) });
     return json(res);
   },
 };
@@ -22,7 +22,7 @@ export const healthTicksRoute: Route = {
   method: "GET", path: "/api/health/ticks", principals: ["anonymous"], tag: "ops",
   handler: async (r) => {
     const age = await withNoUser(r.ctx.runtime, (c) => tickAgeSeconds(r.ctx, c as never));
-    return json({ ageSeconds: age });
+    return json({ ageSeconds: age }, age === null || age > TICK_STALE_SECONDS ? 503 : 200);
   },
 };
 

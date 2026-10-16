@@ -12,6 +12,8 @@ import { agentDnsChange, agentDnsRead } from "../agents/dns.ts";
 import { getDomainFor, listDomainsFor, nestNamesFor, secretGetFor, secretSetFor, transferStatusFor } from "../agents/capabilities.ts";
 import { agentView, propose, requestScope } from "../agents/requests.ts";
 import { untrusted, type Caller } from "../agents/common.ts";
+import { applyRecipe, planRecipe, recipeApplication, type RecipeCaller } from "../recipes/routes.ts";
+import { RECIPES } from "../recipes/registry.ts";
 
 /**
  * The MCP tool catalogue (PLAN 4.5 MCP; research dossier section 5). Descriptions are static strings written here: no
@@ -47,6 +49,18 @@ const dnsRecord = z.strictObject({ type: rrType, name: z.string().max(253).descr
 const dnsNamed = z.strictObject({ type: rrType, name: z.string().max(253), value: z.string().max(2048).optional() });
 
 const searchCache = new SearchCache();
+
+/** A token's MCP call, as the recipe module's caller: the same scope checks as the REST routes run (recipes/plan.ts). */
+const recipeCaller = (ctx: AppContext, caller: Caller): RecipeCaller => ({
+  ctx, principal: { kind: "binding", userId: caller.userId, bindingId: caller.bindingId, bindingKind: caller.kind, scopes: caller.scopes },
+  actor: { userId: caller.userId, kind: caller.kind, id: caller.bindingId },
+});
+/** What each recipe takes, in words (static: the recipe's own schema checks the values). */
+const RECIPE_INPUTS: Record<string, Record<string, string>> = {
+  "hosting-vercel": { include_www: "true or false, default true: also point www at the project." },
+  "postgres-neon": { envs: "Nest environments to store the database addresses in: any of dev, preview, prod. Default [\"dev\"].", vercel_targets: "Vercel environments to also store them in: any of production, preview, development. Default none.", prefix: "Text put before DATABASE_URL, up to 40 characters. Default none.", create_project: "true creates a new Neon project, which needs the owner's approval. Default false." },
+  "email-resend": { envs: "Nest environments to store RESEND_API_KEY in: any of dev, preview, prod. Default [\"dev\"].", region: "us-east-1, eu-west-1, sa-east-1 or ap-northeast-1. Default us-east-1." },
+};
 function registrarOf(ctx: AppContext): RegistrarPort {
   const s = ctx.services as { registrar?: RegistrarPort; orders?: { registrar: RegistrarPort } };
   const r = s.orders?.registrar ?? s.registrar;
@@ -169,6 +183,40 @@ export const TOOLS: Tool[] = [
     input: z.strictObject({ approval_id: z.string().uuid() }),
     annotations: { title: "Check a request", readOnlyHint: true, openWorldHint: false },
     run: (ctx, caller, a) => agentView(ctx, caller, a.approval_id),
+  },
+  {
+    name: "list_recipes", kind: "read", capability: ["recipes.plan", "recipes.apply"],
+    description: "List the recipes Mosshatch can run on a domain (host on Vercel, email with Resend, Postgres on Neon) and what each takes. A recipe writes DNS records and stores keys in the Nest. It needs the owner to have connected that provider for the domain in Mosshatch first (the domain's Connect tab).",
+    input: z.strictObject({}),
+    annotations: { title: "List recipes", readOnlyHint: true, openWorldHint: false },
+    run: async () => ({ recipes: RECIPES.map((r) => ({ id: r.id, title: r.title, summary: r.summary, services: r.services, input: RECIPE_INPUTS[r.id] ?? {} })) }),
+  },
+  {
+    name: "plan_recipe", kind: "read", capability: ["recipes.plan", "recipes.apply"],
+    description: "Plan a recipe on one domain: the exact DNS records it would add and remove, the variables it would store and where, and whether the owner must approve it with a passkey. Nothing changes. The plan is kept for one hour; apply it with apply_recipe.",
+    input: z.strictObject({ domain: fqdnArg, recipe: z.enum(["hosting-vercel", "postgres-neon", "email-resend"]).describe("The recipe id from list_recipes."), input: z.record(z.string(), z.unknown()).optional().describe("The recipe's options, as list_recipes describes them.") }),
+    annotations: { title: "Plan a recipe", readOnlyHint: true, openWorldHint: false },
+    run: (ctx, caller, a) => planRecipe(recipeCaller(ctx, caller), a.domain, a.recipe, a.input ?? {}),
+  },
+  {
+    name: "apply_recipe", kind: "write", capability: "recipes.apply",
+    description: "Apply a plan from plan_recipe, exactly as planned. A plan that changes sensitive records or creates something at a provider is not applied until the owner approves it with a passkey in Mosshatch: the result is then pending_human_approval, and you call this again after they approve. Check progress with get_recipe_application.",
+    input: z.strictObject({ application_id: z.string().uuid(), plan_hash: z.string().regex(/^[0-9a-f]{64}$/) }),
+    annotations: { title: "Apply a recipe", readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    async run(ctx, caller, a) {
+      try { return await applyRecipe(recipeCaller(ctx, caller), a.application_id, a.plan_hash); }
+      catch (e) {
+        if (e instanceof HttpError && e.code === "approval_required") return { status: "pending_human_approval", application_id: a.application_id, next: "The owner approves this plan with a passkey in Mosshatch, on the domain's Connect tab. Call apply_recipe again after that." };
+        throw e;
+      }
+    },
+  },
+  {
+    name: "get_recipe_application", kind: "read", capability: ["recipes.plan", "recipes.apply"],
+    description: "Check a recipe plan: planned, approved, applying, applied, failed or removed, with the failure code when it failed.",
+    input: z.strictObject({ application_id: z.string().uuid() }),
+    annotations: { title: "Check a recipe", readOnlyHint: true, openWorldHint: false },
+    run: (ctx, caller, a) => recipeApplication(recipeCaller(ctx, caller), a.application_id),
   },
   {
     name: "transfer_status", kind: "read", capability: "transfer.status",

@@ -16,7 +16,7 @@ const fx = (over: Partial<DomainSummary>): DomainSummary => ({ ...base, ...over 
 const FIXTURES: [CreatureState, DomainSummary][] = [
   ["thriving", fx({})],
   ["armored", fx({ locked: true, state: "armored", state_text: "Transfer lock on" })],
-  ["drowsy", fx({ days_to_expiry: 12, state: "drowsy", state_text: "Renews in 12 days" })],
+  ["drowsy", fx({ days_to_expiry: 12, state: "drowsy", state_text: "Expires in 12 days. Auto-renew is off." })],
   ["sleeping", fx({ days_to_expiry: -6, adapter_state: "expired", state: "sleeping", state_text: "Expired. You can still renew it." })],
   ["shedding", fx({ state: "shedding", state_text: "Your DNS change is spreading" })],
   ["attention", fx({ state: "attention", state_text: "The renewal payment failed. Renew now or update your card before the name expires." })],
@@ -39,6 +39,10 @@ describe("grove states from adapter fixtures (Phase 3)", () => {
     expect(stateOf(fx({ days_to_expiry: -70, adapter_state: "pending_delete" })).text).toMatch(/cannot be restored/i);
   });
   it("carries no value beyond the facts it needs", () => {
-    expect(Object.keys(factsFromSummary(base)).sort()).toEqual(["ageDays", "attentionReason", "daysToExpiry", "dnsWriteInFlight", "expiredPhase", "registering", "transferInFlight", "transferLock"]);
+    expect(Object.keys(factsFromSummary(base)).sort()).toEqual(["ageDays", "attentionReason", "autoRenew", "daysToExpiry", "dnsWriteInFlight", "expiredPhase", "registering", "transferInFlight", "transferLock"]);
+  });
+  it("AUD-O4: inside the renewal window the words follow auto-renew, as the server's do", () => {
+    expect(stateOf(fx({ days_to_expiry: 12 })).text).toBe("Expires in 12 days. Auto-renew is off.");
+    expect(stateOf(fx({ days_to_expiry: 12, auto_renew: true })).text).toBe("Renews in 12 days");
   });
 });

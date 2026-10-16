@@ -33,6 +33,10 @@ const def = <S extends z.ZodType>(d: Def<S>): Def<S> => d;
 const when = (s: string) => s.replace("T", " ").replace(/:\d\d(\.\d+)?Z$/, " UTC");
 const day = (s: string) => s.slice(0, 10);
 const usd = (minor: string) => { const n = minor.padStart(3, "0"); return `USD ${n.slice(0, -2)}.${n.slice(-2)}`; };
+/** "one year" or "2 years": .ai renews two years at a time (its registry's minimum), so a mail never says "for one year" about a 2-year price. */
+const termText = (years?: number) => (!years || years === 1 ? "one year" : `${years} years`);
+/** After expiry, renewing is done with support until online late renewal exists (docs/AUDIT-2026-10-07.md O6); the price is confirmed first. */
+const LATE_RENEW = "To renew it now, reply to this email or write to support@mosshatch.com. We confirm the price with you before anything is charged.";
 const notYou = (action: string | null, tail: string) => action ? `If this was not you, freeze your account with this link: ${action}\nThe link works once. ${tail}` : tail;
 
 export const TEMPLATES = {
@@ -74,8 +78,10 @@ export const TEMPLATES = {
     render: (v, l) => ({ subject: "Freeze your Mosshatch account", text: `Use this link to freeze your Mosshatch account: ${l.action}\n\nA freeze signs out every session and pauses every agent token. It does not unlock domains or change nameservers, and renewals continue. You unfreeze by signing in with a passkey.\n\nThe link works once and expires in ${v.expiresInHours} hours.\n` }),
   }),
   receipt: def({
-    klass: "C", schema: z.strictObject({ orderId: z.uuid(), fqdn, years: z.number().int().min(1).max(10), totalMinor: digits, taxMinor: digits, paidAt: iso }),
-    render: (v, l) => ({ subject: `Your Mosshatch receipt for ${v.fqdn}`, text: `You paid for ${v.fqdn}.\n\nOrder: ${v.orderId}\nTerm: ${v.years} ${v.years === 1 ? "year" : "years"}\nTotal: ${usd(v.totalMinor)} (tax included: ${usd(v.taxMinor)})\nPaid: ${when(v.paidAt)}\n\nSign in at ${l.home} to manage the domain.\n` }),
+    klass: "C", schema: z.strictObject({ orderId: z.uuid(), fqdn, years: z.number().int().min(1).max(10), totalMinor: digits, taxMinor: digits, paidAt: iso,
+      registrar: z.string().min(3).max(120).optional(), refundBy: iso.optional() }),
+    // The fees page promises every receipt names the registrar of record (C-13; docs/AUDIT-2026-10-07.md P6), and the refund cut-off (D-024 row 9).
+    render: (v, l) => ({ subject: `Your Mosshatch receipt for ${v.fqdn}`, text: `You paid for ${v.fqdn}. The registrar confirmed the registration, so the name is yours.\n\nOrder: ${v.orderId}\nTerm: ${v.years} ${v.years === 1 ? "year" : "years"}\nTotal: ${usd(v.totalMinor)} (tax included: ${usd(v.taxMinor)})\nPaid: ${when(v.paidAt)}\n${v.registrar ? `Registrar of record: ${v.registrar}. Anyone can check a name's registrar with ICANN's public lookup.\n` : ""}${v.refundBy ? `Refunds: you can ask for one until ${when(v.refundBy)}, while the name has no DNS records or connections. A refund deletes the name.\n` : "Refunds: this registration cannot be refunded.\n"}\nSign in at ${l.home} to manage the domain.\n` }),
   }),
   void_notice: def({
     klass: "C", schema: z.strictObject({ orderId: z.uuid(), fqdn }),
@@ -84,18 +90,18 @@ export const TEMPLATES = {
   // ---- Domains core (Phase 3): renewal notices (D-008, C-26, C-32, C-33, C-34), price-change reminders and release ----
   renewal_notice: def({
     // C-34: a notice about an automatic charge always carries the one-click turn-off link; the schema refuses one without it.
-    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e43", "e32", "c8", "e_plus_1"]), expiresAt: iso, chargeAt: iso, priceMinor: digits, autoRenew: z.boolean(), offToken: actionToken.optional() })
+    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e43", "e32", "c8", "e_plus_1"]), expiresAt: iso, chargeAt: iso, priceMinor: digits, autoRenew: z.boolean(), offToken: actionToken.optional(), years: z.number().int().min(1).max(10).optional() })
       .refine((v) => !v.autoRenew || v.stage === "e_plus_1" || !!v.offToken),
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
     render: (v, l) => {
       const off = v.autoRenew && l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : "";
-      const keep = `Renewal price: ${usd(v.priceMinor)} for one year, plus tax where it applies.`;
+      const keep = `Renewal price: ${usd(v.priceMinor)} for ${termText(v.years)}, plus tax where it applies.`;
       if (v.stage === "e_plus_1") {
-        return { subject: `Your domain ${v.fqdn} expired`, text: `${v.fqdn} expired on ${day(v.expiresAt)}. You can still renew it at ${l.home}. ${keep}\n\nIf nobody renews it, the registry holds it for a grace period, then in redemption where restoring costs more, and then deletes it.\n` };
+        return { subject: `Your domain ${v.fqdn} expired`, text: `${v.fqdn} expired on ${day(v.expiresAt)}. You can still renew it. ${LATE_RENEW} ${keep}\n\nIf nobody renews it, the registry holds it for a grace period, then in redemption where restoring costs more, and then deletes it.\n` };
       }
       if (v.autoRenew) {
         const lead = v.stage === "c8" ? "In 8 days" : v.stage === "e32" ? "About a month before it expires" : "Your renewal is coming up";
-        return { subject: `Your domain ${v.fqdn} renews on ${day(v.chargeAt)}`, text: `${lead}: auto-renew is on for ${v.fqdn}. On ${day(v.chargeAt)} we charge ${usd(v.priceMinor)} to your saved card and renew the name for one year. It expires on ${day(v.expiresAt)}.\n${off}\nSign in at ${l.home} to renew sooner or to review the price.\n` };
+        return { subject: `Your domain ${v.fqdn} renews on ${day(v.chargeAt)}`, text: `${lead}: auto-renew is on for ${v.fqdn}. On ${day(v.chargeAt)} we charge ${usd(v.priceMinor)} to your saved card and renew the name for ${termText(v.years)}. It expires on ${day(v.expiresAt)}.\n${off}\nSign in at ${l.home} to renew sooner or to review the price.\n` };
       }
       return { subject: `Your domain ${v.fqdn} expires on ${day(v.expiresAt)}`, text: `${v.fqdn} expires on ${day(v.expiresAt)}. Auto-renew is off, so nothing renews unless you renew it.\n\nRenew it now at ${l.home}. ${keep}\n` };
     },
@@ -107,32 +113,32 @@ export const TEMPLATES = {
       : { subject: `Your domain ${v.fqdn} expires in about a week`, text: `${v.fqdn} expires on ${day(v.expiresAt)}. Renew it at ${l.home} to keep it.\n\nWe send this expiry notice to every address on your account, whether or not auto-renew is on.\n` },
   }),
   expiry_lastchance: def({
-    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e7", "e21", "e35"]), expiredAt: iso, priceMinor: digits }),
+    klass: "C", schema: z.strictObject({ fqdn, stage: z.enum(["e7", "e21", "e35"]), expiredAt: iso, priceMinor: digits, years: z.number().int().min(1).max(10).optional() }),
     render: (v, l) => {
       const days = v.stage === "e7" ? 7 : v.stage === "e21" ? 21 : 35;
-      return { subject: `Last chance to renew ${v.fqdn}`, text: `${v.fqdn} expired ${days} days ago, on ${day(v.expiredAt)}. You can still renew it for ${usd(v.priceMinor)} plus tax where it applies. Renew at ${l.home}.\n\nWhen the grace period ends the name goes into redemption, where restoring costs more, and then the registry deletes it. Email at the domain stops working while it is expired.\n` };
+      return { subject: `Last chance to renew ${v.fqdn}`, text: `${v.fqdn} expired ${days} days ago, on ${day(v.expiredAt)}. You can still renew it for ${usd(v.priceMinor)} for ${termText(v.years)}, plus tax where it applies. ${LATE_RENEW}\n\nWhen the grace period ends the name goes into redemption, where restoring costs more, and then the registry deletes it. Email at the domain stops working while it is expired.\n` };
     },
   }),
   price_change_notice: def({
-    klass: "C", schema: z.strictObject({ fqdn, kind: z.enum(["known", "reminder"]), oldMinor: digits, newMinor: digits, chargeAt: iso, autoRenew: z.boolean(), aboveCap: z.boolean(), offToken: actionToken.optional() })
+    klass: "C", schema: z.strictObject({ fqdn, kind: z.enum(["known", "reminder"]), oldMinor: digits, newMinor: digits, chargeAt: iso, autoRenew: z.boolean(), aboveCap: z.boolean(), offToken: actionToken.optional(), years: z.number().int().min(1).max(10).optional() })
       .refine((v) => !v.autoRenew || !!v.offToken),
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
     render: (v, l) => {
       const hold = v.autoRenew && v.aboveCap ? `\nThe new price is above the limit you set for auto-renew, so we will not charge it. Sign in at ${l.home} and confirm again with your passkey, or renew by hand.\n` : "";
       const off = v.autoRenew && l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : "";
       const when21 = v.kind === "reminder" ? "In 21 days" : "For the next renewal";
-      return { subject: `New renewal price for ${v.fqdn}`, text: `${when21}, on ${day(v.chargeAt)}, the renewal price for ${v.fqdn} changes from ${usd(v.oldMinor)} to ${usd(v.newMinor)} for one year, plus tax where it applies.\n${hold}${off}\nSign in at ${l.home} to see the details.\n` };
+      return { subject: `New renewal price for ${v.fqdn}`, text: `${when21}, on ${day(v.chargeAt)}, the renewal price for ${v.fqdn} changes from ${usd(v.oldMinor)} to ${usd(v.newMinor)} for ${termText(v.years)}, plus tax where it applies.\n${hold}${off}\nSign in at ${l.home} to see the details.\n` };
     },
   }),
   renewal_failed: def({
     klass: "C", schema: z.strictObject({ fqdn, priceMinor: digits, nextTryAt: iso.optional(), deadline: iso, expiresAt: iso, offToken: actionToken.optional() }),
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
-    render: (v, l) => ({ subject: `Your card was declined for ${v.fqdn}`, text: `We could not charge ${usd(v.priceMinor)} to renew ${v.fqdn}.\n\n${v.nextTryAt ? `We try the card again on ${day(v.nextTryAt)}. ` : "We will not try the card again. "}You have until ${day(v.deadline)} to renew another way: sign in at ${l.home}, update your card or press Renew now.\n\nThe name expires on ${day(v.expiresAt)}.\n${l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : ""}` }),
+    render: (v, l) => ({ subject: `Your card was declined for ${v.fqdn}`, text: `We could not charge ${usd(v.priceMinor)} to renew ${v.fqdn}.\n\n${v.nextTryAt ? `We try the card again on ${day(v.nextTryAt)}. ` : "We will not try the card again. "}You have until ${day(v.deadline)} to renew another way: sign in at ${l.home} and press Renew now to pay on Stripe with this or another card.\n\nThe name expires on ${day(v.expiresAt)}.\n${l.action ? `\nTurn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in.\n` : ""}` }),
   }),
   auto_renew_on: def({
-    klass: "C", schema: z.strictObject({ fqdn, ceilingMinor: digits, chargeAt: iso, offToken: actionToken }),
+    klass: "C", schema: z.strictObject({ fqdn, ceilingMinor: digits, chargeAt: iso, offToken: actionToken, years: z.number().int().min(1).max(10).optional() }),
     link: { purpose: "auto_renew_off", field: "offToken" },
-    render: (v, l) => ({ subject: `Auto-renew is on for ${v.fqdn}`, text: `You turned auto-renew on for ${v.fqdn} with your passkey. Ten days before it expires, on ${day(v.chargeAt)} for the current term, we charge the renewal price to your saved card, up to ${usd(v.ceilingMinor)} for one year. We email you before every charge.\n\nTurn it off with one click: ${l.action}\nThe link works once and needs no sign-in. You can also turn it off at ${l.home}.\n` }),
+    render: (v, l) => ({ subject: `Auto-renew is on for ${v.fqdn}`, text: `You turned auto-renew on for ${v.fqdn} with your passkey. Ten days before it expires, on ${day(v.chargeAt)} for the current term, we charge the renewal price to your saved card, up to ${usd(v.ceilingMinor)} for ${termText(v.years)}. We email you before every charge.\n\nTurn it off with one click: ${l.action}\nThe link works once and needs no sign-in. You can also turn it off at ${l.home}.\n` }),
   }),
   // ---- Phase 3 finish: the renewal receipt keeps the mandate terms and the one-click cancel (C-33, C-34); the card updater (C-38) ----
   renewal_receipt: def({
@@ -140,7 +146,7 @@ export const TEMPLATES = {
     link: { purpose: "auto_renew_off", field: "offToken", optional: true },
     render: (v, l) => {
       const terms = v.ceilingMinor
-        ? `\nYour auto-renew authorisation: each year, ten days before the name expires, we charge your saved card the renewal price, up to ${usd(v.ceilingMinor)} for one year. We email you before every charge. A higher price is never charged without your passkey.\n${l.action ? `Turn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in. ` : ""}You can also turn it off at ${l.home}.\n`
+        ? `\nYour auto-renew authorisation: each year, ten days before the name expires, we charge your saved card the renewal price, up to ${usd(v.ceilingMinor)} for ${termText(v.years)}. We email you before every charge. A higher price is never charged without your passkey.\n${l.action ? `Turn auto-renew off with one click: ${l.action}\nThe link works once and needs no sign-in. ` : ""}You can also turn it off at ${l.home}.\n`
         : "";
       return { subject: `Your Mosshatch renewal receipt for ${v.fqdn}`, text: `You paid to renew ${v.fqdn}.\n\nOrder: ${v.orderId}\nTerm: ${v.years} ${v.years === 1 ? "year" : "years"}\nTotal: ${usd(v.totalMinor)} (tax included: ${usd(v.taxMinor)})\nPaid: ${when(v.paidAt)}\n${v.expiresAt ? `The name now runs to ${day(v.expiresAt)} once the registry confirms it.\n` : ""}${terms}\nKeep this email as the record of your renewal and its terms.\n` };
     },

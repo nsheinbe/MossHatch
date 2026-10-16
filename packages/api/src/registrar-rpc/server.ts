@@ -1,3 +1,4 @@
+import { requireFundingAdmission } from "./funding-control.ts";
 import { z } from "zod";
 import { RegistrarError, type DnsRecord, type RegistrarPort, type TransferAwayStatus } from "@mosshatch/registrar/port";
 import { decodeJson, encodeJson, RPC_HEADERS, RPC_PATH_PREFIX, verifySignature } from "./sign.ts";
@@ -9,7 +10,7 @@ import { decodeJson, encodeJson, RPC_HEADERS, RPC_PATH_PREFIX, verifySignature }
  * on the explicit allow-list below with arguments that validate. Every authentication failure gets the same 401 body, so the reason is not an oracle;
  * the reason goes to `onReject` as a code (never a value).
  */
-export type RejectReason = "not_configured" | "bad_method_or_path" | "missing_headers" | "bad_timestamp" | "outside_window" | "bad_signature" | "replayed_nonce" | "body_too_large" | "command_not_allowed" | "bad_request";
+export type RejectReason = "not_configured" | "bad_method_or_path" | "missing_headers" | "bad_timestamp" | "outside_window" | "bad_signature" | "replayed_nonce" | "body_too_large" | "command_not_allowed" | "bad_request" | "nonce_store_unavailable";
 
 export interface NonceStore {
   /** True the first time a nonce is claimed, false on a replay. Entries must be kept until `expiresAtMs`. */
@@ -30,6 +31,13 @@ const registrant = z.object({ name: z.string().min(1).max(200), email: z.string(
 const dnsRecord = z.object({ type: z.enum(["A", "AAAA", "CNAME", "MX", "SRV", "TXT"]), name: z.string().max(253), value: z.string().min(1).max(1024), priority: z.number().int().min(0).max(65535).optional(), weight: z.number().int().min(0).max(65535).optional(), port: z.number().int().min(0).max(65535).optional() }).strict();
 const ds = z.object({ keyTag: z.number().int().min(0).max(65535), algorithm: z.number().int().min(0).max(255), digestType: z.number().int().min(0).max(255), digest: z.string().regex(/^[0-9a-fA-F]{20,128}$/) }).strict();
 const years = z.number().int().min(1).max(10);
+const dnskey = z.object({ flags: z.number().int().min(0).max(65535), algorithm: z.number().int().min(1).max(255), publicKey: z.string().regex(/^[A-Za-z0-9+/=\s]{20,4096}$/), protocol: z.number().int().min(0).max(255).optional() }).strict();
+/** An optional port method. A provider without it answers `not_supported`: a rejection, with nothing sent. */
+function optional<K extends "addDnskey" | "getRegistrantVerification" | "resendRegistrantVerification">(p: RegistrarPort, k: K): NonNullable<RegistrarPort[K]> {
+  const f = p[k];
+  if (typeof f !== "function") throw new RegistrarError("rejected", "not supported by this registrar", { retryable: false, outcomeUnknown: false, code: "not_supported" });
+  return f.bind(p) as NonNullable<RegistrarPort[K]>;
+}
 const tstatus = z.enum(["pending_admin", "pending_owner", "pending_registry", "completed", "cancelled"]);
 
 type Cmd = { args: z.ZodTypeAny; run: (p: RegistrarPort, a: never[]) => Promise<unknown> | unknown };
@@ -46,6 +54,8 @@ export const RPC_COMMANDS = {
   getDomain: cmd(z.tuple([fqdn]), (p, a) => p.getDomain(a[0])),
   getOrdersByDomain: cmd(z.tuple([fqdn]), (p, a) => p.getOrdersByDomain(a[0])),
   cancelPendingOrder: cmd(z.tuple([z.string().regex(/^[A-Za-z0-9_-]{1,40}$/)]), (p, a) => p.cancelPendingOrder(a[0])),
+  beginFundingAdmission: cmd(z.tuple([]), (p) => requireFundingAdmission(p).beginFundingAdmission()),
+  endFundingAdmission: cmd(z.tuple([z.string().uuid()]), (p, a) => requireFundingAdmission(p).endFundingAdmission(a[0])),
   getFundingStatus: cmd(z.tuple([]), (p) => p.getFundingStatus()),
   getBalance: cmd(z.tuple([]), (p) => p.getBalance()),
   setLock: cmd(z.tuple([fqdn, z.boolean()]), (p, a) => p.setLock(a[0], a[1])),
@@ -57,6 +67,9 @@ export const RPC_COMMANDS = {
   getDs: cmd(z.tuple([fqdn]), (p, a) => p.getDs(a[0])),
   addDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.addDs(a[0], a[1])),
   removeDs: cmd(z.tuple([fqdn, ds]), (p, a) => p.removeDs(a[0], a[1])),
+  addDnskey: cmd(z.tuple([fqdn, dnskey]), (p, a) => optional(p, "addDnskey")(a[0], a[1])),
+  getRegistrantVerification: cmd(z.tuple([fqdn]), (p, a) => optional(p, "getRegistrantVerification")(a[0])),
+  resendRegistrantVerification: cmd(z.tuple([fqdn]), (p, a) => optional(p, "resendRegistrantVerification")(a[0])),
   updateContact: cmd(z.tuple([fqdn, registrant]), (p, a) => p.updateContact(a[0], a[1])),
   getTransfersAway: cmd(z.tuple([]).rest(z.object({ statuses: z.array(tstatus).max(5).optional(), since: z.date().optional() }).strict()), (p, a) => p.getTransfersAway((a[0] ?? {}) as { statuses?: TransferAwayStatus[]; since?: Date })),
   cancelTransfer: cmd(z.tuple([fqdn]), (p, a) => p.cancelTransfer(a[0])),
@@ -109,7 +122,11 @@ export function createRegistrarRpc(opts: RegistrarRpcOptions): (req: RpcRequest)
     let ok = false; for (const s of opts.secrets) ok = verifySignature(s, parts, sig) || ok;
     if (!ok) return reject("bad_signature", UNAUTH());
     // Claimed only after the signature verifies, so an unauthenticated caller cannot fill the store. Kept past the far edge of the window.
-    if (!(await opts.nonces.claim(nonce, Number(ts) * 1000 + windowS * 1000 + 1000, nowMs))) return reject("replayed_nonce", UNAUTH());
+    // A store that cannot answer refuses the call (fail closed): accepting it would let a replay through on another instance.
+    let fresh: boolean;
+    try { fresh = await opts.nonces.claim(nonce, Number(ts) * 1000 + windowS * 1000 + 1000, nowMs); }
+    catch { return reject("nonce_store_unavailable", reply(503, { error: { code: "registrar_shared_store_unavailable", kind: "unavailable", retryable: true, outcomeUnknown: false } })); }
+    if (!fresh) return reject("replayed_nonce", UNAUTH());
 
     const name = req.path.slice(RPC_PATH_PREFIX.length);
     if (!Object.hasOwn(RPC_COMMANDS, name)) return reject("command_not_allowed", reply(404, { error: { code: "command_not_allowed" } }));

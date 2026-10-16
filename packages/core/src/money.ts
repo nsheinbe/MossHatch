@@ -13,8 +13,8 @@ export function formatUsd(m: Money): string {
   return `$${dollars}.${String(c).padStart(2, "0")}`;
 }
 
-/** D-003: flat fee per domain-year by wholesale band (USD cents). */
+/** D-003: flat fee per domain-year by wholesale band (USD cents). The 30.00-50.00 band rose from 3.00 to 5.00 on 2026-10-16 (owner decision: a fatter cushion on .studio, whose member price of 31.20 is the only extension price in that band). */
 export function feePerYear(wholesale: Money): Money {
   const w = wholesale.cents;
-  return usd(w < 5000 ? 400 : w < 10000 ? 900 : 1000);
+  return usd(w < 3000 ? 300 : w < 5000 ? 500 : w < 10000 ? 900 : 1000);
 }

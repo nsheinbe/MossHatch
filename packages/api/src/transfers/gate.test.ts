@@ -118,6 +118,9 @@ describe("The Gate: unlock, code, approval by email at the gaining side, detecti
     expect(g.json.cancel).toContain("asks our registrar's support for help");
     expect(g.json.steps[3]).toBe("Our registrar emails the registrant to approve or decline. Silence for five days counts as approval.");
     expect(g.text).not.toMatch(/OpenSRS|Tucows/);
+    // Openprovider issues .io codes through its API, so the Gate does not say support sets them.
+    const io = await oldDomain(h, o, "held-live.io", 400, "openprovider");
+    expect((await gate(h, o, io)).json.code.by_support).toBe(false);
   });
 
   it("an unrequested transfer is needs attention, gets no 'you asked for it' mail, and is still released if it completes", async () => {

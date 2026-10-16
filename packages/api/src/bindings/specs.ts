@@ -64,10 +64,14 @@ export const agentTokenWidenSpec: ActionSpec<z.infer<typeof widenInput>> = {
     const { row, before, beforeHash } = await bindingState(c, userId, targetId);
     const scopes = await parseForUser(c, userId, input.scopes);
     const after = { name: input.name ?? row.name, scopes: canonical(scopes), spend_cap_minor: input.spend_cap_minor ?? Number(row.spend_cap_minor), expires_in_days: input.expires_in_days ?? null };
-    return { params: { binding_id: row.id, kind: row.kind, before_hash: beforeHash, before_scopes: before.scopes, after }, resourceId: row.id };
+    // Resume: the same access, cap, name and lifetime on a paused token. The summary says that, not "change".
+    const resume = before.paused && after.name === before.name && String(after.spend_cap_minor) === before.spend_cap_minor && after.expires_in_days === null
+      && hashOf(after.scopes).equals(hashOf(before.scopes));
+    return { params: { binding_id: row.id, kind: row.kind, before_hash: beforeHash, before_scopes: before.scopes, after, ...(resume ? { resume: true } : {}) }, resourceId: row.id };
   },
   summary: (p) => {
     const a = p.after as { name: string; scopes: Scope[]; expires_in_days: number | null };
+    if (p.resume === true) return `Resume the token "${a.name}". It can again: ${a.scopes.map(scopeString).join(", ")}.`;
     return `Change the token "${a.name}" so it can: ${a.scopes.map(scopeString).join(", ")}${a.expires_in_days ? `, for ${a.expires_in_days} more days` : ""}. A paused token resumes.`;
   },
 };

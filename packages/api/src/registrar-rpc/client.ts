@@ -1,3 +1,4 @@
+import type { FundingRegistrar } from "./funding-control.ts";
 import { randomBytes } from "node:crypto";
 import { RegistrarError, type RegistrarCapabilities, type RegistrarPort } from "@mosshatch/registrar/port";
 import { decodeJson, encodeJson, RPC_HEADERS, RPC_PATH_PREFIX, sign } from "./sign.ts";
@@ -25,7 +26,9 @@ export async function connectRegistrarRpc(o: { secret: string; send: RpcSend; cl
     throw new RegistrarError(e.kind ?? "unavailable", "registrar call failed", { retryable: e.retryable ?? false, outcomeUnknown: rpcLevel ? false : e.outcomeUnknown ?? res.status >= 500, code: e.code ?? `rpc_http_${res.status}` });
   };
   const caps = await call<RegistrarCapabilities>("capabilities");
-  const port: RegistrarPort = {
+  const port: FundingRegistrar = {
+    beginFundingAdmission: () => call("beginFundingAdmission"),
+    endFundingAdmission: (token) => call("endFundingAdmission", [token]),
     capabilities: () => caps,
     health: () => call("health"),
     checkAvailability: (f, opts) => call("checkAvailability", opts ? [f, opts] : [f]),
@@ -46,6 +49,9 @@ export async function connectRegistrarRpc(o: { secret: string; send: RpcSend; cl
     getDs: (f) => call("getDs", [f]),
     addDs: (f, d) => call("addDs", [f, d]),
     removeDs: (f, d) => call("removeDs", [f, d]),
+    addDnskey: (f, k) => call("addDnskey", [f, k]),
+    getRegistrantVerification: async (f) => (await call<Awaited<ReturnType<NonNullable<RegistrarPort["getRegistrantVerification"]>>> | undefined>("getRegistrantVerification", [f])) ?? null,
+    resendRegistrantVerification: (f) => call("resendRegistrantVerification", [f]),
     updateContact: (f, r) => call("updateContact", [f, r]),
     getTransfersAway: (opts) => call("getTransfersAway", opts ? [opts] : []),
     cancelTransfer: (f) => call("cancelTransfer", [f]),

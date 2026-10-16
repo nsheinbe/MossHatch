@@ -259,11 +259,11 @@ describe("tick, heartbeat, routes", () => {
   });
   it("ST-138: GET /api/health/ticks reports the age of the last completed tick and nothing else, anonymously", async () => {
     const before = await app.call("GET", "/api/health/ticks");
-    expect(before.status).toBe(200); expect(before.json).toEqual({ ageSeconds: null });
+    expect(before.status).toBe(503); expect(before.json).toEqual({ ageSeconds: null });
     await app.call("GET", "/api/cron/tick", { authorization: `Bearer ${app.ctx.config.cronSecret}` });
     app.clock.advance(200_000);
     const after = await app.call("GET", "/api/health/ticks");
-    expect(after.json).toEqual({ ageSeconds: 200 });
+    expect(after.status).toBe(503); expect(after.json).toEqual({ ageSeconds: 200 });
     expect(Object.keys(after.json)).toEqual(["ageSeconds"]);
     expect((await app.call("POST", "/api/health/ticks")).status).toBe(405);
   });

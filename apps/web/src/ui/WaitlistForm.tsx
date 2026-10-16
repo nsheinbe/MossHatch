@@ -1,3 +1,4 @@
+import { GettingStarted } from "./GettingStarted";
 import { useEffect, useRef, useState } from "react";
 import { joinWaitlist, type WaitlistOpen } from "../lib/waitlist";
 import { CONSENT_TEXT, QUESTION_TEXT } from "./waitlistText";
@@ -9,6 +10,7 @@ const ERRORS: Record<string, string> = {
   rate_limited: "Too many sign-ups from this network. Try again in an hour.",
   busy: "Lots of people are joining right now. Try again in a few minutes.",
   not_configured: "The waitlist is not taking sign-ups at the moment. Try again later.",
+  delivery_unavailable: "We could not deliver your confirmation email. Try again later. Your place is confirmed only after you use the confirmation link.",
   network: "We could not reach Mosshatch. Check your connection and try again.",
 };
 
@@ -41,13 +43,19 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
       <div className="body">
         {sent ? (
           <>
-            <p role="status">We sent a link to confirm your place. It works for 7 days. Once you confirm, we tell you your place in line.</p>
+            <p role="status">Your request was received. If this address needs confirmation, look for a link that works for 7 days. Your place is confirmed only after you use the link. If you already joined, look for a short note instead.</p>
+            <p>Check your inbox and spam folder. To limit unwanted email, repeated requests may not send another message. If no message arrives, try again later.</p>
             <p>Joining does not reserve or register a name. We let people in a few at a time and email an invite when it is your turn.</p>
+            <GettingStarted storageKey="mosshatch:waitlist-preparation" title="Getting ready" description="A little preparation while you wait for your invitation. This checklist does not reserve a domain." steps={[
+              {id:'request',title:'Send your early-access request',description:'Your request was received.',complete:true},
+              {id:'email',title:'Check your confirmation email',description:'Use the link in your email if confirmation is requested. This checkmark is only your reminder.',manual:true},
+              {id:'name',title:'Keep a shortlist of names',description:'Jot down a favorite and a backup. Availability and registration happen separately.',manual:true,onAction:close,actionLabel:'Return to exploring'},
+            ]} />
             <div className="row-actions"><button type="button" className="btn primary" autoFocus onClick={close}>Done</button></div>
           </>
         ) : (
           <form onSubmit={submit} noValidate={false}>
-            <p>Mosshatch isn't open yet. Join and we will email you an invite when it is your turn. <strong>Joining does not reserve or register a name.</strong></p>
+            <p>A domain with a creature of its own. Join for an early-access invite when it is your turn. No payment details needed. <strong>Joining does not reserve or register a name.</strong></p>
             <div className="form-grid">
               <div>
                 <label htmlFor="wl-email">Email</label>
@@ -57,12 +65,15 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
                 <label htmlFor="wl-name">The name you hatched (optional)</label>
                 <input id="wl-name" className="text-input" type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={80} placeholder="moonfern.com" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
               </div>
+              <details className="wl-optional">
+                <summary>One optional question</summary>
               <fieldset className="wl-question">
                 <legend>{QUESTION_TEXT} (optional)</legend>
                 {(["yes", "no", "maybe"] as const).map((a) => (
                   <label key={a} className="wl-radio"><input type="radio" name="wl-answer" value={a} checked={f.answer === a} onChange={() => setF({ ...f, answer: a })} /> {a[0]!.toUpperCase() + a.slice(1)}</label>
                 ))}
               </fieldset>
+              </details>
               <div className="hp" aria-hidden="true">
                 <label htmlFor="wl-website">Leave this empty</label>
                 <input id="wl-website" type="text" tabIndex={-1} autoComplete="off" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />
@@ -81,3 +92,4 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
     </dialog>
   );
 }
+

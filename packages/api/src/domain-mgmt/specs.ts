@@ -3,6 +3,7 @@ import type { PoolClient } from "@mosshatch/db";
 import type { AppContext } from "../ports.ts";
 import { HttpError } from "../http/router.ts";
 import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
+import { dsFromDnskey } from "@mosshatch/registrar/dnssec";
 import { isHostedNs, normalizeFqdn, ownedDomain, type DomainRow } from "./common.ts";
 
 /**
@@ -51,11 +52,17 @@ const dsShape = z.object({
   keyTag: z.number().int().min(0).max(65535), algorithm: z.number().int().min(0).max(255), digestType: z.number().int().min(0).max(255),
   digest: z.string().trim().regex(/^[0-9a-fA-F]{20,128}$/),
 }).strict();
+/** DNSKEY material (RFC 4034 section 2) for registrars that take the key and let the registry derive the DS; `protocol` is always 3. */
+const dnskeyShape = z.object({
+  flags: z.union([z.literal(256), z.literal(257)]), algorithm: z.number().int().min(1).max(255),
+  publicKey: z.string().trim().regex(/^[A-Za-z0-9+/=\s]{20,4096}$/),
+}).strict();
 const nsInput = z.object({
   kind: z.enum(["nameservers", "ds_add", "ds_remove"]),
   nameservers: z.array(z.string().trim().toLowerCase().regex(HOSTNAME)).min(2).max(13).optional(),
   target_signed: z.boolean().optional(),
   ds: dsShape.optional(),
+  dnskey: dnskeyShape.optional(),
 }).strict();
 
 export const nameserversSpec: ActionSpec<z.infer<typeof nsInput>> = {
@@ -74,7 +81,13 @@ export const nameserversSpec: ActionSpec<z.infer<typeof nsInput>> = {
       if (ns.length === d.nameservers.length && ns.every((n) => d.nameservers.includes(n))) throw new HttpError(409, "unchanged");
       return { params: { op: "nameservers", domain_id: d.id, fqdn: d.fqdn_ascii, nameservers: ns, target_signed: signed }, resourceId: d.id };
     }
-    if (!input.ds) throw new HttpError(422, "bad_ds");
+    if (input.kind === "ds_add" && input.dnskey && !input.ds) {
+      // The key is signed along with the DS the registry will derive from it, so the summary names the record either way.
+      const dnskey = { flags: input.dnskey.flags, algorithm: input.dnskey.algorithm, publicKey: input.dnskey.publicKey.replace(/\s+/g, "") };
+      const ds = dsFromDnskey(d.fqdn_ascii, { ...dnskey, protocol: 3 }, 2);
+      return { params: { op: "ds_add", domain_id: d.id, fqdn: d.fqdn_ascii, ds, dnskey, ds_label: dsLabel(ds) }, resourceId: d.id };
+    }
+    if (!input.ds || input.dnskey) throw new HttpError(422, "bad_ds");
     const ds = { ...input.ds, digest: input.ds.digest.toLowerCase() };
     // The record's identity goes into the signed params and the summary, so two different DS changes never read the same.
     return { params: { op: input.kind, domain_id: d.id, fqdn: d.fqdn_ascii, ds, ds_label: dsLabel(ds) }, resourceId: d.id };
@@ -82,7 +95,7 @@ export const nameserversSpec: ActionSpec<z.infer<typeof nsInput>> = {
   summary: (p) => p.op === "nameservers"
     ? `Change the nameservers of ${String(p.fqdn)} to ${(p.nameservers as string[]).join(", ")}.`
     : p.op === "ds_add"
-      ? `Add the DNSSEC record with ${labelOf(p)} to ${String(p.fqdn)}.`
+      ? `Add the DNSSEC ${p.dnskey ? "key" : "record"} with ${labelOf(p)} to ${String(p.fqdn)}.`
       : `Remove the DNSSEC record with ${labelOf(p)} from ${String(p.fqdn)}.`,
 };
 /** Params prepared before `ds_label` existed (a challenge lives 120 seconds) still render the record from `ds`. */

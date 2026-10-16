@@ -32,7 +32,7 @@ test("hatch flow: sheet, sequence, card; axe clean at each step; grove receives 
   const sheet = page.getByRole("region", { name: /^Hatch / });
   await expect(sheet).toBeVisible();
   expect((await axe(page).analyze()).violations.map((v) => v.id)).toEqual([]);
-  await sheet.getByRole("button", { name: "Hatch", exact: true }).click();
+  await sheet.getByRole("button", { name: "Preview creature", exact: true }).click();
   for (const s of [2.5, 0.8, 1.5, 3]) await page.evaluate((x) => window.__mh.step(x), s);
   const card = page.getByRole("region", { name: /has hatched$/ });
   await expect(card).toBeVisible({ timeout: 20000 });

@@ -67,13 +67,31 @@ describe("GET /api/lookup", () => {
     expect((await get("?name=" + "a".repeat(63))).status).toBe(200);
     // As Vercel delivers it in production: the rewrite of /api/:path* to the one function appends `path=lookup`.
     expect((await get("?name=moon&path=lookup")).status).toBe(200);
-    const post = await h(new Request("https://mosshatch.com/api/lookup?name=moon", { method: "POST" }));
-    expect(post!.status).toBe(405);
+    for (const method of ["PUT", "DELETE", "PATCH"]) expect((await h(new Request("https://mosshatch.com/api/lookup?name=moon", { method })))!.status, method).toBe(405);
+    // A POST carries the name in its body only (AUD-V1, below): a name in a POST's URL is refused.
+    expect((await h(new Request("https://mosshatch.com/api/lookup?name=moon", { method: "POST" })))!.status).toBe(400);
     const cross = await get("?name=moon", { "sec-fetch-site": "cross-site" });
     expect(cross.status).toBe(403);
     expect(await h(new Request("https://mosshatch.com/api/lookups?name=moon"))).toBeNull();
     expect(await h(new Request("https://mosshatch.com/api/waitlist"))).toBeNull();
     expect(rdapCalls(calls).every((u) => /domain\/a{63}\.|domain\/moon\./.test(u))).toBe(true);
+  });
+
+  it("AUD-V1: POST {\"name\"} answers exactly like GET, keeping the name out of the URL; anything else in the body or the URL is refused", async () => {
+    const { h } = rig((u) => u === IANA_BOOTSTRAP ? new Response(null, { status: 503 }) : new Response("{}", { status: /moonfern\.com$/.test(u) ? 200 : 404 }));
+    const post = (body: string, type = "application/json", q = "", extra: Record<string, string> = {}) =>
+      h(new Request(`https://mosshatch.com/api/lookup${q}`, { method: "POST", body, headers: { "content-type": type, "x-forwarded-for": "203.0.113.9", ...extra } }));
+    const r = (await post(JSON.stringify({ name: "MoonFern" })))!;
+    expect(r.status).toBe(200);
+    expect(await statusOf(r)).toEqual({ com: "registered", studio: "unregistered", dev: "unregistered", app: "unregistered", io: "unregistered", ai: "unregistered" });
+    expect((await post(JSON.stringify({ name: "moonfern" }), "application/json; charset=utf-8", "?path=lookup"))!.status).toBe(200);
+    const bad: [string, string, string][] = [
+      [JSON.stringify({ name: "moon", tlds: "com" }), "application/json", ""], [JSON.stringify({ name: 7 }), "application/json", ""], [JSON.stringify(["moon"]), "application/json", ""],
+      ["{", "application/json", ""], ["name=moon", "application/x-www-form-urlencoded", ""], [JSON.stringify({ name: "moon" }), "text/plain", ""],
+      [JSON.stringify({ name: "moon" }), "application/json", "?name=moon"], [JSON.stringify({ name: "x".repeat(600) }), "application/json", ""], [JSON.stringify({ name: "moon.fern" }), "application/json", ""],
+    ];
+    for (const [b, t, q] of bad) expect((await post(b, t, q))!.status, `${b} ${t} ${q}`).toBe(400);
+    expect((await post(JSON.stringify({ name: "moon" }), "application/json", "", { "sec-fetch-site": "cross-site" }))!.status).toBe(403);
   });
 
   it("rate limit: 20 lookups a minute and 200 an hour per network, then 429 with Retry-After; other networks are unaffected", async () => {

@@ -19,8 +19,13 @@ export function orderView(o: OrderRow, paid?: { amountMinor: bigint; taxMinor: b
     charged_minor: paid ? paid.amountMinor.toString() : null, tax_minor: paid ? paid.taxMinor.toString() : null,
     message: o.state === "voided" || o.state === "canceling" ? voidMessage(o.voidReason) : null,
     created_at: o.createdAt.toISOString(),
+    // While the card is only held (not charged): when the hold ends. The page says so instead of "Nothing was charged" or "Working on it".
+    hold_until: HOLDING.has(o.state) && o.captureBefore ? o.captureBefore.toISOString() : null,
+    // capture_failed: the name is registered and the customer can still pay through the order's pay link until `pay_by`.
+    pay_by: o.state === "capture_failed" && o.payLinkExpiresAt ? o.payLinkExpiresAt.toISOString() : null,
   };
 }
+const HOLDING = new Set(["review_hold", "authorized", "registering", "outcome_unknown", "registrar_unavailable", "registered", "capturing"]);
 
 /** The ownership join: an unowned order and a nonexistent one leave through the same 404. */
 async function owned(ctx: AppContext, userId: string, id: string): Promise<OrderRow> {

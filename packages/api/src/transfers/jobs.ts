@@ -22,7 +22,7 @@ export async function pollTransfersIn(ctx: AppContext, job?: Pick<JobRow, "id" |
     `select * from transfers_in where (state = any($1) and state <> 'awaiting_confirmation' and (next_check_at is null or next_check_at <= $2))
         or (state in ('failed','nacked','cancelled') and ((late_watch_until > $2 and (next_check_at is null or next_check_at <= $2))
             or exists (select 1 from orders o where o.id = transfers_in.order_id and o.state = 'captured')))
-      order by created_at limit 200`, [[...OPEN_STATES], now])).rows;
+      order by next_check_at asc nulls first, created_at asc, id asc limit 200`, [[...OPEN_STATES], now])).rows;
   for (const r of due) {
     try { await pollOutsideMachine(ctx, rowToTransfer(r), job ? { jobId: job.id, attemptId: job.attempt_id } : undefined); polled++; }
     catch (e) { if ((e as Error)?.name === "LeaseLostError") throw e; /* one bad transfer never stops the rest; the next pass retries it */ }

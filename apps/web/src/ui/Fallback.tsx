@@ -15,7 +15,8 @@ export function Fallback() {
   return (
     <main className="static-find" tabIndex={0}>
       <h1>Every name hatches.</h1>
-      <p className="lede">Type a name and see what is open.</p>
+      <p className="lede">Find a domain. Hatch its creature. Give your next idea a little life.</p>
+      <p><a href="/how-it-works">How Mosshatch works</a></p>
       <div id="boot-panel" className="boot-panel" role="status">
         <p className="boot-title">This browser can't light the lanterns.</p>
         <p className="boot-msg">Mosshatch draws its grove with WebGL 2. The search below works without it.</p>
@@ -33,11 +34,11 @@ export function Fallback() {
           ))}
         </ul>
       )}
-      <h2 className="prices-title">Sample prices</h2>
+      <h2 className="prices-title">Invite-only test prices</h2>
       <ul className="static-prices">
-        {staticPrices().map((p) => <li key={p.tld}><span className="ext">.{p.tld}</span><span className="price">{p.price}</span><span className="note">{p.years === 2 ? "for 2 years" : "first year"}, renews the same</span></li>)}
+        {staticPrices().map((p) => <li key={p.tld}><span className="ext">.{p.tld}</span><span className="price">{p.price}</span><span className="note">{p.years === 2 ? "for 2 years" : "first year"}, renews at {p.renewal}{p.years === 2 ? " for 2 years" : " a year"}</span></li>)}
       </ul>
-      <p className="fineprint">To check whether a name is taken, we ask the public registry; we don't log or sell your searches. The prices above are samples, not final: real prices are set at launch. Nothing is for sale in this preview, and nothing you search is registered or reserved.</p>
+      <p className="fineprint">To check whether a name is taken, we ask the public registry; we don't log or sell your searches. The examples above come from our <a href="/fees.html#prices">published Fees table</a>. Launch prices will be published there before public registration opens. Nothing is for sale in this preview, and nothing you search is registered or reserved.</p>
     </main>
   );
 }

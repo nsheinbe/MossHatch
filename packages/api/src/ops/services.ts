@@ -15,7 +15,7 @@ export interface OpsServices {
 
 /** Push and email delivery of S1 alerts. The real one (phone push plus two addresses) is wired outside this repo's tests. */
 export interface AlertNotifier {
-  notify(alert: { id: string; severity: "info" | "warn" | "page"; kind: string; subject: string | null }): Promise<void>;
+  notify(alert: { id: string; severity: "info" | "warn" | "page"; kind: string; subject: string | null; /** A warning the operator asked to be emailed (alerts.ts `email`). */ email?: boolean }): Promise<void>;
 }
 
 export class MissingServiceError extends Error {

@@ -84,3 +84,6 @@ export async function flagTrue(q: Q, name: string): Promise<boolean> {
 export async function tableExists(q: Q, name: string): Promise<boolean> {
   return (await q.query("select to_regclass($1) is not null as e", [`public.${name}`])).rows[0].e as boolean;
 }
+
+/** Years one renewal buys: the extension's minimum term (tld_policy; .ai is sold two years at a time), for renewal mails and their prices. */
+export const renewalYears = (tld: string): number => (tld === "ai" ? 2 : 1);

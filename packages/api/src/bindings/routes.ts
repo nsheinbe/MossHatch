@@ -137,6 +137,23 @@ async function widen(req: HandlerReq): Promise<HandlerResult> {
   });
 }
 
+/**
+ * POST /bindings/:id/pause: the token stops working at once (every bearer route refuses a paused binding, and a connected app's
+ * refresh fails), its waiting requests can no longer be approved, and nothing else changes. No passkey: it only takes access away.
+ * Resuming is `agent.token.widen` with the same access, which does need the passkey.
+ */
+async function pause(req: HandlerReq): Promise<HandlerResult> {
+  const userId = sessionUser(req);
+  const id = req.params.id ?? "";
+  if (!UUID.test(id)) throw notFound();
+  return withUser(req.ctx.runtime, userId, async (c) => {
+    const r = await c.query("update bindings set paused_at = coalesce(paused_at, $3) where id = $1 and user_id = $2 and revoked_at is null returning *", [id, userId, req.ctx.clock.now()]);
+    if (r.rowCount !== 1) throw notFound();
+    await appendAudit(req.ctx, c, { chainId: userId, actorKind: "user", actorId: userId, action: "binding.paused", resourceKind: "binding", resourceId: id, detail: {} });
+    return json({ binding: view(r.rows[0]) });
+  });
+}
+
 async function del(req: HandlerReq): Promise<HandlerResult> {
   const userId = sessionUser(req);
   const id = req.params.id ?? "";
@@ -161,8 +178,15 @@ async function activity(req: HandlerReq): Promise<HandlerResult> {
     const b = (await c.query("select id from bindings where id = $1 and user_id = $2", [id, userId])).rows[0];
     if (!b) throw notFound();
     const rows = (await c.query(
-      "select seq, at, actor_kind, action, resource_kind, resource_id from audit_log where chain_id = $1 and (actor_id = $2 or resource_id = $2) order by seq desc limit 100", [userId, id])).rows;
-    return json({ id, activity: rows.map((r) => ({ at: new Date(r.at).toISOString(), actor: r.actor_kind, action: r.action, resource_kind: r.resource_kind, resource_id: r.resource_id })) });
+      "select seq, at, actor_kind, action, resource_kind, resource_id, detail from audit_log where chain_id = $1 and (actor_id = $2 or resource_id = $2) order by seq desc limit 100", [userId, id])).rows;
+    const names = new Map((await c.query("select id::text as id, fqdn_ascii from domains where user_id = $1", [userId])).rows.map((d) => [d.id as string, d.fqdn_ascii as string]));
+    // The tool an MCP or REST call ran and how it ended (detail.op, detail.outcome): both are fixed strings this server wrote.
+    const word = (v: unknown) => (typeof v === "string" && /^[a-z_.]{1,40}$/.test(v) ? v : null);
+    return json({ id, activity: rows.map((r) => ({
+      at: new Date(r.at).toISOString(), actor: r.actor_kind, action: r.action, resource_kind: r.resource_kind, resource_id: r.resource_id,
+      domain: r.resource_kind === "domain" ? names.get(String(r.resource_id)) ?? null : null,
+      op: word(r.detail?.op), outcome: word(r.detail?.outcome),
+    })) });
   });
 }
 
@@ -266,6 +290,7 @@ export const bindingRoutes: Route[] = [
   { method: "PATCH", path: "/api/v1/bindings/:id", principals: ["session"], handler: patch, tag: "bindings" },
   { method: "DELETE", path: "/api/v1/bindings/:id", principals: ["session"], handler: del, tag: "bindings" },
   { method: "POST", path: "/api/v1/bindings/:id/widen", principals: ["session"], stepUp: "agent.token.widen", handler: widen, tag: "bindings" },
+  { method: "POST", path: "/api/v1/bindings/:id/pause", principals: ["session"], handler: pause, tag: "bindings" },
   { method: "GET", path: "/api/v1/bindings/:id/activity", principals: ["session"], handler: activity, tag: "bindings" },
   // Device flow (RFC 8628) and token endpoints.
   { method: "POST", path: "/api/v1/oauth/device/code", principals: ["anonymous"], handler: deviceCodeHandler, tag: "bindings" },

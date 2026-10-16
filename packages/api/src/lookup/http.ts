@@ -2,7 +2,7 @@ import { LAUNCH_TLDS, normalizeLabel } from "../search/labels.ts";
 import { RdapDirectory, rdapStatus, type Fetch, type LookupStatus } from "./rdap.ts";
 
 /**
- * GET /api/lookup?name=<label> — the preview's "is this name already registered?" check, served by api/index.ts before (and
+ * GET /api/lookup?name=<label> (or POST {"name": "<label>"}, the web app's form) — the preview's "is this name already registered?" check, served by api/index.ts before (and
  * independently of) the full API boot. No database, no registrar, no price: for each of the six preview extensions it asks that
  * registry's public RDAP service and answers `registered`, `unregistered` or `unknown` (lookup/rdap.ts).
  *
@@ -47,6 +47,20 @@ export function networkKey(r: Request): string {
   return "unknown";
 }
 
+/** The one `name` of a small JSON body, or nothing (which the caller answers as bad_name). */
+async function nameFromBody(request: Request): Promise<string[]> {
+  if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return [];
+  const text = await request.text();
+  if (text.length > 512) return [];
+  try {
+    const b = JSON.parse(text) as unknown;
+    if (b === null || typeof b !== "object" || Array.isArray(b)) return [];
+    const keys = Object.keys(b);
+    const v = (b as { name?: unknown }).name;
+    return keys.length === 1 && typeof v === "string" ? [v] : [];
+  } catch { return []; }
+}
+
 /** A counting semaphore whose waiters give up at a deadline. */
 class Gate {
   private n = 0;
@@ -66,7 +80,20 @@ class Gate {
 
 interface Window { start: number; count: number }
 
+/** One label's answers, for callers inside the API (the public MCP search): the same limits, cache and registry budget as the page's. */
+export type LabelLookup = { ok: true; results: LookupReply["results"] } | { ok: false; retryAfter: number };
+export interface LookupService {
+  /** The /api/lookup route: null for any other path. */
+  handle(request: Request): Promise<Response | null>;
+  /** Look up one normalized label for the given extensions (default: all six), counted against `key`'s network limits. */
+  label(label: string, key: string, tlds?: readonly string[]): Promise<LabelLookup>;
+}
+
 export function createLookup(o: LookupOptions = {}): (request: Request) => Promise<Response | null> {
+  return createLookupService(o).handle;
+}
+
+export function createLookupService(o: LookupOptions = {}): LookupService {
   const f: Fetch = o.fetch ?? ((u, i) => fetch(u, i));
   const now = o.now ?? Date.now;
   const timeoutMs = o.timeoutMs ?? 3000;
@@ -145,40 +172,57 @@ export function createLookup(o: LookupOptions = {}): (request: Request) => Promi
     return q;
   }
 
-  return async (request: Request): Promise<Response | null> => {
+  async function label(raw: string, key: string, tlds: readonly string[] = LAUNCH_TLDS): Promise<LabelLookup> {
+    const wait = admit(key);
+    if (wait !== null) return { ok: false, retryAfter: Math.max(1, wait) };
+    const want = LAUNCH_TLDS.filter((t) => tlds.includes(t));
+    const results = await Promise.all(want.map(async (tld) => {
+      const fqdn = `${raw}.${tld}`;
+      return { tld, fqdn, status: await checkOnce(tld, fqdn) };
+    }));
+    return { ok: true, results };
+  }
+
+  const handle = async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
     if (url.pathname.replace(/\/$/, "") !== LOOKUP_PATH) return null;
     try {
-      if (request.method !== "GET" && request.method !== "HEAD") return json(405, { error: { code: "method_not_allowed" } }, { allow: "GET" });
+      if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "POST") return json(405, { error: { code: "method_not_allowed" } }, { allow: "GET, POST" });
       // Same-site use only: the page calls this; another site's page may not use it as an RDAP relay. (curl sends no such header.)
       const site = request.headers.get("sec-fetch-site");
       if (site && site !== "same-origin" && site !== "none") return json(403, { error: { code: "cross_site" } });
       // Vercel's rewrite (vercel.json "/api/:path*" -> "/api/index") adds the captured segment as `path`; it carries nothing of the caller's.
-      for (const k of url.searchParams.keys()) if (k !== "name" && k !== "path") return json(400, { error: { code: "bad_request" } });
-      const raw = url.searchParams.getAll("name");
+      const post = request.method === "POST";
+      for (const k of url.searchParams.keys()) if ((post || k !== "name") && k !== "path") return json(400, { error: { code: "bad_request" } });
+      // The web app POSTs {"name": "..."} so the name is never part of a URL, and so never in our host's request logs
+      // (docs/AUDIT-2026-10-07.md V1). GET ?name= still works for anyone calling it by hand.
+      const raw = post ? await nameFromBody(request) : url.searchParams.getAll("name");
       const name = raw.length === 1 ? normalizeLabel(raw[0]!) : ({ ok: false } as const);
       if (!name.ok) return json(400, { error: { code: "bad_name" } });
-      const wait = admit(networkKey(request));
-      if (wait !== null) return json(429, { error: { code: "rate_limited" } }, { "retry-after": String(Math.max(1, wait)) });
-      const label = name.label;
-      const results = await Promise.all(LAUNCH_TLDS.map(async (tld) => {
-        const fqdn = `${label}.${tld}`;
-        return { tld, fqdn, status: await checkOnce(tld, fqdn) };
-      }));
-      const body: LookupReply = { name: label, results };
+      const out = await label(name.label, networkKey(request));
+      if (!out.ok) return json(429, { error: { code: "rate_limited" } }, { "retry-after": String(out.retryAfter) });
+      const body: LookupReply = { name: name.label, results: out.results };
       return json(200, body);
     } catch (e) {
       o.warn?.(`lookup.error ${(e as Error).name}`);
       return json(500, { error: { code: "internal" } });
     }
   };
+  return { handle, label };
 }
 
-let shared: ((r: Request) => Promise<Response | null>) | undefined;
+let shared: LookupService | undefined;
+
+/** The one lookup of this function instance: the page's route and the public MCP search share its limits, cache and registry budget. */
+export function sharedLookup(): LookupService {
+  shared ??= createLookupService({ warn: (l) => console.warn(l) });
+  return shared;
+}
+/** Tests: replace the shared instance (a fake registry fetch); `undefined` puts the default back on next use. */
+export function setSharedLookup(s: LookupService | undefined): void { shared = s; }
 
 /** api/index.ts: answer /api/lookup here, or return null to let the full API (or its 503) answer. */
 export function handleLookup(request: Request, _env: Record<string, string | undefined> = {}): Promise<Response | null> {
   if (new URL(request.url).pathname.replace(/\/$/, "") !== LOOKUP_PATH) return Promise.resolve(null);
-  shared ??= createLookup({ warn: (l) => console.warn(l) });
-  return shared(request);
+  return sharedLookup().handle(request);
 }

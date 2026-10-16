@@ -16,10 +16,13 @@ describe("domain.sync: adapter truth into domains", () => {
     const h = await per.make();
     const o = await makeOwner(h, "sync1@example.com");
     const d = await buyDomain(h, o, "free-sync1.dev");
+    // AUD-O8: a new registration on the provider's own nameservers is marked as DNS hosted here; sync keeps the flag true to the nameservers.
+    expect((await domainRow(h, d.id)).dns_hosted_here).toBe(true);
     h.registrar.oob.setNameservers(d.fqdn, ["ns1.hosted.example", "ns2.hosted.example"]);
     h.app.clock.advance(120_000);
     expect(await syncDomain(h.app.ctx, d.id)).toBe("synced");
     const row = await domainRow(h, d.id);
+    expect(row.dns_hosted_here).toBe(false);
     const st = (await h.registrar.getDomain(d.fqdn))!;
     expect(row.state).toBe("active");
     expect(row.nameservers).toEqual(["ns1.hosted.example", "ns2.hosted.example"]);
@@ -63,7 +66,11 @@ describe("domain.sync: adapter truth into domains", () => {
 
     // drowsy: inside the renewal window with nothing blocking.
     at(h, new Date(E.getTime() - days(20))); await syncDomain(h.app.ctx, d.id);
+    // AUD-O4: with auto-renew off the words say it expires; with it on, that it renews.
+    expect(await viewOf(h, o, d.id)).toMatchObject({ state: "drowsy", state_text: "Expires in 20 days. Auto-renew is off.", days_to_expiry: 20 });
+    await h.app.db.owner.query("update domains set auto_renew = true where id = $1", [d.id]);
     expect(await viewOf(h, o, d.id)).toMatchObject({ state: "drowsy", state_text: "Renews in 20 days", days_to_expiry: 20 });
+    await h.app.db.owner.query("update domains set auto_renew = false where id = $1", [d.id]);
 
     // attention: a sync error older than 15 minutes ("We cannot confirm this domain's state right now"), shown as unconfirmed.
     const realGet = h.registrar.getDomain.bind(h.registrar);

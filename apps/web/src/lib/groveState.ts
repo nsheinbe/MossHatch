@@ -27,6 +27,7 @@ export function factsFromSummary(d: DomainSummary): DomainFacts {
     attentionReason: d.state === "attention" ? d.state_text : undefined,
     dnsWriteInFlight: d.state === "shedding",
     ageDays: d.age_days,
+    autoRenew: d.auto_renew,
   };
 }
 

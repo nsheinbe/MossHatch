@@ -1,22 +1,28 @@
-import { formatUsd, feePerYear, usd, splitDomain } from "@mosshatch/core";
-import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
+import { formatUsd, usd, splitDomain } from "@mosshatch/core";
+import { EXTENSIONS } from "@mosshatch/registrar";
 import type { LookupStatus, Result } from "../store";
 import { api } from "./api";
 
-/** Lowercase letters, digits and hyphens; 1 to 63 characters; no leading or trailing hyphen. */
-export function parseQuery(raw: string): { label: string; tld?: string } | null {
-  let v = raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\s+/g, "");
+/**
+ * Lowercase letters, digits and hyphens; 1 to 63 characters; no leading or trailing hyphen. An extension we do not sell (moonfern.net)
+ * is not dropped silently: it comes back as `unsupported`, so the page can say so while it shows the extensions we do sell.
+ */
+export function parseQuery(raw: string): { label: string; tld?: string; unsupported?: string } | null {
+  let v = raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\s+/g, "").replace(/\/.*$/, "");
   const { label, tld } = splitDomain(v);
   v = label.replace(/[^a-z0-9-]/g, "");
   v = v.replace(/^-+/, "").replace(/-+$/, "").slice(0, 63);
   if (!v) return null;
-  return { label: v, tld: (EXTENSIONS as readonly string[]).includes(tld) ? tld : undefined };
+  const sold = (EXTENSIONS as readonly string[]).includes(tld);
+  const typed = tld.replace(/\.+$/, "");
+  return { label: v, tld: sold ? tld : undefined, ...(!sold && /^[a-z0-9.-]{2,30}$/.test(typed) ? { unsupported: typed } : {}) };
 }
 
 /**
  * Whether each extension of a name is already registered, from our /api/lookup (which asks each registry's public RDAP service:
  * packages/api/src/lookup). Anything it cannot answer, or a failed request, is "unknown"; this never guesses. Answers are kept in
- * memory for five minutes so retyping a name does not ask again.
+ * memory for five minutes so retyping a name does not ask again. The name travels in the request body, never in a URL, so it cannot
+ * end up in a request log (docs/AUDIT-2026-10-07.md V1).
  */
 const memo = new Map<string, { at: number; statuses: Map<string, LookupStatus> }>();
 async function lookup(label: string): Promise<Map<string, LookupStatus>> {
@@ -24,7 +30,7 @@ async function lookup(label: string): Promise<Map<string, LookupStatus>> {
   if (hit && Date.now() - hit.at < 5 * 60_000) return hit.statuses;
   const statuses = new Map<string, LookupStatus>();
   try {
-    const res = await fetch(`/api/lookup?name=${encodeURIComponent(label)}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    const res = await fetch("/api/lookup", { method: "POST", credentials: "same-origin", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ name: label }) });
     if (!res.ok) return statuses;
     const body = (await res.json()) as { results?: { tld?: unknown; status?: unknown }[] };
     for (const r of body.results ?? []) {
@@ -38,7 +44,7 @@ async function lookup(label: string): Promise<Map<string, LookupStatus>> {
   return statuses;
 }
 
-/** The preview's search: real registered-or-not answers from the public registries, and no price (prices are set at launch). */
+/** The preview's search: real registered-or-not answers from the public registries, with clearly labelled published test prices. */
 export async function search(raw: string): Promise<{ results: Result[]; alternatives: string[] } | null> {
   const q = parseQuery(raw);
   if (!q) return null;
@@ -46,47 +52,71 @@ export async function search(raw: string): Promise<{ results: Result[]; alternat
   const statuses = await lookup(q.label);
   const results: Result[] = order.map((tld) => {
     const status = statuses.get(tld) ?? "unknown";
-    return { domain: `${q.label}.${tld}`, tld, status, available: status === "unregistered", sample: true, years: tld === "ai" ? 2 : 1 };
+    const published = staticPrices().find(p => p.tld === tld);
+    return { price: published?.price, renewal: published?.renewal, domain: `${q.label}.${tld}`, tld, status, available: status === "unregistered", sample: true, years: tld === "ai" ? 2 : 1 };
   });
   return { results, alternatives: [] };
 }
 
-export function staticPrices(): { tld: string; price: string; years: number }[] {
-  return EXTENSIONS.map((tld) => {
-    const w = SAMPLE_WHOLESALE_CENTS[tld]!;
-    const years = tld === "ai" ? 2 : 1;
-    return { tld, years, price: formatUsd(usd((w + feePerYear(usd(w)).cents) * years)) };
-  });
+export function staticPrices(): { tld: string; price: string; years: number; renewal: string }[] {
+  return __MH_PREVIEW_PRICES__.map(p => ({...p}));
 }
 
-interface ServerSearch { results: { fqdn: string; tld: string; kind: string; source: string; unconfirmed?: boolean; price: { years: number; subtotal_minor: string } | null }[] }
+interface ServerSearch { results: { fqdn: string; tld: string; kind: string; source: string; unconfirmed?: boolean; price: { years: number; subtotal_minor: string; renewal_subtotal_minor?: string | null } | null }[] }
 
 /** With a backend behind the page, prices come from the server (the effective-dated table), never from the sample table. */
-export async function searchLive(raw: string): Promise<{ results: Result[]; alternatives: string[] } | null> {
+export async function searchLive(raw: string, onlyCom = false): Promise<{ results: Result[]; alternatives: string[] } | null> {
   const q = parseQuery(raw);
   if (!q) return null;
-  const order = q.tld ? [q.tld, ...EXTENSIONS.filter((e) => e !== q.tld)] : [...EXTENSIONS];
-  const out = await api<ServerSearch>("GET", `/api/v1/search?name=${encodeURIComponent(q.label)}&tlds=${order.join(",")}`);
+  const order = onlyCom ? ["com"] : q.tld ? [q.tld, ...EXTENSIONS.filter((e) => e !== q.tld)] : [...EXTENSIONS];
+  const out = await api<ServerSearch>("POST", "/api/v1/search", { name: q.label, tlds: order.join(",") });
   const byTld = new Map(out.results.map((r) => [r.tld, r]));
   const results: Result[] = order.filter((t) => byTld.has(t)).map((tld) => {
     const r = byTld.get(tld)!;
-    const avail = r.kind === "available" && !!r.price;
+    const avail = r.kind === "available" && !!r.price && !r.unconfirmed;
     return {
       domain: r.fqdn, tld, available: avail, sample: r.source === "sample",
+      status: r.kind === "taken" ? "registered" : r.kind === "premium" || r.kind === "reserved" ? r.kind : avail ? "unregistered" : "unknown",
       price: avail ? formatUsd(usd(Number(r.price!.subtotal_minor))) : undefined, years: r.price?.years ?? 1,
+      renewal: r.price?.renewal_subtotal_minor ? formatUsd(usd(Number(r.price.renewal_subtotal_minor))) : undefined,
     };
   });
   return { results, alternatives: [] };
 }
 
-/** `wholesale` is the registrar price the customer pays for: this year's upstream price raised to the renewal price when that is higher (`heldAtRenewal`). */
-export interface LiveQuote { subtotal: string; wholesale: string; fee: string; taxCeiling: string; years: number; heldAtRenewal: boolean }
+/**
+ * A live quote with the checkout facts the server owns (docs/AUDIT-2026-10-07.md P4, P5): the honest price breakdown (what the registrar
+ * charges for this term, the renewal level added when its renewal costs more, and our fee), whether new registrations are open right now,
+ * the registrar of record and the refund window.
+ */
+export interface LiveQuote {
+  domain: string; expiresAt: string; quotedAt: string; subtotal: string; years: number;
+  /** Independently priced at today's renewal tariff; never assumed equal to registration. */
+  renewalSubtotal: string | null;
+  /** What the registrar charges us for this term. */
+  registrarNow: string;
+  /** Added so the first term costs what each renewal will (D-059), or null when the renewal costs no more. */
+  renewalLevel: string | null;
+  fee: string; taxCeiling: string;
+  salesOpen: boolean;
+  /** Why sales are closed: the operator paused them, or the registrar balance cannot fund this registration (the sheet's text is the same). */
+  salesClosedReason: "paused" | "funding" | null;
+  registrar: { name: string; short: string; ianaId: number } | null;
+  refund: { refundable: boolean; windowDays: number };
+}
+interface QuoteJson { fqdn: string; expires_at: string; quoted_at?: string; subtotal_minor: string; wholesale_minor: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number }
 export async function liveQuote(fqdn: string, years: number): Promise<LiveQuote | null> {
-  const out = await api<{ quote: { subtotal_minor: string; wholesale_minor: string; registrar_price_minor?: string; renewal_level_minor?: string; fee_minor: string; tax_ceiling_minor: string; years: number } | null }>("GET", `/api/v1/quote?domain=${encodeURIComponent(fqdn)}&years=${years}`);
-  if (!out.quote) return null;
+  const out = await api<{ availability?: { kind: string; unconfirmed?: boolean }; quote: QuoteJson | null; renewal_quote?: QuoteJson | null; sales_open?: boolean; sales_closed_reason?: "paused" | "funding" | null; registrar?: { name: string; short: string; iana_id: number }; refund?: { refundable: boolean; window_days: number } }>("POST", "/api/v1/quote", { domain: fqdn, years });
+  if (!out.quote || out.quote.fqdn !== fqdn || out.availability?.kind !== "available" || out.availability.unconfirmed) return null;
   const f = (m: string) => formatUsd(usd(Number(m)));
+  const level = BigInt(out.quote.renewal_level_minor ?? "0");
   return {
-    subtotal: f(out.quote.subtotal_minor), wholesale: f(out.quote.registrar_price_minor ?? out.quote.wholesale_minor), fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor), years: out.quote.years,
-    heldAtRenewal: Number(out.quote.renewal_level_minor ?? "0") > 0,
+    domain: out.quote.fqdn, expiresAt: out.quote.expires_at, quotedAt: out.quote.quoted_at ?? new Date().toISOString(), subtotal: f(out.quote.subtotal_minor), years: out.quote.years,
+    renewalSubtotal: out.renewal_quote?.fqdn === fqdn && out.renewal_quote.years === out.quote.years ? f(out.renewal_quote.subtotal_minor) : null,
+    registrarNow: f(out.quote.wholesale_minor), renewalLevel: level > 0n ? f(level.toString()) : null, fee: f(out.quote.fee_minor), taxCeiling: f(out.quote.tax_ceiling_minor),
+    salesOpen: out.sales_open !== false,
+    salesClosedReason: out.sales_open === false ? out.sales_closed_reason ?? "paused" : null,
+    registrar: out.registrar ? { name: out.registrar.name, short: out.registrar.short, ianaId: out.registrar.iana_id } : null,
+    refund: { refundable: out.refund?.refundable ?? false, windowDays: out.refund?.window_days ?? 0 },
   };
 }

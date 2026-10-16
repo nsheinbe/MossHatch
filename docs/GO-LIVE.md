@@ -1,7 +1,7 @@
 # Go live: invite-only dogfood on mosshatch.com
 
 What this gets you: you (and only accounts you invite) can buy a real domain on mosshatch.com, registered through **Openprovider live**
-and paid with **Stripe live**. Everyone else keeps seeing today's demo (banner, practice hatch from the public registry lookup, no prices,
+and paid with **Stripe live**. Everyone else keeps seeing today's demo (banner, practice hatch from the public registry lookup, clearly labelled published test prices,
 waitlist). Do the steps in order; each ends with a check. Nothing here needs a code change.
 
 Read first: what has and has not been verified (end of this page). **No call to the live Openprovider API has ever been made**; your first
@@ -24,8 +24,9 @@ vault) can read it (PLAN 4.3b, threat rows 29 and 30). That is the "extra Vercel
 on Pro. Trade-off kept on purpose: the registrar project has no fixed egress IP (no Static IPs, D-005), so Openprovider's optional IP
 allow-list cannot be used yet; a leaked Openprovider password would work from anywhere. Mitigations: 2FA on the Openprovider control panel
 (the API login does not use it), a USD 20 balance as the hard spend ceiling, the spend fuses below, and the rotation runbook
-(`docs/runbooks/registrar-credential-exposure.md`). Turn on Static IPs for the registrar project and the Openprovider allow-list before
-strangers buy.
+(`docs/runbooks/registrar-credential-exposure.md`). Neither is an Openprovider requirement (the allow-list is optional
+there). Decided 2026-10-02 (D-061): the owner and a few people the owner knows personally may buy without them; turn on Static IPs for
+the registrar project and the Openprovider allow-list before the first invite from the waitlist.
 
 ## 1. AWS (production keys)
 
@@ -40,10 +41,20 @@ code (only the money codes from steps 3 to 6 remain).
 2. Account currency **USD**. The adapter refuses any price that is not USD (`currency_mismatch`), so a EUR account cannot sell.
 3. API access enabled for the user whose login you will give the registrar project. If the panel offers an API IP allow-list, leave it
    **off** for now (no fixed egress yet, see above).
-4. Balance: USD 20 is enough for one .com (11.98 non-member) with room for a renewal test later. Do not add more until the rehearsal is done.
-5. Membership: not bought. Prices below are non-member prices. Buying a membership lowers our cost; it never raises what a customer pays.
+4. Balance: the sell gate refuses an order unless the available balance, less what is reserved, still covers the floor (step 4, USD 5)
+   **after** that order's wholesale. With the member .com at USD 10.46 that means at least USD 15.46 in the account for one .com; keep
+   USD 20 to 25 so the first purchase and a renewal test both clear it. (2026-10-08: USD 15.01 was USD 0.45 short, and every order was
+   refused with "paused for a little while".) When the balance drops to where one registration would close the gate, the hourly balance
+   job emails `MH_ALERT_EMAIL` (`registrar_balance_underfunded`) and the checkout sheet says registrations are paused before anyone pays.
+   Do not add more until the rehearsal is done.
+5. Membership: Basic S, bought 2026-10-07 (expires 2027-10-08, auto-renew on; D-062). Prices below are member prices (migration 1220).
+   If the membership lapses, the price guard refuses orders and renewals until new dated rows are added.
+6. Contracts: Account, Contracts. Sign Openprovider's reseller terms and the registry terms of **every extension on sale** (.com, .dev,
+   .app, .studio, .io, .ai). An unsigned extension refuses every create with Openprovider's code 309 (2026-10-08: the first live order
+   sat in `outcome_unknown` for twenty minutes over the unsigned .com terms, AUDIT-2026-10-08 §2d). Since that day the app parks such an
+   order in `registrar_unavailable`, emails `MH_ALERT_EMAIL` the instruction (`registrar_terms`) and retries by itself once signed.
 
-Check: in the panel, Reseller details shows the USD balance.
+Check: in the panel, Reseller details shows the USD balance, and Contracts shows "Signed" next to each extension on sale.
 
 ## 3. The `mosshatch-registrar` Vercel project
 
@@ -63,10 +74,20 @@ Check: in the panel, Reseller details shows the USD balance.
    | `OPENPROVIDER_USERNAME` | your Openprovider API login |
    | `OPENPROVIDER_PASSWORD` | its password |
    | `REGISTRAR_RPC_SECRET` | a new random secret, at least 32 characters: `openssl rand -base64 48` (keep it for step 6) |
-   | `MH_REGISTRAR_DAILY_SPEND_OPS` | optional; paid operations a UTC day per function instance, default `5` |
+   | `UPSTASH_REDIS_REST_URL` | the shared store's REST URL (`https://...upstash.io`; step 3a) |
+   | `UPSTASH_REDIS_REST_TOKEN` | its REST token (the read-write one, not the read-only one) |
+   | `MH_REGISTRAR_DAILY_SPEND_OPS` | optional; paid operations a UTC day across every function instance, default `5` |
    | `MH_REGISTRAR_KILL_SWITCH` | optional; `open` (default), `writes_paused` or `all_paused` |
 
    Never put these in the `mosshatch` project: its boot refuses any `OPENPROVIDER_*` variable (`registrar_key_outside_registrar_scope`).
+   **3a. The shared store.** Every function instance must see the same RPC nonces (so a captured request cannot be replayed on another
+   instance) and the same daily count of paid operations. In the `mosshatch-registrar` project: Storage (or Integrations, Marketplace),
+   **Upstash for Redis**, Create, the free plan, primary region `us-east-1` (next to the function), connected to **Production only**.
+   The integration adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` (or the `UPSTASH_REDIS_REST_*` names); either pair works, so you need
+   not copy them into the table above. Do not connect it to `mosshatch`: the store holds nothing web needs. Redis keeps only nonce markers
+   (expire after about a minute) and one counter a day (expires after two days), never a name, a person or a secret. A live registrar
+   project without it refuses every call (`registrar_shared_store_missing`); when Redis cannot be reached it refuses calls too
+   (`registrar_shared_store_unavailable`, nothing is sent to Openprovider), so an Upstash outage pauses selling and never weakens it.
 4. Settings, Git: set the Ignored Build Step to build production only (the registrar has no Preview variables, so a preview build would
    only answer "not configured"; skipping them keeps its traffic small). Settings, Deployment Protection: leave Standard Protection
    (it protects previews; the production URL must stay reachable by `mosshatch`).
@@ -92,14 +113,20 @@ It applies pending migrations (1120 adds Openprovider's price table, the extensi
 live-access check), publishes the legal documents checkout records acceptance of, and lowers the sell gate floor from USD 250 to USD 5 (with
 a USD 20 balance the default floor refuses every order with `sell_gate`). Run it again with `--status` any time.
 
-Check: the output shows `latest migration: 1120_openprovider_live.sql`, eighteen `openprovider price rows` (com/register 11.98,
-com/renew 16.98, ...), the documents in force, `tax regions open: 51`, and `orders_paused = false`.
+Check: the output shows `latest migration: 1220_openprovider_member_prices.sql`, thirty-six `openprovider price rows` (the 2026-10-01
+non-member rows and the 2026-10-07 member rows that supersede them: com/register 10.46, com/renew 10.46, ...), the documents in force,
+`tax regions open: 51`, and `orders_paused = false`.
 
 ## 5. Stripe live
 
 1. Activate the live account (business details, bank account). Settings, Public details: the statement descriptor prefix (C-40).
-2. **Stripe Tax** in live mode: activate it and set the origin address. Checkout is created with `automatic_tax` and Stripe refuses it
-   when Tax is not active. Registrations per your accountant (Stripe Tax charges zero where you have none).
+2. **Stripe Tax** in live mode: activate it, set the origin address, **and set the preset product tax code** (Settings, Tax, "Preset
+   product tax code"; the Products carry none, C-44). Checkout is created with `automatic_tax` and Stripe refuses it when Tax is not
+   active or no tax code can be found ("You must specify a tax code in all line items", seen 2026-10-08). Registrations per your
+   accountant (Stripe Tax charges zero where you have none).
+   **Managed Payments**: Stripe turns its merchant-of-record mode on by default for a new account. Mosshatch is the merchant itself, so
+   the app sends `managed_payments[enabled]=false` on every Checkout Session; also turn the account default off (Settings, Managed
+   Payments) so Dashboard-made links and other products agree with it.
 3. Developers, API keys, **Create restricted key** `mosshatch-production` with Write on: Customers, Checkout Sessions, PaymentIntents,
    PaymentMethods, Refunds, Products; Read on Charges and Radar reviews (the PaymentIntent read expands the charge and review). If Stripe
    names another permission in an error, add exactly that one.
@@ -163,6 +190,8 @@ Any 503 names what is still missing, as codes only:
 | `registrar_rpc_secret_mismatch` | the two projects have different `REGISTRAR_RPC_SECRET` values |
 | `registrar_project_secret_missing` | the registrar project has no (or a short) `REGISTRAR_RPC_SECRET` |
 | `openprovider_credentials_missing` | `OPENPROVIDER_USERNAME` / `OPENPROVIDER_PASSWORD` missing in the registrar project |
+| `registrar_shared_store_missing` | the Upstash store is not connected to the registrar project's Production environment (step 3a) |
+| `registrar_shared_store_unavailable` | the registrar project cannot reach Upstash; check the Upstash console, then redeploy the registrar project |
 | `registrar_scope_missing`, `live_outside_production`, `registrar_provider_unsupported`, `registrar_mode_invalid` | registrar project variables (step 3 table) |
 | `openprovider_sandbox_credentials_in_production`, `openprovider_env_registrar_mode_mismatch` | `OPENPROVIDER_ENV=production` with `MH_REGISTRAR_MODE=live` in the registrar project |
 | `registrar_mode_mismatch` | the registrar project answers in a mode other than live |
@@ -181,22 +210,43 @@ Any 503 names what is still missing, as codes only:
 3. Open the invite link from the email (valid 14 days, works once), create your passkey, save the recovery codes.
 
 Check: signed in, the "Mosshatch isn't open yet" banner is gone and searches show prices. In a private window (not signed in) the banner,
-the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show no prices: the demo still asks the
+the "Invited? Sign in" button, the practice hatch and the waitlist are all still there and searches show published test prices that may change at launch: the demo still asks the
 public registries (RDAP) and never the shop routes, which answer `403 invite_required` to anyone without an invite.
+
+## 8a. Preflight (read-only, nothing is bought or charged)
+
+Before the first purchase, check everything the first purchase would trip over: the registrar project answers, the Openprovider balance
+covers the sell gate, every extension's live price matches `wholesale_prices` (the shop's own price guard runs, so a pass here means no
+`price_not_standard` today), the restricted Stripe key has each permission from step 5, and the four Products exist.
+
+```sh
+vercel env pull --environment=production .env.preflight      # in a checkout linked to the `mosshatch` project
+set -a; . ./.env.preflight; set +a
+node scripts/live-preflight.mjs
+rm .env.preflight
+# ok   prices    .com                       1y upstream USD 10.46 matches; customer pays USD 13.46 before tax
+# ...
+# preflight passed: nothing above stops the first purchase
+```
+It uses only `health`, `getBalance` and `quote` over the signed RPC, and probes Stripe with ids that cannot exist (a granted permission
+answers 404, a missing one 403). Unverified: that Stripe checks a restricted key's permission before it looks the object up; a probe that
+answers anything else prints `unknown`, never `ok`. Run it again any time; a `FAIL` line names the fix.
 
 ## 9. First purchase (a cheap .com)
 
-1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$20.98**.
-2. Open it. "How the price is made" shows Registry cost $16.98, Flat fee $4.00, and the note that the first year is charged at the
-   renewal price. Total before tax $20.98; tax is added by Stripe at Checkout.
-3. Fill the registrant contact (your real details: it goes to the registry), tick the terms, Pay. Use your own card on Stripe Checkout.
+1. Pick a long, obviously unregistered .com (for example `mosshatch-dogfood-<date>.com`). The chip shows **$13.46**.
+2. Open it. "How the price is made" shows Registry cost $10.46 and Flat fee $3.00. Total before tax $13.46; tax is added by Stripe at
+   Checkout.
+3. Fill the registrant contact (your real details: it goes to the registry; the phone can be typed any usual way, it is stored as
+   `+1.3105550100`), tick the terms, Pay. Use your own card on Stripe Checkout. Take your time: while you are typing, the page keeps
+   the 15-minute session alive; if it does lapse anyway, sign-in opens with a note and what you typed is still there afterwards.
 4. Watch the egg. Behind it: Stripe authorizes (manual capture), the app re-quotes Openprovider (the price guard refuses anything other
-   than 11.98 create / 16.98 renew), registers through the registrar project, then captures.
+   than 10.46 create / 10.46 renew), registers through the registrar project, then captures.
 
 Check, in this order:
 - The app: the creature hatches; the Ledger shows the order captured. The receipt email arrives.
-- Openprovider panel: the domain is listed (status ACT), and the balance dropped by exactly 11.98.
-- Stripe dashboard (live): one payment of 20.98 plus tax, captured; the webhook endpoint shows 2xx deliveries.
+- Openprovider panel: the domain is listed (status ACT), and the balance dropped by exactly 10.46.
+- Stripe dashboard (live): one payment of 13.46 plus tax, captured; the webhook endpoint shows 2xx deliveries.
 - `whois`/`lookup.icann.org` for the name: registrar Hosting Concepts B.V. d/b/a Registrar.eu.
 
 If the hatch sheet says the price is not standard (`price_not_standard`): Openprovider's live price differs from the table, so nothing was
@@ -207,6 +257,8 @@ values ('openprovider', 'com', 'register', <cents>, current_date, 'Openprovider 
 ```
 If it says new orders are paused: `sell_gate` (balance minus the floor too low; step 4's floor), `global_daily_cap` / `global_total_cap`
 (the spend fuse), or `orders_paused` (the flag).
+If it says the registrar is busy and keeps trying, and `MH_ALERT_EMAIL` receives a `registrar_terms` warning: the extension's terms are
+unsigned at Openprovider (section 2, step 6). Sign them; the order finishes by itself within its next retry (one to thirty minutes).
 
 ## 10. Roll back to the demo, instantly
 
@@ -222,24 +274,30 @@ If it says new orders are paused: `sell_gate` (balance minus the floor too low; 
 
 ## What the customer pays (and why)
 
-Price per year = max(Openprovider register, Openprovider renew) + the D-003 fee, the same every year. Non-member prices read 2026-10-01
-from Openprovider's public price feed (migration 1120 lists the URL):
+Price per year = max(Openprovider register, Openprovider renew) + the D-003 fee, the same every year. Member prices (Basic S, from
+2026-10-07) read 2026-10-08 from Openprovider's public price API (migration 1220 lists the URL); the fee where wholesale is under USD 50
+is 3.00 from 2026-10-08 (D-062):
 
 | Extension | Openprovider create / renew | Fee | Customer, first year | Customer, renewal |
 |---|---|---|---|---|
-| .com | 11.98 / 16.98 | 4.00 | 20.98 | 20.98 |
-| .dev | 23.98 / 23.98 | 4.00 | 27.98 | 27.98 |
-| .app | 26.98 / 26.98 | 4.00 | 30.98 | 30.98 |
-| .studio | 46.00 / 46.00 | 4.00 | 50.00 | 50.00 |
-| .io | 74.98 / 89.98 | 9.00 | 98.98 | 98.98 |
-| .ai | 109.00 / 134.00 a year, 2 years minimum | 10.00 a year | 288.00 for 2 years | 288.00 for 2 years |
+| .com | 10.46 / 10.46 | 3.00 | 13.46 | 13.46 |
+| .dev | 12.20 / 12.20 | 3.00 | 15.20 | 15.20 |
+| .app | 14.20 / 14.20 | 3.00 | 17.20 | 17.20 |
+| .studio | 31.20 / 31.20 | 3.00 | 34.20 | 34.20 |
+| .io | 50.00 / 50.00 | 9.00 | 59.00 | 59.00 |
+| .ai | 80.00 / 80.00 a year, 2 years minimum | 9.00 a year | 178.00 for 2 years | 178.00 for 2 years |
 
-A renewal is never sold below cost: the renewal margin is the fee. The first-year difference (.com 5.00) is disclosed on the hatch sheet
-and the fees page. With a membership (`.com` 10.46 both ways) the table gets a new dated row and the price falls; it never rises because of
-membership. Restore is not sold online yet (no Openprovider restore price in the table, so it cannot be charged).
+A renewal is never sold below cost: the renewal margin is the fee. At member prices register and renew are equal, so the D-059 renewal
+floor adds nothing; it applies again wherever they differ (the 2026-10-01 non-member rows in migration 1120 had .com at 11.98 / 16.98).
+Restore is not sold online yet (no Openprovider restore price in the table, so it cannot be charged).
+
+Balance: the sell gate needs balance minus reserves minus the floor (USD 5) to cover each order's Openprovider cost. A .com costs 10.46,
+so USD 20 covers one. The live spend fuse allows 10 registrations in total while the invite gate is on (3 a day).
 
 ## Verified, and not
 
+- Before the first purchase, `scripts/live-preflight.mjs` (step 8a) checks the live prices, balance and Stripe key permissions without
+  buying anything (`packages/api/src/golive/preflight.test.ts`, offline).
 - Verified offline (tests, fakes, no network): the web to registrar signed RPC with the Openprovider adapter behind it, the live adapter
   calling `https://api.openprovider.eu/v1` (the host and `/v1` paths in Openprovider's OpenAPI document, fetched 2026-10-01; the older
   `/v1beta` path is not used), every boot reason code, the mode guard (live only with `VERCEL_ENV=production`, a live Stripe key and a live
@@ -250,11 +308,13 @@ membership. Restore is not sold online yet (no Openprovider restore price in the
   against fakes), Stripe Tax in live mode, the restricted key's exact permission set, and the Vercel registrar project. Your first purchase
   is the first real test of all of them; that is why the balance is USD 20 and the fuses are low.
 - Unverified prices: whether Openprovider's live API quotes the same numbers as its public feed (the price guard refuses any difference),
-  whether the .studio non-member promotion (21.99 to 2026-12-31) applies to API orders, and whether a delete inside the add grace period
+  whether the .studio promotions (non-member 21.99, member 17.99, to 2026-12-31) apply to API orders, and whether a delete inside the add grace period
   credits the balance (the refund drill in the rehearsal checks it).
-- Known gaps for later: the registrar project's nonce store and daily cap are per function instance (no database there); a replayed signed
-  request within 60 seconds on another instance is possible only for someone who captured one, and register is not idempotent upstream
-  but a second create of the same name is refused (346). Static pages (fees, legal) keep the demo banner even for invited accounts.
+- The registrar project's RPC nonces and daily cap live in Upstash Redis (step 3a), shared by every function instance and failing closed;
+  tested against a fake Redis only (`packages/api/src/registrar-rpc/serve.test.ts`), never the live Upstash API.
+- Known gaps for later: register is not idempotent upstream, but a second create of the same name is refused (346). The static pages (fees, legal, waitlist, errors) run no script, so they cannot
+  tell an invited account from a visitor: in the invite build their banner says "Mosshatch is invite-only for now. Unless you have been
+  invited, nothing you hatch is registered or charged.", which is true for both (`scripts/site-mode.mjs`, `bannerKind`).
   Transfer-away and Gate texts follow `domains.registrar`: an Openprovider domain reads "our registrar" and "our registrar's support"
   (who sends Openprovider's transfer-away email is UNVERIFIED); only an `opensrs` domain (the mock and sample path) names OpenSRS and
   Tucows. No email names a registrar: the transfer-in email (`transfer_submitted`) says "our registrar emailed the owner" only when the

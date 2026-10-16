@@ -1,6 +1,28 @@
+import { z } from "zod";
 import type { PoolClient } from "@mosshatch/db";
+import { normalizePhone } from "@mosshatch/core";
 import type { AppContext, Envelope } from "../ports.ts";
 import type { Registrant } from "./types.ts";
+
+/**
+ * The registrant contact as the forms post it (checkout, transfer-in, a change of contact on a domain). The phone may be typed any
+ * usual way; it is stored and sent upstream in the EPP form `+CC.number` (packages/core phone.ts), which the adapters require. An
+ * unreadable phone is the one field-level refusal (422 invalid_contact with the issue on `phone`); every other rule is a length.
+ */
+export const RegistrantBody = z.strictObject({
+  name: z.string().trim().min(2).max(120),
+  email: z.string().trim().toLowerCase().email().max(254),
+  phone: z.string().trim().min(3).max(40),
+  street: z.string().trim().min(3).max(200),
+  city: z.string().trim().min(1).max(100),
+  region: z.string().trim().min(1).max(100),
+  postalCode: z.string().trim().min(2).max(20),
+  country: z.string().trim().regex(/^[A-Za-z]{2}$/).toUpperCase(),
+}).transform((o, ctx) => {
+  const phone = normalizePhone(o.phone, o.country);
+  if (!phone) { ctx.addIssue({ code: "custom", path: ["phone"], message: "phone" }); return z.NEVER; }
+  return { ...o, phone } satisfies Registrant;
+});
 
 /**
  * Registrant contact storage format used by the orders module: `contacts.fields_enc` is an object of one PII envelope per

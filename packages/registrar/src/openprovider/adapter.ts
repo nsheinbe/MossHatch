@@ -4,9 +4,10 @@ import {
   type Availability, type AvailabilityKind, type Balance, type ContactChangeResult, type DeletedDomain, type DnsRecord, type DnsRecordType, type DnsZone, type DomainStatus,
   type DsRecord, type InventoryRow, type Money, type Quote, type Registrant, type RegisterRequest, type RegisterResult, type RegistrarCapabilities, type RegistrarPort,
   type TransferAway, type UpstreamOrder, type TransferInCheck, type TransferInRequest, type TransferInStart, type TransferInState, type TransferInStatus,
+  type DnskeyInput, type RegistrantVerificationState,
 } from "../port.ts";
 import { registrantFingerprint } from "../claim.ts";
-import { canonicalZone, validateZone, zoneHash } from "../dns.ts";
+import { canonicalZone, OPENPROVIDER_NAMESERVERS, validateZone, zoneHash } from "../dns.ts";
 import { readSwitch, VelocityFuse, type AdapterAlert, type FuseClass, type KillSwitch } from "../opensrs/guards.ts";
 import { checkOperation, type OpName, type OpRequest } from "./allowlist.ts";
 import { dsFromDnskey, dsMatchesKey, type Dnskey } from "./dnssec.ts";
@@ -29,6 +30,11 @@ import { arr, bool, encodeJson, minorFromText, num, obj, parseAmsterdam, parseJs
  */
 export type Deployment = "local" | "preview" | "staging" | "production";
 export interface OpenproviderCredentials { read(): { username: string; password: string } }
+/** Server-only coordination. Implementations must never include credentials or bearer values in errors/logs. */
+export interface OpenproviderLoginCache {
+  get(input: { host: string; username: string; password: string; ttlMs: number }, login: () => Promise<string>): Promise<string>;
+  invalidate(input: { host: string; username: string; password: string }, rejectedToken: string): Promise<void>;
+}
 export class MemoryOpenproviderCredentials implements OpenproviderCredentials {
   constructor(private c: { username: string; password: string }) {}
   read() { return { ...this.c }; }
@@ -49,6 +55,8 @@ export interface OpenproviderConfig {
   timeoutMs?: number;
   /** How long a login token is reused before a fresh login. UNVERIFIED lifetime (the token is opaque, 32 characters); a 401 also forces a re-login. */
   tokenTtlMs?: number;
+  /** Live registrar instances share a trusted store; without it sandbox/standalone adapters retain their local cache. */
+  loginCache?: OpenproviderLoginCache;
 }
 
 const LAUNCH_TLDS = ["com", "ai", "dev", "io", "app", "studio"];
@@ -58,13 +66,28 @@ const MAX_TERM = 10;
 /** Observed: `POST /domains/{id}/restore` restored a deleted .io in soft quarantine at no charge. The others are UNVERIFIED (the API offers it for all). */
 const RESTORE_TLDS: Record<string, boolean> = { com: true, dev: true, studio: true, ai: true, io: true, app: true };
 /** Openprovider DNS. Observed: registering with these three names put the domain in ns_group `dns-openprovider` and created a signed master zone. */
-export const OP_NAMESERVERS = ["ns1.openprovider.nl", "ns2.openprovider.be", "ns3.openprovider.eu"];
+export const OP_NAMESERVERS = OPENPROVIDER_NAMESERVERS;
 const DNS_TTL = 900;
+/** A fallback expiry (the create's own answer and the domain read both missing): the term from now, corrected by the next sync. */
+const addYearsUtc = (d: Date, years: number): Date => new Date(Date.UTC(d.getUTCFullYear() + years, d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()));
 const PENDING = new Set(["REQ", "PEN", "SCH", "RRQ"]);
 
 const err = (kind: RegistrarError["kind"], code: string, o: { retryable?: boolean; outcomeUnknown?: boolean } = {}, message = "registrar request failed") =>
   new RegistrarError(kind, message, { retryable: o.retryable ?? false, outcomeUnknown: o.outcomeUnknown ?? false, code });
 const rejected = (code: string) => err("rejected", code, {}, "registrar rejected the request");
+/**
+ * Provider codes that mean the request was refused before it had any effect, whatever HTTP status carried them. Openprovider answers
+ * some business refusals with HTTP 500 and its own code in the body, the same status as a real failure, so without this list a write
+ * refused that way was filed as "outcome unknown" and reconciled for days. A code joins the list only with evidence (its entry in
+ * Openprovider's error-code list, or an observed answer); an unlisted code on a 5xx keeps the conservative unknown-outcome path.
+ * - 309: the reseller account has not accepted the current registration terms for the extension (observed live 2026-10-08 on
+ *   CREATE_DOMAIN, HTTP 500, nothing created). An operator signs them under Account, Contracts; until then every create of that
+ *   extension is refused the same way, so the caller parks the order and retries.
+ */
+const NO_EFFECT_CODES: Record<number, () => RegistrarError> = {
+  309: () => err("unavailable", "terms_not_accepted", { retryable: true }, "the registrar account has not accepted the extension's registration terms"),
+};
+const refusedBeforeEffect = (code: number | undefined): RegistrarError | null => (code !== undefined && NO_EFFECT_CODES[code] ? NO_EFFECT_CODES[code]() : null);
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 type JObj = { [k: string]: Json };
 interface Reply { data: JObj; code: number; warnings: number[]; secret?: string }
@@ -105,25 +128,33 @@ export class OpenproviderAdapter implements RegistrarPort {
       let cred: { username: string; password: string };
       try { cred = this.cfg.credentials.read(); } catch { cred = { username: "", password: "" }; }
       if (!cred.username || !cred.password) throw err("unavailable", "no_credentials", { retryable: true }, "registrar credentials are not set");
-      const body = { username: cred.username, password: cred.password, ip: "0.0.0.0" };
-      const { path } = checkOperation("LOGIN", { body });
-      const log = (e: Omit<OpenproviderLogEvent, "event" | "op" | "write">) => this.cfg.log?.({ event: "openprovider_call", op: "LOGIN", write: false, ...e });
-      let res;
-      try { res = await this.cfg.transport.request({ method: "POST", url: this.base + path, headers: { "Content-Type": "application/json" }, body: encodeJson(body), timeoutMs: this.cfg.timeoutMs ?? 30_000 }); }
-      catch { log({ outcome: "transport_error" }); throw err("unavailable", "transport", { retryable: true }, "registrar request did not complete"); }
-      let j: JObj | undefined; try { j = obj(parseJson(res.body)); } catch { j = undefined; }
-      const code = num(j?.code);
-      const token = str(obj(j?.data)?.token);
-      log({ httpStatus: res.status, ...(code !== undefined ? { providerCode: code } : {}), outcome: res.status === 200 && code === 0 && token ? "ok" : "error" });
-      if (res.status === 401 || code === 196) { this.alert({ kind: "auth_failed", detail: "login" }); throw rejected("auth_failed"); }
-      if (res.status >= 500) throw err("unavailable", `http_${res.status}`, { retryable: true });
-      if (res.status !== 200 || code !== 0 || !token) throw err("unavailable", "login_failed", { retryable: true });
-      this.token = { value: token, at: this.clock.now().getTime() };
-      return token;
+      const requestToken = async () => {
+        const body = { username: cred.username, password: cred.password, ip: "0.0.0.0" };
+        const { path } = checkOperation("LOGIN", { body });
+        const log = (e: Omit<OpenproviderLogEvent, "event" | "op" | "write">) => this.cfg.log?.({ event: "openprovider_call", op: "LOGIN", write: false, ...e });
+        let res;
+        try { res = await this.cfg.transport.request({ method: "POST", url: this.base + path, headers: { "Content-Type": "application/json" }, body: encodeJson(body), timeoutMs: this.cfg.timeoutMs ?? 30_000 }); }
+        catch { log({ outcome: "transport_error" }); throw err("unavailable", "transport", { retryable: true }, "registrar request did not complete"); }
+        let j: JObj | undefined; try { j = obj(parseJson(res.body)); } catch { j = undefined; }
+        const code = num(j?.code);
+        const token = str(obj(j?.data)?.token);
+        log({ httpStatus: res.status, ...(code !== undefined ? { providerCode: code } : {}), outcome: res.status === 200 && code === 0 && token ? "ok" : "error" });
+        if (res.status === 401 || code === 196) { this.alert({ kind: "auth_failed", detail: "login" }); throw rejected("auth_failed"); }
+        if (res.status === 429) throw err("rate_limited", "http_429", { retryable: true });
+        if (res.status >= 500) throw err("unavailable", `http_${res.status}`, { retryable: true });
+        if (res.status !== 200 || code !== 0 || !token) throw err("unavailable", "login_failed", { retryable: true });
+        this.token = { value: token, at: this.clock.now().getTime() };
+        return token;
+      };
+      return this.cfg.loginCache
+        ? this.cfg.loginCache.get({ host: this.base, ...cred, ttlMs: this.cfg.tokenTtlMs ?? 12 * 3_600_000 }, requestToken)
+        : requestToken();
     })();
     try { return await this.loggingIn; } finally { this.loggingIn = null; }
   }
   private async bearer(): Promise<string> {
+    // Shared cache TTL is measured at provider login, never extended by another instance reading the token.
+    if (this.cfg.loginCache) return this.login();
     const ttl = this.cfg.tokenTtlMs ?? 12 * 3_600_000;
     if (this.token && this.clock.now().getTime() - this.token.at < ttl) return this.token.value;
     this.token = null;
@@ -166,11 +197,19 @@ export class OpenproviderAdapter implements RegistrarPort {
       if (res.status === 401 || code === 196) {
         log({ ...base, outcome: "error" });
         this.token = null;
+        if (this.cfg.loginCache) {
+          let cred: { username: string; password: string };
+          try { cred = this.cfg.credentials.read(); } catch { throw err("unavailable", "no_credentials", { retryable: true }); }
+          await this.cfg.loginCache.invalidate({ host: this.base, ...cred }, token);
+        }
         if (attempt === 0) continue;
         this.alert({ kind: "auth_failed", detail: "http_401" });
         throw rejected("auth_failed");
       }
       if (res.status === 429) { log({ ...base, outcome: "error" }); throw err("rate_limited", "http_429", { retryable: true }); }
+      // A 5xx whose body carries a code from the no-effect list was refused before any effect: not an unknown outcome, even for a write.
+      const refusal = res.status >= 500 && parsed ? refusedBeforeEffect(code) : null;
+      if (refusal) { log({ ...base, outcome: "error" }); throw refusal; }
       if (res.status >= 500 || !parsed) {
         log({ ...base, outcome: "error" });
         throw err(rule.write ? "unknown" : "unavailable", res.status >= 500 ? `http_${res.status}` : "bad_response", { retryable: !rule.write, outcomeUnknown: rule.write });
@@ -186,6 +225,8 @@ export class OpenproviderAdapter implements RegistrarPort {
   }
 
   private mapError(code: number | undefined, desc: string): RegistrarError {
+    const known = refusedBeforeEffect(code);
+    if (known) return known;
     const c = code === undefined ? "bad_response" : String(code);
     // UNVERIFIED: the insufficient-balance code was not provoked in the sandbox (100,000 of play money); matched on the description instead.
     if (/insufficient|not enough (balance|funds|credit)|balance is too low/i.test(desc)) return err("insufficient_funds", c);
@@ -279,6 +320,7 @@ export class OpenproviderAdapter implements RegistrarPort {
     return {
       mode: this.cfg.mode, dnsHosting: true, dnssec: true, webhooks: false, idempotentRegister: false, sandbox: this.cfg.mode === "sandbox",
       authCodeModel: "api", restore: { ...RESTORE_TLDS }, funding: true, inventory: true, events: false, cancelTransferAway: false,
+      dnssecKeyInput: "dnskey", registrantVerification: "provider",
     };
   }
   async health() {
@@ -325,6 +367,11 @@ export class OpenproviderAdapter implements RegistrarPort {
     return { balance: this.money(balance), held: this.money(held), available: this.money(balance - held) };
   }
   async getFundingStatus(): Promise<Money> { return (await this.getBalance()).available; }
+  /** The debit check after a write that took effect: a balance read that fails is an alert, never an error for the caller. */
+  private async settleAfterWrite(tld: string, quoted: bigint, before: bigint): Promise<void> {
+    try { await this.debitCheck(tld, quoted, before); }
+    catch { this.alert({ kind: "debit_unverified", detail: `.${tld}` }); }
+  }
   private async debitCheck(tld: string, quoted: bigint, before: bigint) {
     const after = (await this.getBalance()).available.minor;
     const diff = before - after - quoted;
@@ -351,9 +398,11 @@ export class OpenproviderAdapter implements RegistrarPort {
     const status = str(r.data.status) ?? "";
     // Observed: .com and .io answer ACT at once; .ai answered 504 and then sat in REQ with the price held in reserved_balance.
     if (status !== "ACT") return { status: "accepted_pending", registrarOrderId: orderId, reason: "async" };
-    await this.debitCheck(tld, q.wholesale.minor, before);
-    const dom = await this.getDomain(d);
-    return { status: "registered", registrarOrderId: orderId, expiresAt: dom?.expiresAt ?? parseUtc(str(r.data.expiration_date)) ?? new Date(0) };
+    // The name is registered from here on. Nothing below may throw: a failed read after the create would reach the order machine as
+    // "refused before any effect", which retries, meets the duplicate refusal and voids a name that is ours (docs/AUDIT-2026-10-07.md F1).
+    await this.settleAfterWrite(tld, q.wholesale.minor, before);
+    const dom = await this.getDomain(d).catch(() => null);
+    return { status: "registered", registrarOrderId: orderId, expiresAt: dom?.expiresAt ?? parseUtc(str(r.data.expiration_date)) ?? addYearsUtc(this.clock.now(), req.years) };
   }
 
   async renew(fqdn: string, years: number, currentExpiryYear: number) {
@@ -368,8 +417,9 @@ export class OpenproviderAdapter implements RegistrarPort {
     const id = await this.idOf(d);
     const r = await this.call("RENEW_DOMAIN", { params: { id }, body: { period: years } });
     if ((str(r.data.status) ?? "") !== "ACT") return { status: "accepted_pending" as const, registrarOrderId: String(id) };
-    await this.debitCheck(tld, q.wholesale.minor, before);
-    const dom = await this.getDomain(d);
+    // Renewed from here on: as for register, a failed read after the write never turns into an error.
+    await this.settleAfterWrite(tld, q.wholesale.minor, before);
+    const dom = await this.getDomain(d).catch(() => null);
     return { status: "renewed" as const, registrarOrderId: String(id), ...(dom?.expiresAt ? { expiresAt: dom.expiresAt } : {}) };
   }
 
@@ -577,12 +627,15 @@ export class OpenproviderAdapter implements RegistrarPort {
   }
 
   // ---- DNSSEC -----------------------------------------------------------------------------------------------------
-  /** DS records as the registry derives them (SHA-256) from the DNSKEYs Openprovider holds for the domain. */
+  /**
+   * DS records as the registry derives them (SHA-256) from the DNSKEYs Openprovider holds for the domain. The key Openprovider's own DNS manages
+   * (read-only on the domain: its nameservers sign every zone they host) is `managed`; it cannot be added by hand, and removing it turns the signing off.
+   */
   async getDs(fqdn: string): Promise<DsRecord[]> {
     const { d } = this.split(fqdn);
     const raw = await this.detail(d);
     if (!raw) throw rejected("not_in_account");
-    return this.keysOf(raw).map((k) => dsFromDnskey(d, k, 2));
+    return this.keysOf(raw).map((k) => ({ ...dsFromDnskey(d, k, 2), ...(k.readonly ? { managed: true } : {}) }));
   }
   private checkDs(ds: DsRecord) {
     if (!Number.isInteger(ds.keyTag) || ds.keyTag < 0 || ds.keyTag > 65535 || !Number.isInteger(ds.algorithm) || !Number.isInteger(ds.digestType) || !/^[0-9a-f]{20,128}$/i.test(ds.digest)) throw rejected("bad_ds");
@@ -613,8 +666,9 @@ export class OpenproviderAdapter implements RegistrarPort {
   private checkKey(k: Dnskey) {
     if (![256, 257].includes(k.flags) || k.protocol !== 3 || !Number.isInteger(k.algorithm) || k.algorithm < 1 || k.algorithm > 255 || !/^[A-Za-z0-9+/]{20,}={0,2}$/.test(k.publicKey.replace(/\s+/g, ""))) throw rejected("bad_dnskey");
   }
-  /** Adapter extra (not on the port): adds a DNSKEY; idempotent. The DS that results is `dsFromDnskey(fqdn, key)`. */
-  async addDnskey(fqdn: string, key: Dnskey): Promise<DsRecord> {
+  /** Adds a DNSKEY; idempotent. The DS that results is `dsFromDnskey(fqdn, key)`, which is what the registry publishes. */
+  async addDnskey(fqdn: string, input: DnskeyInput): Promise<DsRecord> {
+    const key: Dnskey = { flags: input.flags, protocol: input.protocol ?? 3, algorithm: input.algorithm, publicKey: input.publicKey.replace(/\s+/g, "") };
     const { d } = this.split(fqdn); this.checkKey(key);
     const raw = await this.detail(d); if (!raw) throw rejected("not_in_account");
     const keys = this.keysOf(raw);
@@ -627,6 +681,40 @@ export class OpenproviderAdapter implements RegistrarPort {
       if (!back || !this.keysOf(back).some(same)) throw rejected("dnssec_key_not_applied");
     }
     return dsFromDnskey(d, key, 2);
+  }
+
+  // ---- registrant email verification (ICANN) ----------------------------------------------------------------------
+  /**
+   * Openprovider runs the ICANN registrant email verification itself for every gTLD registration: it emails the registrant a link and suspends the
+   * domain when the link is not used in time. `GET /customers/verifications/emails/domains?domain=` lists its checks for the name (support article
+   * 360024748273): status `verified`, `in progress`, `not verified` or `failed` (description `expired`, `bounced` or `softBounced`), `is_suspended`,
+   * `expiration_date`. An open check outranks an old verified one (the address may have changed), and a suspension outranks everything.
+   */
+  private async verificationRows(d: string): Promise<JObj[]> {
+    const r = await this.call("LIST_EMAIL_VERIFICATIONS", { query: { domain: d, limit: "10", offset: "0" } });
+    const rows = arr(r.data.results).map(obj).filter((x): x is JObj => !!x && (str(x.domain) ?? "").toLowerCase() === d);
+    const rank = (x: JObj) => (bool(x.is_suspended) ? 0 : (str(x.status) ?? "").toLowerCase() === "verified" ? 2 : 1);
+    return rows.sort((a, b) => rank(a) - rank(b));
+  }
+  async getRegistrantVerification(fqdn: string): Promise<RegistrantVerificationState | null> {
+    const { d } = this.split(fqdn);
+    const row = (await this.verificationRows(d))[0];
+    if (!row) return null;
+    const status = (str(row.status) ?? "").toLowerCase().replace(/[\s_-]+/g, " ");
+    const desc = (str(row.description) ?? "").toLowerCase();
+    const reason = desc.includes("soft") ? "soft_bounced" : desc.includes("bounce") ? "bounced" : desc.includes("expire") ? "expired" : undefined;
+    const mapped: RegistrantVerificationState["status"] = status === "verified" ? "verified" : status === "failed" ? "failed" : status === "not verified" ? "unverified" : "pending";
+    const expiresAt = parseAmsterdam(str(row.expiration_date));
+    return { status: mapped, ...(reason ? { reason } : {}), suspended: bool(row.is_suspended), ...(expiresAt ? { expiresAt } : {}) };
+  }
+  /** Sends the provider's email again, to the address of the open check. The address stays in this process; only `sent` goes back. */
+  async resendRegistrantVerification(fqdn: string): Promise<{ sent: boolean }> {
+    const { d } = this.split(fqdn);
+    const open = (await this.verificationRows(d)).find((x) => (str(x.status) ?? "").toLowerCase() !== "verified");
+    const email = open ? str(open.email) : undefined;
+    if (!email) return { sent: false };
+    const r = await this.call("RESTART_EMAIL_VERIFICATION", { body: { email } });
+    return { sent: r.data.success === undefined ? true : bool(r.data.success) };
   }
 
   // ---- contacts ---------------------------------------------------------------------------------------------------

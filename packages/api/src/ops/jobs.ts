@@ -7,6 +7,8 @@ import { purgeExpired, purgeWebhookPayloads } from "./retention.ts";
 import { checkDisputeRates } from "../stripe/disputes.ts";
 import { checkDomainExpiry, emailDnsJob, externalChecksJob } from "./external.ts";
 import { svc } from "./services.ts";
+import { sweep as sweepRateCounters } from "../ratelimit.ts";
+import { tx } from "@mosshatch/db";
 
 const DAY = 86_400;
 const HOUR = 3_600;
@@ -23,6 +25,8 @@ const OPS_JOBS: (JobDef & { everySec?: number })[] = [
   { kind: "retention.webhook_payloads", priority: 1, maxRuntimeSec: 120, everySec: DAY, handler: async (ctx) => { await purgeWebhookPayloads(ctx); } },
   // C-40: dispute and early-fraud-warning ratios against the own target, Stripe's line, VAMP and ECM.
   { kind: "stripe.dispute_rate", priority: 1, maxRuntimeSec: 60, everySec: HOUR, handler: async (ctx) => { await checkDisputeRates(ctx); } },
+  // D-017 and the commitments page: rate counters (an HMAC of the network) are kept 24 hours. Without this job they were never deleted.
+  { kind: "ratelimit.sweep", priority: 1, maxRuntimeSec: 120, everySec: HOUR, handler: async (ctx) => { await tx(ctx.cron, (c) => sweepRateCounters(c, ctx.clock.now())); } },
   { kind: "ops.external_checks", priority: 1, maxRuntimeSec: 120, everySec: DAY, handler: async (ctx) => {
     const r = svc(ctx, "dnsResolver");
     await externalChecksJob(ctx, r); await emailDnsJob(ctx, r); await checkDomainExpiry(ctx);

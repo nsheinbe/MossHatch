@@ -10,6 +10,10 @@ export interface DomainDetail extends DomainSummary {
   registry_statuses: string[]; released: { at: string | null } | null;
   renewal: DomainSummary["renewal"] & { state: string | null; held_reason: string | null; price_ceiling_minor: string | null; currency: string };
   mandate: { accepted_at: string | null; price_ceiling_minor: string; term_years: number; charge_days_before_expiry: number } | null;
+  /** The accredited registrar that holds the registration. */
+  registrar?: { name: string; short: string; iana_id: number };
+  /** When the owner first changed this name's DNS records or nameservers here, or null. */
+  connected_at?: string | null;
 }
 export interface Security {
   domain: string; state: string; attention: { kind: string; message: string } | null; locked: boolean;
@@ -22,12 +26,20 @@ export interface Security {
 }
 export interface TransferState {
   domain: string; state: "none" | "requested" | "unrequested" | "stopped_pending"; stop_available: boolean; note: string | null; message: string | null; timing: string;
+  /** False where transfers away cannot be watched automatically: "none" then means none seen. */
+  tracked?: boolean;
   transfers: { id: string; gaining_registrar: string | null; requested_at: string | null; requested_by_you: boolean }[];
 }
 export interface DnsRecordView { id: string; type: string; name: string; value: string; priority?: number; weight?: number; port?: number; sensitive: boolean; reasons: string[] }
 export interface DnsView { domain: string; hosted: boolean; read_only: boolean; records: DnsRecordView[]; nameservers?: string[]; message?: string; snapshots: number }
 export interface Snapshot { id: string; reason: string; added: number; removed: number; sensitive: number; taken_at: string; rolled_back_at: string | null }
-export interface DsView { supported: boolean; note: string; records: { keyTag: number; algorithm: number; digestType: number; digest: string }[]; ds_present: boolean }
+export interface DsRecordView { keyTag: number; algorithm: number; digestType: number; digest: string; managed?: boolean }
+/** `key_input` says how the registrar takes a new key (a DS record, or the DNSKEY it derives one from); `auto_signed` that our nameservers sign the name. Older servers leave them out. */
+export interface DsView { supported: boolean; note: string; records: DsRecordView[]; ds_present: boolean; key_input?: "ds" | "dnskey"; auto_signed?: boolean; hosted_here?: boolean }
+export interface VerificationView { state: string; reason: string; deadline_at: string | null; days_left: number }
+/** The registrar's own check, where it runs the verification (`source` is then `provider`). */
+export interface ProviderVerification { status: "verified" | "pending" | "unverified" | "failed"; suspended: boolean; reason: string | null; expires_at: string | null }
+export interface VerificationState { verification: VerificationView | null; source?: "provider" | "reseller"; provider?: ProviderVerification | null }
 export interface LedgerEntry {
   order_id: string; kind: string; fqdn: string; state: string; years: number; subtotal_minor: string; total_minor: string; charged_minor: string | null; tax_minor: string | null;
   refunded_minor: string; payment_status: string | null; dispute: string | null; captured_at: string | null; created_at: string; domain_id: string | null;
@@ -55,8 +67,8 @@ export const addRecords = (f: string, records: NewRecord[]) => api<{ changed: bo
 export const deleteRecord = (f: string, id: string) => api<{ changed: boolean; sensitive?: boolean }>("DELETE", `${D(f)}/dns/${enc(id)}`);
 export const rollback = (f: string, sid: string) => api<{ changed: boolean; sensitive?: boolean }>("POST", `${D(f)}/dns-snapshots/${enc(sid)}/rollback`, {});
 export const getDs = (f: string) => api<DsView>("GET", `${D(f)}/ds`);
-export const getVerification = (f: string) => api<{ verification: { state: string; reason: string; deadline_at: string | null; days_left: number } | null }>("GET", `${D(f)}/registrant-verification`);
-export const sendVerification = (f: string) => api<{ sent: boolean }>("POST", `${D(f)}/registrant-verification/send`, {});
+export const getVerification = (f: string) => api<VerificationState>("GET", `${D(f)}/registrant-verification`);
+export const sendVerification = (f: string) => api<{ sent: boolean; source?: "provider" | "reseller" }>("POST", `${D(f)}/registrant-verification/send`, {});
 export const verifyRegistrant = (f: string, code: string) => api<{ verified: boolean }>("POST", `${D(f)}/registrant-verification/verify`, { code });
 export const getContactStart = (f: string) => api<{ current: { name: string; email: string; country: string } | null; login_email_matches: boolean; warning: { message: string } | null; dispute_lock: boolean }>("GET", `${D(f)}/contact`);
 export interface ContactFields { name: string; email: string; phone: string; street: string; city: string; region: string; postalCode: string; country: string }
@@ -106,12 +118,20 @@ export function explainDomain(e: unknown): string {
       case "not_renewable": return "This name cannot be renewed right now.";
       case "payment_declined": return "The card was declined. Nothing was renewed.";
       case "renewal_paused": case "sell_gate": return "Renewals are paused for a short while. Nothing was charged.";
+      case "renew_by_support": return "This name has expired, so online renewal has closed. Write to support@mosshatch.com and we renew it for you once you confirm the price. Nothing was charged.";
+      case "renewal_price_check": return "The registrar's renewal price needs checking before anything is charged. Nothing was charged; we email you once it is confirmed.";
       case "transfer_locked": return "This name cannot leave for 60 days after a change of registrant.";
       case "dispute_lock": return "A dispute lock is on. Transfers and contact changes are paused.";
       case "contact_change_pending": return "A contact change is waiting for approval. Finish that first.";
       case "already_unlocked": return "The name is already unlocked.";
       case "domain_locked": return "Unlock the name first.";
-      case "dnssec_would_break": return "That would break DNSSEC. Remove the DNSSEC record first, or use signed nameservers.";
+      case "dnssec_would_break": return "This name has a DNSSEC record at the registry, so those nameservers would stop it resolving. Turn DNSSEC off first, or tick the box if the new nameservers serve the same signed zone.";
+      case "target_not_signed": return "Our nameservers sign names themselves: leave the box unticked when moving to them.";
+      case "bad_dnskey": return "Check the key. Flags are 256 or 257, the algorithm is a number, and the public key is the long text your DNS provider shows.";
+      case "dnssec_dnskey_required": return "Our registrar takes the public key (DNSKEY), not a DS record. Paste the key instead.";
+      case "dnssec_key_not_applied": return "The registrar did not take the key. If our nameservers still sign this name, turn DNSSEC off first, then try again.";
+      case "not_supported": return "Our registrar cannot do that for this name.";
+      case "provider_verification": return "Our registrar runs this verification itself: use the link in its email.";
       case "glue_unsupported": case "bad_nameservers": return "Use two or more nameservers hosted under another domain.";
       case "unchanged": return "Those are already the nameservers.";
       case "bad_ds": return "Check the DNSSEC record. The digest is hex.";

@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { RegistrantVerificationState, RegistrarPort } from "@mosshatch/registrar/port";
 import { call, everythingStored, makeDomain, makeKit, makePerson, poll, refreshSession, resetFuse, stepUp, type Kit, type Person } from "./testkit.ts";
 import { setDisputeLock, clearDisputeLock } from "./dispute.ts";
 import { COR_LOCK_MS } from "./common.ts";
@@ -258,5 +259,73 @@ describe("C-20: DS records", () => {
     // Changing only the digest after the first 16 characters still changes what is signed.
     const tail = await prep("ds_remove", { ...one, digest: one.digest.slice(0, 60) + "ffff" });
     expect(tail.params.ds.digest).not.toBe(a.params.ds.digest);
+  });
+});
+
+describe("C-16 when the registrar runs the verification itself (provider mode)", () => {
+  let restore: () => void = () => undefined;
+  let upstream: RegistrantVerificationState | null = null;
+  const resends: string[] = [];
+  beforeEach(() => {
+    const port = k.registrar as unknown as RegistrarPort;
+    const caps = port.capabilities.bind(port);
+    port.capabilities = () => ({ ...caps(), registrantVerification: "provider" });
+    port.getRegistrantVerification = async () => upstream;
+    port.resendRegistrantVerification = async (f) => { resends.push(f); return { sent: true }; };
+    restore = () => { port.capabilities = caps; delete port.getRegistrantVerification; delete port.resendRegistrantVerification; };
+  });
+  afterEach(() => restore());
+  const pendingDomain = async (fqdn: string) => {
+    const d = await makeDomain(k, alice, fqdn);
+    await k.app.db.owner.query("insert into registrant_verifications (user_id, domain_id, reason, started_at, deadline_at) values ($1,$2,'registration',$3,$4)", [alice.user.userId, d.id, k.app.clock.now(), new Date(k.app.clock.now().getTime() + 15 * DAY)]);
+    return d;
+  };
+
+  it("the registrar's verified state verifies our row when the page is read; its email is sent again on request; our code is not accepted", async () => {
+    const d = await pendingDomain("c16-provider.com");
+    upstream = { status: "pending", suspended: false, expiresAt: new Date(k.app.clock.now().getTime() + 12 * DAY) };
+    const open = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/registrant-verification`);
+    expect(open.json.source).toBe("provider");
+    expect(open.json.verification.state).toBe("pending"); expect(open.json.verification.days_left).toBe(12);   // the registrar's clock
+    expect(open.json.provider).toMatchObject({ status: "pending", suspended: false });
+    const send = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/registrant-verification/send`, {});
+    expect(send.json).toMatchObject({ sent: true, source: "provider" }); expect(resends).toEqual([d.fqdn]);
+    expect(k.app.email.to(alice.registrantAddr).filter((m) => m.kind === "domain.registrant_verify")).toHaveLength(0);
+    const code = await call(k, alice, "POST", `/api/v1/domains/${d.fqdn}/registrant-verification/verify`, { code: "12345678" });
+    expect(code.status).toBe(409); expect(code.json.error.code).toBe("provider_verification");
+    upstream = { status: "verified", suspended: false };
+    const done = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/registrant-verification`);
+    expect(done.json.verification.state).toBe("verified");
+    expect((await row("select state from registrant_verifications where domain_id = $1", [d.id]))[0].state).toBe("verified");
+    const sec = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/security`);
+    expect(sec.json.attention).toBeNull();
+  });
+
+  it("day 15: an open check at the registrar moves our clock to its date; a suspension there is mirrored with an alert and no hold ticket; verified there lifts it", async () => {
+    const d = await pendingDomain("c16-provider-hold.com");
+    // Day 10: the reminder points at the registrar's email. Day 15: still open there, so our deadline follows its date and nothing is held.
+    k.app.clock.advance(10 * DAY + 60_000); await refreshSession(k, alice); k.app.email.clear();
+    upstream = { status: "pending", suspended: false, expiresAt: new Date(k.app.clock.now().getTime() + 5 * DAY) };
+    await poll(k);
+    expect(k.app.email.to(alice.login).filter((m) => m.kind === "domain.registrant_reminder").map((m) => /registrar/.test(m.text))).toEqual([true]);
+    k.app.clock.advance(5 * DAY); await refreshSession(k, alice);
+    upstream = { status: "unverified", suspended: false, expiresAt: new Date(k.app.clock.now().getTime() + 2 * DAY) };
+    await poll(k);
+    let v = (await row("select state, deadline_at from registrant_verifications where domain_id = $1", [d.id]))[0];
+    expect(v.state).toBe("pending"); expect(new Date(v.deadline_at).getTime()).toBe(upstream.expiresAt!.getTime());
+    expect(await row("select 1 from domain_tickets where domain_id = $1", [d.id])).toHaveLength(0);
+    k.app.clock.advance(2 * DAY + 60_000); await refreshSession(k, alice);
+    upstream = { status: "failed", reason: "expired", suspended: true };
+    await poll(k);
+    v = (await row("select state from registrant_verifications where domain_id = $1", [d.id]))[0];
+    expect(v.state).toBe("suspended");
+    expect(await row("select 1 from domain_tickets where domain_id = $1", [d.id])).toHaveLength(0);
+    expect((await row("select detail, state from alerts where kind = 'domain.registrant_suspended' and subject = $1", [d.id]))[0]).toMatchObject({ state: "open", detail: { by: "registrar", reason: "expired" } });
+    expect(k.app.email.to(alice.login).filter((m) => m.kind === "domain.registrant_suspended").map((m) => /registrar has put the domain on hold/.test(m.text))).toEqual([true]);
+    expect((await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/security`)).json.attention.kind).toBe("registrant_suspended");
+    upstream = { status: "verified", suspended: false };
+    const done = await call(k, alice, "GET", `/api/v1/domains/${d.fqdn}/registrant-verification`);
+    expect(done.json.verification.state).toBe("verified");
+    expect((await row("select state from alerts where kind = 'domain.registrant_suspended' and subject = $1", [d.id]))[0].state).toBe("closed");
   });
 });

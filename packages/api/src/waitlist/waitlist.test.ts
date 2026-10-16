@@ -203,7 +203,7 @@ describe("waitlist", () => {
     try {
       const saved = d;
       d = failing;
-      try { expect((await post(good(), { ip: "203.0.113.77" })).status).toBe(202); } finally { d = saved; }
+      try { const failed = await post(good(), { ip: "203.0.113.77" }); expect(failed.status).toBe(503); expect(failed.json.error.code).toBe("delivery_unavailable"); } finally { d = saved; }
       await post(good({ email: "canary-7Qx@example.com", name: "canaryname.dev" }), { ip: "203.0.113.78" });
       const printed = [...spy.mock.calls, ...spyI.mock.calls, ...spyW.mock.calls, ...spyE.mock.calls, warnings].flat().map(String).join("\n");
       expect(printed).not.toMatch(/@|canary|moonfern|203\.0\.113/);
@@ -258,5 +258,18 @@ describe("waitlist", () => {
     expect(formatStats(s)).not.toContain("@");
     // The runtime role cannot read the table directly (definer functions only).
     await expect(db.runtime.query("select email from waitlist")).rejects.toThrow(/permission denied/);
+  });
+});
+
+describe("campaign attribution", () => {
+  it("keeps first-touch labels and discards personal data and click IDs", async () => {
+    expect((await post(good({ attribution: { utm_source: "Google", utm_medium: "cpc", utm_campaign: "launch_01", gclid: "secret", url: "https://example.com/person" } }))).status).toBe(202);
+    expect((await row()).attribution).toEqual({ utm_source: "google", utm_medium: "cpc", utm_campaign: "launch_01" });
+    await post(good({ attribution: { utm_source: "other" } }));
+    expect((await row()).attribution.utm_source).toBe("google");
+  });
+  it("ignores malformed attribution without blocking signup", async () => {
+    expect((await post(good({ attribution: { utm_source: "person@example.com", utm_medium: ["cpc"], utm_campaign: "x".repeat(65) } }))).status).toBe(202);
+    expect((await row()).attribution).toEqual({});
   });
 });

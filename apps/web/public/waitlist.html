@@ -17,18 +17,21 @@
 </header>
 <main id="main">
 <h1>Join the waitlist</h1>
-<p>Mosshatch isn't open yet. The site is a preview: nothing you hatch there is registered or charged. Join the waitlist and we will email you an invite when it is your turn. We let people in a few at a time.</p>
+<p>A domain with a creature of its own. Join for an early-access invite when it is your turn. No payment details needed.</p>
+<p>Public registration is not open yet. In the public preview, nothing you hatch is registered or charged. <a href="/how-it-works">See how Mosshatch works</a>.</p>
 <p><strong>Joining does not reserve or register a domain name.</strong></p>
 <form class="wl-form" method="post" action="/api/waitlist">
 <input type="hidden" name="source" value="page" />
 <div><label for="wl-email">Email</label><input id="wl-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div>
 <div><label for="wl-name">The name you hatched (optional)</label><input id="wl-name" name="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="80" placeholder="moonfern.com" /></div>
+<details><summary>One optional question</summary>
 <fieldset>
 <legend>Would you pay a few dollars for a one-of-a-kind creature designed for your name? (optional)</legend>
 <label class="opt"><input type="radio" name="answer" value="yes" /> Yes</label>
 <label class="opt"><input type="radio" name="answer" value="no" /> No</label>
 <label class="opt"><input type="radio" name="answer" value="maybe" /> Maybe</label>
 </fieldset>
+</details>
 <div class="hp" aria-hidden="true"><label for="wl-website">Leave this empty</label><input id="wl-website" name="website" type="text" tabindex="-1" autocomplete="off" /></div>
 <label class="check"><input type="checkbox" name="consent" value="yes" required /> <span>Email me about Mosshatch: a link to confirm, my invite when it is my turn, and occasional product news. I can leave with one click.</span></label>
 <div><button type="submit" class="wl-btn">Join the waitlist</button></div>

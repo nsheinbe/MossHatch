@@ -1,23 +1,17 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
-import { formatUsd, usd, feePerYear } from "@mosshatch/core";
-import { EXTENSIONS, SAMPLE_WHOLESALE_CENTS } from "@mosshatch/registrar";
-import { siteMode, transformHome } from "../../scripts/site-mode.mjs";
+import { previewPrices } from "../../scripts/preview-prices.mjs";
+import { bannerKind, siteMode, transformHome } from "../../scripts/site-mode.mjs";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
-/** The price list in the static HTML is generated at build time from the adapter's sample quotes. */
+/** The price list in the static HTML is generated at build time from the published Fees table. */
 function staticPrices(): Plugin {
   return {
     name: "mosshatch-static-prices",
     transformIndexHtml(html) {
-      const items = EXTENSIONS.map((tld) => {
-        const w = SAMPLE_WHOLESALE_CENTS[tld]!;
-        const years = tld === "ai" ? 2 : 1;
-        const price = formatUsd(usd((w + feePerYear(usd(w)).cents) * years));
-        return `<li><span class="ext">.${tld}</span> <span class="price">${price}</span> <span class="note">${years === 2 ? "for 2 years" : "first year"}, renews the same</span></li>`;
-      }).join("");
+      const items = previewPrices().map(({tld, price, years, renewal}) => `<li><span class="ext">.${tld}</span> <span class="price">${price}</span> <span class="note">${years === 2 ? "for 2 years" : "first year"}, reference renewal ${renewal}${years === 2 ? " for 2 years" : " a year"}</span></li>`).join("");
       const asOf = new Date().toISOString().slice(0, 10);
       return html
         .replace("<!--PRICES-->", items)
@@ -28,7 +22,7 @@ function staticPrices(): Plugin {
 
 /** Demo or live (scripts/site-mode.mjs): the title, description, canonical URL and share tags, and in demo mode the preview banner. */
 function siteMeta(): Plugin {
-  return { name: "mosshatch-site-meta", transformIndexHtml: (html, ctx) => (ctx.path === "/debug.html" ? html : transformHome(html, siteMode(process.env))) };
+  return { name: "mosshatch-site-meta", transformIndexHtml: (html, ctx) => (ctx.path === "/debug.html" ? html : transformHome(html, siteMode(process.env), bannerKind(process.env))) };
 }
 
 /** Strip comments and indentation from GLSL imported with ?raw (keeps line breaks for #directives). */
@@ -175,7 +169,11 @@ function devLookup(): Plugin {
             const mod: any = await server.ssrLoadModule(root + "../../packages/api/src/lookup/index.ts");
             handler = mod.createLookup(process.env.MH_FAKE_LOOKUP === "1" ? { fetch: mod.fakeRdapFetch, perMinute: 10_000, perHour: 100_000 } : {});
           }
-          const out = await handler!(new Request("http://localhost" + req.url, { method: req.method, headers: { "x-forwarded-for": req.socket.remoteAddress ?? "" } }));
+          // The web app POSTs {"name": ...} (the name stays out of the URL); a GET has no body.
+          const chunks: Buffer[] = []; let n = 0;
+          for await (const c of req) { chunks.push(c as Buffer); if ((n += (c as Buffer).length) > 4096) break; }
+          const body = req.method === "POST" ? Buffer.concat(chunks) : undefined;
+          const out = await handler!(new Request("http://localhost" + req.url, { method: req.method, headers: { "x-forwarded-for": req.socket.remoteAddress ?? "", "content-type": String(req.headers["content-type"] ?? "") }, body }));
           if (!out) return next();
           res.statusCode = out.status;
           out.headers.forEach((v, k) => res.setHeader(k, v));
@@ -199,5 +197,5 @@ export default defineConfig({
       input: { main: root + "index.html", ...(withDebug ? { debug: root + "debug.html" } : {}) },
     },
   },
-  define: { __DEBUG_ENTRY__: JSON.stringify(withDebug) },
+  define: { __DEBUG_ENTRY__: JSON.stringify(withDebug), __MH_PREVIEW_PRICES__: JSON.stringify(previewPrices()) },
 });

@@ -95,8 +95,8 @@ test("no WebGL2: in-brand fallback with a working plain search, CSP clean", asyn
   const page = await ctx.newPage();
   const bad = watch(page);
   await page.goto("/");
-  await expect(page.getByText("This browser can't light the lanterns.")).toBeVisible();
-  await page.fill("#fb-name", "moonfern");
+  await expect(page.getByText("You're using the lightweight view. Search and preview work without the animated grove.")).toBeVisible();
+  await page.fill("#name-input", "moonfern");
   await page.getByRole("button", { name: "Search" }).click();
   await expect(page.getByText("moonfern.com")).toBeVisible();
   const r = await axe(page).analyze();
@@ -117,10 +117,9 @@ test("persisted state is limited to calm, sound and rehideSeconds", async ({ pag
   expect(await page.evaluate(() => Object.keys(localStorage).length)).toBeLessThanOrEqual(1);
 });
 
-test("C-53 canary: a search sends one same-origin GET to /api/lookup with the name in the query, and nothing else anywhere", async ({ page }) => {
-  const reqs: URL[] = [];
-  const methods: string[] = [];
-  page.on("request", (r) => { reqs.push(new URL(r.url())); methods.push(r.method()); });
+test("C-53 canary: a search sends one same-origin POST to /api/lookup with the name in its body, never in any URL, and nothing else anywhere", async ({ page }) => {
+  const reqs: { url: URL; method: string; body: string | null }[] = [];
+  page.on("request", (r) => { reqs.push({ url: new URL(r.url()), method: r.method(), body: r.postData() }); });
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await cancelDemo(page);
@@ -128,13 +127,14 @@ test("C-53 canary: a search sends one same-origin GET to /api/lookup with the na
   const before = reqs.length;
   await page.fill("#name-input", "secretcanaryname");
   await expect(page.locator(".chip").first()).toBeVisible({ timeout: 15000 });
-  const after = reqs.slice(before), how = methods.slice(before);
-  const named = after.filter((u) => /canary/i.test(u.href));
-  expect(named.map((u) => u.pathname + u.search)).toEqual(["/api/lookup?name=secretcanaryname"]);
-  expect(after.every((u) => u.origin === "http://127.0.0.1:4173")).toBe(true);
-  expect(how.every((m) => m === "GET")).toBe(true);
-  expect(after.some((u) => /canary/i.test(u.pathname))).toBe(false);
-  await expect(page.getByRole("link", { name: "commitments" })).toBeVisible();
+  const after = reqs.slice(before);
+  // AUD-V1: the name is in no URL (so in no request log), only in the one lookup's body.
+  expect(after.filter((r) => /canary/i.test(r.url.href))).toEqual([]);
+  const named = after.filter((r) => /canary/i.test(r.body ?? ""));
+  expect(named.map((r) => [r.method, r.url.pathname + r.url.search, JSON.parse(r.body!)])).toEqual([["POST", "/api/lookup", { name: "secretcanaryname" }]]);
+  expect(after.every((r) => r.url.origin === "http://127.0.0.1:4173")).toBe(true);
+  expect(after.every((r) => r.method === "GET" || r.url.pathname === "/api/lookup")).toBe(true);
+  await expect(page.getByRole("link", { name: "Our commitments" })).toBeVisible();
 });
 
 // Phase 3 (C-13, C-26 to C-29, C-53, C-59, C-60, C-62): the fee page and the .ai/.io addenda are static pages under the strict CSP, axe clean.
@@ -149,9 +149,9 @@ test("fee page and registry addenda: static HTML under the CSP, axe clean at des
     await expect(nojs.locator("h1"), url).toBeVisible();
     expect(await nojs.locator("script").count(), url).toBe(0);
   }
-  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toHaveCount(0);   // last page is the .io addendum
+  await expect(nojs.getByRole("table", { name: "Reference tariff on 8 October 2026, per extension — not a current quote" })).toHaveCount(0);   // last page is the .io addendum
   await nojs.goto("/fees.html");
-  await expect(nojs.getByRole("table", { name: "What each action costs, per extension" })).toBeVisible();
+  await expect(nojs.getByRole("table", { name: "Reference tariff on 8 October 2026, per extension — not a current quote" })).toBeVisible();
   await expect(nojs.getByText("Openprovider (IANA ID 1647)", { exact: false }).first()).toBeVisible();
   await ctx.close();
   const violations: string[] = [];

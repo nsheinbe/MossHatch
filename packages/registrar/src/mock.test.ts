@@ -5,7 +5,7 @@ import { MockRegistrar, SAMPLE_PRICE } from "./index.ts";
 describe("MockRegistrar", () => {
   const r = new MockRegistrar();
   it("reproduces the plan's first-order prices", () => {
-    const want: Record<string, string> = { com: "$19.25", dev: "$21.00", app: "$25.00", studio: "$60.00", io: "$69.00", ai: "$242.00" };
+    const want: Record<string, string> = { com: "$18.25", dev: "$20.00", app: "$24.00", studio: "$60.00", io: "$69.00", ai: "$242.00" };
     for (const [tld, p] of Object.entries(want)) expect(formatUsd({ cents: SAMPLE_PRICE[tld]!.cents, currency: "USD" })).toBe(p);
   });
   it("is deterministic and flags samples", async () => {

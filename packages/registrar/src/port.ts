@@ -76,6 +76,10 @@ export interface RegistrarCapabilities {
   funding: boolean; inventory: boolean; events: boolean;
   /** True only when the provider has an API to end a pending outbound transfer. OpenSRS: false (the owner's decline link or Tucows support ends it). */
   cancelTransferAway: boolean;
+  /** How DNSSEC material is added: `dnskey` providers take the public key and let the registry derive the DS; `ds` (the default) take DS records. */
+  dnssecKeyInput?: "ds" | "dnskey";
+  /** Who runs the ICANN registrant email verification: `provider` means the registrar emails the registrant itself and reports the state through `getRegistrantVerification`; `reseller` (the default) means we do. */
+  registrantVerification?: "provider" | "reseller";
 }
 
 export type Registrant = RegisterRequest["registrant"];
@@ -86,7 +90,23 @@ export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME",
 export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number }
 export interface DnsZone { hosted: boolean; records: DnsRecord[] }
 
-export interface DsRecord { keyTag: number; algorithm: number; digestType: number; digest: string }
+export interface DsRecord {
+  keyTag: number; algorithm: number; digestType: number; digest: string;
+  /** A key the provider's own DNS manages (it signs the zone and keeps the key at the registry). It cannot be added by hand; removing it turns that signing off. */
+  managed?: boolean;
+}
+/** DNSKEY material (RFC 4034 section 2) for providers that take the key and let the registry derive the DS. `protocol` is always 3. */
+export interface DnskeyInput { flags: number; algorithm: number; publicKey: string; protocol?: number }
+/** The registrar's own registrant email verification (ICANN) for a domain. */
+export interface RegistrantVerificationState {
+  status: "verified" | "pending" | "unverified" | "failed";
+  /** Why a `failed` state failed, when the provider says. */
+  reason?: "expired" | "bounced" | "soft_bounced";
+  /** True while the provider holds the domain for want of verification. */
+  suspended: boolean;
+  /** When the provider's current check runs out. */
+  expiresAt?: Date;
+}
 
 export interface ContactChangeResult {
   /** `pending_approval`: an ICANN Change of Registrant (trade) started and the contact has not changed yet. */
@@ -204,6 +224,12 @@ export interface RegistrarPort {
   getDs(fqdn: string): Promise<DsRecord[]>;
   addDs(fqdn: string, ds: DsRecord): Promise<void>;
   removeDs(fqdn: string, ds: DsRecord): Promise<void>;
+  /** Adds DNSKEY material and answers with the DS the registry publishes for it. Providers that take DS records leave this out: the caller derives the DS and calls `addDs`. */
+  addDnskey?(fqdn: string, key: DnskeyInput): Promise<DsRecord>;
+  /** The provider's own registrant email verification for the domain (null when it holds none). Only where `registrantVerification` is `provider`. */
+  getRegistrantVerification?(fqdn: string): Promise<RegistrantVerificationState | null>;
+  /** Sends the provider's verification email again, to the address it holds for the open check. */
+  resendRegistrantVerification?(fqdn: string): Promise<{ sent: boolean }>;
   /** Changes the owner contact. A registrant change is reported, never hidden (C-07). */
   updateContact(fqdn: string, registrant: Registrant): Promise<ContactChangeResult>;
   /** `GET_TRANSFERS_AWAY`; the hostile-transfer poll asks for pending statuses only. */

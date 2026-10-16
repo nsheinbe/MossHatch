@@ -15,10 +15,17 @@ import { reservedRenewalsMinor } from "../domains/gate.ts";
 import { ModeError, refuseSampleAtLiveCheckout } from "../config/modeguard.ts";
 import { operationForOrderKind } from "../stripe/catalog.ts";
 import { preCheckoutRegionGate } from "./tax.ts";
+import { raiseAlert } from "../ops/alerts.ts";
 
 export const RESERVING_STATES = ["review_hold", "authorized", "registering", "outcome_unknown", "registrar_unavailable", "paid_before_registration"];
 export const PAUSED_MESSAGE = "Registration is paused for a short while. Nothing was charged.";
 export const MAINTENANCE_MESSAGE = "Registrations are paused while our registrar is in maintenance. Nothing was charged.";
+
+/** New registrations are paused when orders or registrar writes are paused; the quote route shows the same answer before checkout. */
+export async function salesPaused(c: Pick<PoolClient, "query">): Promise<boolean> {
+  const r = await c.query("select 1 from flags where name in ('orders_paused','registrar_writes_paused') and value = 'true'::jsonb limit 1");
+  return (r.rowCount ?? 0) > 0;
+}
 
 export interface CreateOrderInput {
   userId: string;
@@ -84,7 +91,9 @@ export async function createOrder(ctx: AppContext, input: CreateOrderInput): Pro
     if (!u || u.status !== "active") throw new HttpError(403, "account_inactive");
     if (!u.email_verified_at) throw new HttpError(403, "email_unverified");
     if (u.frozen_at) throw new HttpError(403, "account_frozen");
-    if ((await c.query("select value from flags where name = 'orders_paused'")).rows[0]?.value === true) throw new HttpError(503, "orders_paused", PAUSED_MESSAGE);
+    // Paused registrar writes (an operator, or auto-safe after an unacknowledged page) would leave a paid order waiting at "registering"
+    // until its card hold nearly expired (docs/AUDIT-2026-10-07.md F3): refuse before Checkout, so nothing is held.
+    if (await salesPaused(c)) throw new HttpError(503, "orders_paused", PAUSED_MESSAGE);
     const perUser = await hit(ctx, c, `orders:user:${input.userId}`, { bucket: "orders_create_user", max: 20, windowSeconds: 3600 });
     const perIp = await hit(ctx, c, `orders:ip:${input.ipPrefix}`, { bucket: "orders_create_ip", max: 60, windowSeconds: 3600 });
     if (!perUser.allowed || !perIp.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(Math.max(perUser.retryAfterSeconds, perIp.retryAfterSeconds)) });
@@ -249,6 +258,10 @@ export async function ensureSession(ctx: AppContext, svc: OrdersServices, order:
       const next = await restartCheckout(ctx, svc, order.id);
       return next ? ensureSession(ctx, svc, next, depth + 1) : { url: null, session: null };
     }
+    // A refused Checkout reaches the buyer as "couldn't open" and must reach the operator too (2026-10-08: the first live Session was
+    // refused twice, for Managed Payments and for a missing tax code, and nothing recorded why). Codes and the parameter name only.
+    console.error("stripe checkout_session refused", e.kind, e.status ?? "", e.code ?? "", e.param ?? "");
+    await tx(ctx.cron, (c) => raiseAlert(ctx, c, { severity: "warn", kind: "stripe.checkout_refused", subject: order.id, email: true, detail: { kind: e.kind, status: e.status, code: e.code ?? null, param: e.param ?? null, attempt: order.attempt } })).catch(() => undefined);
     throw new HttpError(503, "payment_unavailable");
   }
   const stored = await tx(ctx.cron, async (c) => {

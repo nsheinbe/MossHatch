@@ -50,7 +50,7 @@ export const agentRoutes: Route[] = [
   // Approvals (session). Decline, resolve and checkout are free; approving is a passkey step-up.
   { ...session, method: "GET", path: "/api/v1/approvals", handler: approvalList },
   { method: "GET", path: "/api/v1/approvals/:id", principals: ["session", "binding"], tag: "agents", handler: approvalGet },
-  { ...session, method: "POST", path: "/api/v1/approvals/:id/decide", stepUp: "agent.purchase.approve", handler: decideHandler },
+  { ...session, method: "POST", path: "/api/v1/approvals/:id/decide", liveGate: true, stepUp: "agent.purchase.approve", handler: decideHandler },
   { ...session, method: "POST", path: "/api/v1/approvals/:id/approve-dns", stepUp: "dns.sensitive.approve", handler: approveDnsHandler },
   { ...session, method: "POST", path: "/api/v1/approvals/:id/decline", handler: async (req) => json(await decline(req.ctx, sessionUserOf(req), p(req, "id"))) },
   { ...session, method: "POST", path: "/api/v1/approvals/:id/resolve", handler: async (req) => json(await resolveScope(req.ctx, sessionUserOf(req), p(req, "id"))) },

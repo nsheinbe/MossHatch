@@ -72,6 +72,8 @@ describe("deriveCreatureState", () => {
   it("prioritises", () => {
     expect(deriveCreatureState({ ...base, registering: true }).state).toBe("egg");
     expect(deriveCreatureState({ ...base, daysToExpiry: 12 }).text).toBe("Renews in 12 days");
+    expect(deriveCreatureState({ ...base, daysToExpiry: 12, autoRenew: true }).text).toBe("Renews in 12 days");
+    expect(deriveCreatureState({ ...base, daysToExpiry: 1, autoRenew: false }).text).toBe("Expires in 1 day. Auto-renew is off.");
     expect(deriveCreatureState({ ...base, transferLock: true }).state).toBe("armored");
     expect(deriveCreatureState({ ...base, daysToExpiry: -3 }).state).toBe("sleeping");
     expect(deriveCreatureState({ ...base, attentionReason: "Verify your email" }).state).toBe("attention");
@@ -85,7 +87,8 @@ describe("deriveCreatureState", () => {
 
 describe("money", () => {
   it("applies the D-003 fee bands", () => {
-    expect(feePerYear(usd(1450)).cents).toBe(400);
+    expect(feePerYear(usd(1450)).cents).toBe(300);
+    expect(feePerYear(usd(3120)).cents).toBe(500);
     expect(feePerYear(usd(6000)).cents).toBe(900);
     expect(feePerYear(usd(11100)).cents).toBe(1000);
     expect(formatUsd(usd(1925))).toBe("$19.25");

@@ -464,3 +464,64 @@ describe("review: a recipe's DNS write commits its snapshot and intent before th
     expect((await appRow(k, r.json.application_id)).state).toBe("removed");
   });
 });
+
+describe("recipes over MCP: an assistant plans, the owner approves with a passkey in the Connect tab, the assistant applies", () => {
+  let rpc = 0;
+  const tool = async (token: string, name: string, args: Record<string, unknown>) => {
+    const r = await k.app.call("POST", "/mcp", { authorization: `Bearer ${token}`, browser: false, body: { jsonrpc: "2.0", id: ++rpc, method: "tools/call", params: { name, arguments: args } }, headers: { "content-type": "application/json", accept: "application/json, text/event-stream" } });
+    expect(r.status, r.text).toBe(200);
+    return r.json.result as { isError: boolean; structuredContent: { data?: any; error?: { code: string } } };
+  };
+
+  it("plan, pending_human_approval, the owner's waiting list, approval, apply, applied", async () => {
+    const { p } = await vercelPerson("mcprecipe");
+    const scope = (capability: string) => ({ capability, domain_id: p.domain.id, env: null, label: p.domain.fqdn });
+    const t = await makeBinding(k, p, [scope("recipes.apply"), scope("dns.write")], "agent");
+    const list = await k.app.call("POST", "/mcp", { authorization: `Bearer ${t.token}`, browser: false, body: { jsonrpc: "2.0", id: ++rpc, method: "tools/list" }, headers: { "content-type": "application/json" } });
+    expect(list.json.result.tools.map((x: { name: string }) => x.name)).toEqual(expect.arrayContaining(["list_recipes", "plan_recipe", "apply_recipe", "get_recipe_application"]));
+    expect((await tool(t.token, "list_recipes", {})).structuredContent.data.recipes.map((r: { id: string }) => r.id)).toEqual(["hosting-vercel", "postgres-neon", "email-resend"]);
+
+    const planned = await tool(t.token, "plan_recipe", { domain: p.domain.fqdn, recipe: "hosting-vercel" });
+    expect(planned.isError).toBe(false);
+    const { application_id, plan } = planned.structuredContent.data;
+    expect(plan.needs_approval).toBe(true);
+    const held = await tool(t.token, "apply_recipe", { application_id, plan_hash: plan.plan_hash });
+    expect(held.structuredContent.data).toMatchObject({ status: "pending_human_approval", application_id });
+
+    const waiting = await web(k, p, "GET", "/api/v1/recipe-applications/waiting");
+    expect(waiting.status, waiting.text).toBe(200);
+    expect(waiting.json.applications).toEqual([expect.objectContaining({ id: application_id, recipe: "hosting-vercel", domain: p.domain.fqdn, requester: "t" })]);
+    const history = await web(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/recipe-applications`);
+    expect(history.json.applications[0]).toMatchObject({ id: application_id, state: "planned", needs_approval: true, created_by: { kind: "agent", name: "t", live: true } });
+
+    await approvePlan(k, p, application_id);
+    const go = await tool(t.token, "apply_recipe", { application_id, plan_hash: plan.plan_hash });
+    expect(go.structuredContent.data).toEqual({ application_id, state: "applying" });
+    await tick(k);
+    expect((await tool(t.token, "get_recipe_application", { application_id })).structuredContent.data.state).toBe("applied");
+    expect((await web(k, p, "GET", "/api/v1/recipe-applications/waiting")).json.applications).toEqual([]);
+    // A token without the domain's scope sees nothing of it.
+    const other = await makeBinding(k, p, [{ capability: "recipes.plan", domain_id: "00000000-0000-7000-8000-000000000001", env: null, label: "other.com" }], "agent");
+    expect((await tool(other.token, "plan_recipe", { domain: p.domain.fqdn, recipe: "hosting-vercel" })).structuredContent.error?.code).toBe("scope_missing");
+  });
+
+  it("a paused token's plan, and every token's plan after Disconnect everything, no longer waits for the owner", async () => {
+    const { p } = await vercelPerson("mcpstop");
+    const scope = (capability: string) => ({ capability, domain_id: p.domain.id, env: null, label: p.domain.fqdn });
+    const planVia = async (token: string) => (await tool(token, "plan_recipe", { domain: p.domain.fqdn, recipe: "hosting-vercel" })).structuredContent.data.application_id as string;
+    const waitingIds = async () => (await web(k, p, "GET", "/api/v1/recipe-applications/waiting")).json.applications.map((a: { id: string }) => a.id);
+    const a = await makeBinding(k, p, [scope("recipes.apply"), scope("dns.write")], "agent");
+    const b = await makeBinding(k, p, [scope("recipes.apply"), scope("dns.write")], "agent");
+    const fromA = await planVia(a.token), fromB = await planVia(b.token);
+    expect((await waitingIds()).sort()).toEqual([fromA, fromB].sort());
+
+    expect((await web(k, p, "POST", `/api/v1/bindings/${a.id}/pause`, {})).status).toBe(200);
+    expect(await waitingIds()).toEqual([fromB]);
+    const rows = (await web(k, p, "GET", `/api/v1/domains/${p.domain.fqdn}/recipe-applications`)).json.applications as { id: string; created_by: { live?: boolean } }[];
+    expect(rows.find((r) => r.id === fromA)?.created_by.live).toBe(false);
+    expect(rows.find((r) => r.id === fromB)?.created_by.live).toBe(true);
+
+    expect((await web(k, p, "POST", "/api/v1/visitors/send-home", {})).status).toBe(200);
+    expect(await waitingIds()).toEqual([]);
+  });
+});

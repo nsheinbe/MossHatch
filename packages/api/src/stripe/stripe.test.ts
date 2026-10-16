@@ -124,6 +124,9 @@ describe("StripeReal (never exercised against the network here)", () => {
     expect(p.payment_intent_data.capture_method).toBe("manual");
     expect(p.payment_method_options.card.request_three_d_secure).toBe("any");
     expect(p.automatic_tax).toEqual({ enabled: true });
+    // 2026-10-08: Stripe's Managed Payments, on by default for a new account, refused the first live Checkout (`custom_text` is not allowed in that mode).
+    expect(p.managed_payments).toEqual({ enabled: false });
+    expect(p.custom_text.submit.message).toBeTruthy();
     expect(p.line_items[0]!.price_data.unit_amount).toBe(1925);
     expect(JSON.stringify(p)).not.toMatch(/"price":/);
     expect(toStripeSessionParams(input({ captureMethod: "automatic", requestThreeDSecure: "automatic" })).payment_intent_data.capture_method).toBe("automatic");

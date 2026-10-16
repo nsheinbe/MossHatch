@@ -297,23 +297,26 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     // Three tries, three keys: a new key only after a determined failure.
     const keys = h.stripe.keysUsed.filter((k) => k.method === "createOffSessionPaymentIntent").map((k) => k.key);
     expect(new Set(keys).size).toBe(3);
-    // The name shows as needing attention, and Renew now on the same card is refused with a plain code.
+    // The name shows as needing attention, and Renew now does not charge the declined card again: it opens Stripe Checkout, where any
+    // card can pay (docs/AUDIT-2026-10-07.md O7).
     const o2 = await relogin(h, o);
     const view = await h.app.call("GET", `/api/v1/domains/${dom.id}`, { cookie: o2.cookie });
     expect(view.json.state).toBe("attention");
     const click = await postRenew(h, o2, dom.id);
-    expect(click.status).toBe(402); expect(click.json.error.code).toBe("payment_declined");
+    expect(click.status, JSON.stringify(click.json)).toBe(200);
+    expect(click.json.status).toBe("checkout"); expect(click.json.checkout_url).toMatch(/^https:\/\//);
+    expect(calls()).toBe(3);
   });
 
   it("a price above the mandate's ceiling is held until the person signs again; the change is emailed when first seen and 21 days before the charge", async () => {
     // .com wholesale rises from 14.50 to 15.25 on 2026-11-01 (price table): a name bought now renews at the higher price.
     const { h, o, dom } = await mandated("cap", "com");
     const mandate = (await h.app.db.owner.query("select price_ceiling_minor from renewal_mandates where domain_id = $1 and revoked_at is null", [dom.id])).rows[0];
-    expect(BigInt(mandate.price_ceiling_minor)).toBe(1850n);
+    expect(BigInt(mandate.price_ceiling_minor)).toBe(1750n);
     const e = await expiry(h, dom.id);
     at(h, new Date(e.getTime() - days(44))); await settle(h);
     at(h, new Date(e.getTime() - days(44) + 3600_000 * 2)); await settle(h);
-    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes("changes from USD 18.50 to USD 19.25"));
+    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes("changes from USD 17.50 to USD 18.25"));
     expect(known.length).toBeGreaterThanOrEqual(1);
     expect(known[0]!.text).toContain("above the limit you set");
     expect(known[0]!.text).toMatch(/\/api\/v1\/email-actions\/[A-Za-z0-9_-]{43}/);
@@ -334,7 +337,7 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     at(h, new Date(e.getTime() - days(10) + 20 * 60_000)); await settle(h);
     const orders = await renewOrders(h, dom.id);
     expect(orders.map((r) => r.state)).toEqual(["renewed"]);
-    expect(renewPIs(h).at(-1)!.amount).toBe(1925);
+    expect(renewPIs(h).at(-1)!.amount).toBe(1825);
   });
 });
 
@@ -407,3 +410,32 @@ describe("review: a renewal paid on Checkout while an off-session charge for the
 });
 
 void sha256; void makeDomainsHarness; void signMandate; void AUTH_TEXT_HASH;
+
+describe("AUD-P3: a renewal is never charged below the registrar's live renewal price (docs/AUDIT-2026-10-07.md)", () => {
+  it("the registrar now charges more than the table: held with price_check, nothing charged, one page per extension; a table row matching the registrar releases it", async () => {
+    const { h, dom } = await mandated("pricecheck");
+    const table = BigInt((await termRow(h, dom.id)).current_wholesale_minor);
+    h.registrar.overrideQuote(dom.fqdn, table + 100n);              // an upstream rise nobody has entered yet
+    at(h, new Date((await chargeDay(h, dom.id)).getTime() + 60_000));
+    await settle(h);
+    expect(renewPIs(h)).toHaveLength(0);
+    expect(h.registrar.calls.renew).toBe(0);
+    const t = await termRow(h, dom.id);
+    expect([t.state, t.held_reason]).toEqual(["held", "price_check"]);
+    expect((await alertRows(h, "renewal_price_check")).map((a) => a.subject)).toEqual(["dev"]);
+    // The registrar's price falls back to the table (or the operator adds the matching dated row): the next pass charges.
+    h.registrar.overrideQuote(dom.fqdn, table);
+    at(h, new Date((await chargeDay(h, dom.id)).getTime() + 2 * 3600_000));
+    await settle(h);
+    expect((await renewOrders(h, dom.id)).map((r) => r.state)).toEqual(["renewed"]);
+  });
+
+  it("a registrar price below the table does not hold: the customer pays the announced table price", async () => {
+    const { h, dom } = await mandated("pricebelow");
+    const table = BigInt((await termRow(h, dom.id)).current_wholesale_minor);
+    h.registrar.overrideQuote(dom.fqdn, table - 50n);
+    at(h, new Date((await chargeDay(h, dom.id)).getTime() + 60_000));
+    await settle(h);
+    expect((await renewOrders(h, dom.id)).map((r) => r.state)).toEqual(["renewed"]);
+  });
+});

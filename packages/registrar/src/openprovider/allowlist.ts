@@ -16,7 +16,8 @@ import { JsonNum, type Json } from "./wire.ts";
 export type OpName =
   | "LOGIN" | "CHECK" | "PRICE" | "RESELLER" | "CREATE_CUSTOMER" | "GET_CUSTOMER" | "UPDATE_CUSTOMER"
   | "CREATE_DOMAIN" | "TRANSFER_DOMAIN" | "LIST_DOMAINS" | "GET_DOMAIN" | "UPDATE_DOMAIN" | "RENEW_DOMAIN" | "RESET_AUTHCODE" | "RESTORE_DOMAIN" | "DELETE_DOMAIN"
-  | "GET_ZONE" | "LIST_ZONE_RECORDS" | "UPDATE_ZONE";
+  | "GET_ZONE" | "LIST_ZONE_RECORDS" | "UPDATE_ZONE"
+  | "LIST_EMAIL_VERIFICATIONS" | "RESTART_EMAIL_VERIFICATION";
 export type Method = "GET" | "POST" | "PUT" | "DELETE";
 
 export interface OpRule {
@@ -71,6 +72,10 @@ export const OPERATIONS: ReadonlyMap<OpName, OpRule> = new Map([
       const r = b.records; if (!r || typeof r !== "object" || Array.isArray(r) || r instanceof JsonNum) return "records_shape";
       const keys = Object.keys(r); return keys.length === 1 && (keys[0] === "add" || keys[0] === "remove") ? null : "one_record_operation";
     }, verified: "sandbox" }),
+  // ICANN registrant email verification, which Openprovider runs itself for every gTLD registration (support article 360024748273; the paths are
+  // from the OpenAPI document). The list is read by domain only; the restart sends the provider's own email again to the address it holds.
+  R({ op: "LIST_EMAIL_VERIFICATIONS", method: "GET", path: "/customers/verifications/emails/domains", write: false, query: ["domain", "limit", "offset"], verified: "spec" }),
+  R({ op: "RESTART_EMAIL_VERIFICATION", method: "POST", path: "/customers/verifications/emails/restart", write: true, body: ["email"], requiredBody: ["email"], verified: "spec" }),
 ]);
 
 const FQDN = /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,24}$/;

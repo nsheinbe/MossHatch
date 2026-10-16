@@ -5,3 +5,5 @@ export * from "./traits.ts";
 export * from "./state.ts";
 export * from "./money.ts";
 export * from "./portrait.ts";
+export * from "./registrar.ts";
+export * from "./phone.ts";

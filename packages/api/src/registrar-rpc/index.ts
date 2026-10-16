@@ -3,3 +3,4 @@ export * from "./server.ts";
 export * from "./client.ts";
 export * from "./scope.ts";
 export * from "./serve.ts";
+export * from "./shared-store.ts";

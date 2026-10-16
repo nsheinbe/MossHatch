@@ -144,7 +144,7 @@ describe("audit anchors", () => {
     app.ctx.services = { anchorSink: sink, cloudTrail: ct, erasureLedger: new MemoryErasureLedger(), dnsResolver: new FakeDns() };
     try {
       const r1 = await runTick(app.ctx, { budgetMs: 10_000 });
-      expect(r1.scheduled).toBe(8); expect(r1.done).toBe(8);
+      expect(r1.scheduled).toBe(9); expect(r1.done).toBe(9);              // includes the hourly ratelimit.sweep (docs/AUDIT-2026-10-07.md V2)
       expect(sink.items).toHaveLength(1);
       const r2 = await runTick(app.ctx, { budgetMs: 10_000 });
       expect(r2.scheduled).toBe(0); expect(sink.items).toHaveLength(1);

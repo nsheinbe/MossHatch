@@ -60,6 +60,9 @@ describe("ST-138 dead-man's switch", () => {
     expect(script.evaluateTicks(200, { ageSeconds: 180 }).ok).toBe(true);
     expect(script.evaluateTicks(200, { ageSeconds: 181 })).toMatchObject({ ok: false, reason: "stale" });
     expect(script.evaluateTicks(200, { ageSeconds: null })).toMatchObject({ ok: false, reason: "no_tick_yet" });
+    expect(script.evaluateTicks(503, { ageSeconds: 181 })).toMatchObject({ ok: false, reason: "stale", ageSeconds: 181 });
+    expect(script.evaluateTicks(503, { ageSeconds: null })).toMatchObject({ ok: false, reason: "no_tick_yet" });
+    expect(script.evaluateTicks(503, { ageSeconds: 1 })).toMatchObject({ ok: false, reason: "bad_status" });
     expect(script.evaluateTicks(500, { ageSeconds: 1 })).toMatchObject({ ok: false, reason: "bad_status" });
     expect(script.evaluateTicks(200, {})).toMatchObject({ ok: false, reason: "bad_body" });
     expect(script.evaluateTicks(200, { ageSeconds: -5 })).toMatchObject({ ok: false, reason: "bad_body" });

@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useUi } from "../store";
 import type { StepUpType } from "../lib/domains";
 import { approveConsent, denyConsent, explainVisitor, getConsent, when, type Consent } from "../lib/visitors";
+import { CHOICES, canSpend, describeScope, lines, minor, picksFrom, scopesFor } from "../lib/scopes";
 import { StepUp, type StepUpRequest } from "./StepUp";
-
-const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
 /**
  * The OAuth consent screen for MCP connectors (D-019). Reached from the authorization endpoint with `?oauth_request=<id>`; the
@@ -16,19 +15,31 @@ export default function OAuthConsent({ id, onClose }: { id: string; onClose: () 
   const [c, setC] = useState<Consent | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [req, setReq] = useState<StepUpRequest | null>(null);
-  const [form, setForm] = useState({ name: "Connected app", scopes: "", days: "30", cap: "0" });
+  const [form, setForm] = useState({ name: "Connected app", picks: ["see"] as string[], which: "*", extra: "", days: "90", cap: "" });
+  // Advanced opens once, when the app asked for scopes the everyday choices do not cover; after that it is the person's to fold.
+  const [askedExtra, setAskedExtra] = useState(false);
   const head = useRef<HTMLHeadingElement>(null);
   useEffect(() => { head.current?.focus(); }, []);
   useEffect(() => {
     if (!account) return;
-    getConsent(id).then((x) => { setC(x); setForm((f) => ({ ...f, name: x.defaults.name, days: String(x.defaults.expires_in_days), scopes: (x.suggested_scopes.length ? x.suggested_scopes : ["domains.read:*"]).join("\n") })); })
-      .catch((e) => setMsg(explainVisitor(e)));
+    // What the app asked for, mapped onto the everyday choices where it fits; the rest stays visible under Advanced, unticked by nobody.
+    getConsent(id).then((x) => {
+      setC(x);
+      const asked = picksFrom(x.suggested_scopes);
+      setAskedExtra(asked.rest.length > 0);
+      setForm((f) => ({ ...f, name: x.defaults.name, days: String(x.defaults.expires_in_days), picks: asked.picks.length ? asked.picks : ["see"], which: asked.name !== "*" && x.domains.includes(asked.name) ? asked.name : "*", extra: asked.rest.join("\n") }));
+    }).catch((e) => setMsg(explainVisitor(e)));
   }, [id, account]);
 
+  const scopes = [...new Set([...scopesFor(form.picks, form.which), ...lines(form.extra)])];
+  const spends = canSpend(scopes);
   const approve = (ev: React.FormEvent) => {
     ev.preventDefault();
     setMsg(null);
-    const input = { name: form.name.trim(), scopes: lines(form.scopes), expires_in_days: Number(form.days), spend_cap_minor: Math.round(Number(form.cap || "0") * 100) };
+    if (!form.name.trim()) { setMsg("Give this connection a name, like Claude."); return; }
+    if (scopes.length === 0) { setMsg("Pick at least one thing it can do."); return; }
+    if (spends && !(minor(form.cap) > 0)) { setMsg("Set the most it can ask you to spend, in dollars. With nothing there it could not suggest anything."); return; }
+    const input = { name: form.name.trim(), scopes, expires_in_days: Number(form.days), spend_cap_minor: spends ? minor(form.cap) : 0 };
     setReq({ type: "agent.token.create" as StepUpType, target: `oauth_${id}`, input, run: async (actionId) => { const r = await approveConsent(id, actionId); location.assign(r.redirect_to); } });
   };
   const deny = async () => { try { const r = await denyConsent(id); location.assign(r.redirect_to); } catch (e) { setMsg(explainVisitor(e)); } };
@@ -59,13 +70,45 @@ export default function OAuthConsent({ id, onClose }: { id: string; onClose: () 
                 <form className="form-grid" onSubmit={approve}>
                   <label htmlFor="c-name">Name for this connection (you will see it on every request it makes)</label>
                   <input id="c-name" className="text-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} maxLength={64} />
-                  <label htmlFor="c-scopes">What it can do, one scope per line</label>
-                  <textarea id="c-scopes" className="text-input" rows={4} value={form.scopes} onChange={(e) => setForm({ ...form, scopes: e.target.value })} spellCheck={false} aria-describedby="c-scopes-hint" />
-                  <p id="c-scopes-hint" className="fineprint">Your names: {c.domains.length ? c.domains.join(", ") : "none yet"}. For example <code>dns.read:example.com</code> or <code>register.propose:*</code>.{c.ignored_scopes ? ` ${c.ignored_scopes} scope${c.ignored_scopes === 1 ? "" : "s"} it asked for were not valid and are not offered.` : ""}</p>
-                  <label htmlFor="c-cap">Spend cap in dollars, for purchases you approve</label>
-                  <input id="c-cap" className="text-input" inputMode="decimal" value={form.cap} onChange={(e) => setForm({ ...form, cap: e.target.value })} />
-                  <label htmlFor="c-days">Days until it expires (at most 90)</label>
-                  <input id="c-days" className="text-input" inputMode="numeric" value={form.days} onChange={(e) => setForm({ ...form, days: e.target.value })} />
+                  <fieldset className="choices">
+                    <legend>Which names</legend>
+                    <label className="check"><input type="radio" name="c-which" checked={form.which === "*"} onChange={() => setForm({ ...form, which: "*" })} /> <span>All my names</span></label>
+                    {c.domains.length > 0 && (
+                      <label className="check"><input type="radio" name="c-which" checked={form.which !== "*"} onChange={() => setForm({ ...form, which: c.domains[0]! })} /> <span>Only one name</span></label>
+                    )}
+                    {form.which !== "*" && (
+                      <label>The name
+                        <select className="text-input" value={form.which} onChange={(e) => setForm({ ...form, which: e.target.value })}>{c.domains.map((n) => <option key={n} value={n}>{n}</option>)}</select>
+                      </label>
+                    )}
+                  </fieldset>
+                  <fieldset className="choices">
+                    <legend>What it can do</legend>
+                    {CHOICES.map((ch) => (
+                      <label key={ch.id} className="check">
+                        <input type="checkbox" checked={form.picks.includes(ch.id)} onChange={(e) => setForm({ ...form, picks: e.target.checked ? [...form.picks, ch.id] : form.picks.filter((x) => x !== ch.id) })} />
+                        <span>{ch.label}{ch.hint ? <span className="fineprint">{ch.hint}</span> : null}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                  <details open={askedExtra}>
+                    <summary>Advanced: scopes typed by hand{askedExtra ? " (the app asked for some)" : ""}</summary>
+                    <label htmlFor="c-scopes">Extra scopes, one per line</label>
+                    <textarea id="c-scopes" className="text-input" rows={3} value={form.extra} onChange={(e) => setForm({ ...form, extra: e.target.value })} spellCheck={false} aria-describedby="c-scopes-hint" />
+                    <p id="c-scopes-hint" className="fineprint">Your names: {c.domains.length ? c.domains.join(", ") : "none yet"}. For example <code>dns.read:example.com</code> or <code>register.propose:*</code>.{c.ignored_scopes ? ` ${c.ignored_scopes} scope${c.ignored_scopes === 1 ? "" : "s"} it asked for were not valid and are not offered.` : ""}</p>
+                  </details>
+                  {spends && (
+                    <>
+                      <label htmlFor="c-cap">Most it can ask you to spend, in dollars</label>
+                      <input id="c-cap" className="text-input" inputMode="decimal" value={form.cap} placeholder="50" required onChange={(e) => setForm({ ...form, cap: e.target.value })} aria-describedby="c-cap-hint" />
+                      <p id="c-cap-hint" className="fineprint">A ceiling across all of its suggestions. You still approve every purchase with your passkey and pay on Stripe.</p>
+                    </>
+                  )}
+                  <label htmlFor="c-days">How long it stays connected</label>
+                  <select id="c-days" className="text-input" value={form.days} onChange={(e) => setForm({ ...form, days: e.target.value })}>
+                    <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days (the longest)</option>
+                  </select>
+                  <p className="fineprint">It will hold: {scopes.length ? scopes.map(describeScope).join("; ") : "nothing yet"}. You can pause or disconnect it any time under Account, Connected apps.</p>
                   <div className="row-actions">
                     <button type="submit" className="btn primary">Allow with passkey</button>
                     <button type="button" className="btn secondary" onClick={() => void deny()}>Deny</button>

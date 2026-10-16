@@ -50,41 +50,45 @@ test("demo: registered-or-not comes from the registry lookup, no made-up prices,
   // Registered everywhere (the fake registries in e2e/serve-dist.mjs): every chip is taken, with no "Simulated" tag.
   await page.fill("#name-input", "google");
   await expect(page.locator(".chip.taken")).toHaveCount(6, { timeout: 15000 });
-  await expect(page.locator(".chip.taken").first()).toHaveText(/Taken\. Sleeping on the far bank\./);
-  expect(await page.locator(".chip.taken").first().getAttribute("aria-label")).toMatch(/is taken, already registered$/);
+  await expect(page.locator(".chip.taken").first()).toHaveText(/Taken · already registered/);
+  expect(await page.locator(".chip.taken").first().getAttribute("aria-label")).toMatch(/: taken$/);
   await expect(page.locator("button.chip")).toHaveCount(0);
   await noPriceOrSimulation();
   // A registry that cannot be asked: "Couldn't check right now", and nothing to hatch.
   await page.fill("#name-input", "nocheckfern");
   await expect(page.locator(".chip.unknown")).toHaveCount(6, { timeout: 15000 });
-  await expect(page.locator(".chip.unknown").first()).toHaveText(/Couldn't check right now\./);
+  await expect(page.locator(".chip.unknown").first()).toHaveText(/Couldn't check right now/);
   await expect(page.locator("button.chip")).toHaveCount(0);
-  expect(await violations(page, ".chips-list")).toEqual([]);
+  expect(await violations(page, ".shop-results")).toEqual([]);
   // Unregistered names: hatchable, with no dollar figure.
   await page.fill("#name-input", "emberwick");
   await expect(page.locator("button.chip").first()).toBeVisible({ timeout: 15000 });
-  for (const chip of await page.locator("button.chip").all()) await expect(chip).toContainText("Looks unregistered · price at launch");
-  await noPriceOrSimulation();
-  await expect(page.getByText("To check whether a name is taken, we ask the public registry. We don't log or sell your searches.")).toBeVisible();
+  for (const chip of await page.locator("button.chip").all()) await expect(chip).toContainText("Looks unregistered · reference price from 8 Oct 2026");
+  await expect(page.locator("button.chip").first()).toContainText("$");
+  await expect(page.locator("button.chip").first()).toContainText("Reference renewal");
   await expect(page.getByText(/stay in this browser/)).toHaveCount(0);
   await page.getByRole("button", { name: "The deal" }).click();
-  await expect(page.getByText("Whether a name is already registered comes from the public registry. Prices are set at launch.", { exact: false })).toBeVisible();
+  await expect(page.getByText("These sample prices use the 8 October 2026 reference tariff, not a current quote. A practice hatch never registers or reserves a domain.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "Got it" }).press("Enter");
   await page.locator("button.chip").first().press("Enter");
   const sheet = page.getByRole("region", { name: /^Hatch / });
   await expect(sheet.getByText("Practice hatch — this name isn't registered.")).toBeVisible();
-  await expect(sheet.getByText("Set at launch")).toBeVisible();
-  await expect(sheet.getByText("Nothing is bought or charged.", { exact: false })).toBeVisible();
-  expect(await sheet.textContent()).not.toMatch(/\$\d|simulated|sample price/i);
+  await expect(sheet.getByText("Reference price (8 Oct 2026)", {exact:true})).toBeVisible();
+  await expect(sheet.getByText("Preview only. A practice hatch does not purchase or reserve this name.", { exact: false })).toBeVisible();
+  expect(await sheet.textContent()).toMatch(/\$\d/);
   await expect(sheet.getByRole("button", { name: /^Pay/ })).toHaveCount(0);
   expect(await violations(page, ".panel.side")).toEqual([]);
   const domain = (await sheet.getByRole("heading", { level: 2 }).textContent())!.trim();
-  await sheet.getByRole("button", { name: "Hatch", exact: true }).press("Enter");
+  await sheet.getByRole("button", { name: "Preview creature", exact: true }).press("Enter");
   const card = page.getByRole("region", { name: `${domain} has hatched` });
   await expect(card).toBeVisible({ timeout: 120_000 });
   await expect(card.getByText("Practice hatch — this name isn't registered.")).toBeVisible();
   expect(await card.textContent()).not.toMatch(/\byou own\b|\breserved for you\b|\bis yours\b/i);
   expect(await violations(page, ".panel.side")).toEqual([]);
+  await expect(card.getByRole("button", { name: "Copy card link" })).toHaveCount(0);
+  const portrait = card.getByRole("link", { name: "Download portrait" });
+  await expect(portrait).toHaveAttribute("download", `${domain}-mosshatch.png`);
+  await expect(portrait).toHaveAttribute("href", /^data:image\/png/);
   // "Want it for real?" opens the waitlist with the hatched name filled in.
   await card.getByRole("button", { name: "Want it for real? Join the waitlist" }).press("Enter");
   const dialog = page.getByRole("dialog", { name: "Join the waitlist" });
@@ -93,12 +97,43 @@ test("demo: registered-or-not comes from the registry lookup, no made-up prices,
   expect(bad).toEqual([]);
 });
 
+test("phone: the name field is on the first screen, above the bottom bar, and the panel does not repeat the waitlist", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.waitForSelector("html[data-booted='1']");
+  await cancelDemo(page);
+  const input = page.locator("#name-input");
+  const search = page.getByRole("button", { name: "Search", exact: true });
+  const nav = page.getByRole("navigation", { name: "Views" });
+  await expect(page.getByRole("heading", { name: /Find your domain/ })).toBeVisible();
+  await expect(input).toBeVisible();
+  await expect(search).toBeVisible();
+  // The banner is the waitlist. The in-panel copy of that button, and the rest of the welcome, are off this screen.
+  await expect(page.getByRole("complementary", { name: "Preview notice" }).getByRole("link", { name: "Join the waitlist" })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Join the waitlist" })).toHaveCount(0);
+  await expect(page.getByRole("main").getByText("A home for your next idea")).toBeHidden();
+  await expect(page.getByRole("main").getByText("Clear renewal pricing")).toBeHidden();
+  const box = await input.boundingBox();
+  const navBox = await nav.boundingBox();
+  const searchBox = await search.boundingBox();
+  expect(box).toBeTruthy();
+  expect(navBox).toBeTruthy();
+  expect(searchBox).toBeTruthy();
+  // Fully on screen, and fully above the bar (8px of room, plus whatever the safe-area inset already reserved).
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(navBox!.y - 8);
+  expect(searchBox!.y + searchBox!.height).toBeLessThanOrEqual(navBox!.y - 8);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+});
+
 test("waitlist dialog: consent unticked and required, says it reserves nothing, submits, focus returns; axe clean", async ({ page }) => {
   const bad = watch(page);
   await page.goto("/");
   await page.waitForSelector("html[data-booted='1']");
   await cancelDemo(page);
-  const open = page.getByRole("link", { name: "Join the waitlist" });
+  const open = page.getByRole("main").getByRole("link", { name: "Join the waitlist" });
+  await expect(open).toHaveAttribute("href", "/waitlist");
+  await expect(page.getByRole("link", { name: "View reference prices" })).toHaveAttribute("href", "/fees.html#prices");
   await open.click();
   const dialog = page.locator("dialog.waitlist");
   await expect(page.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();
@@ -109,6 +144,7 @@ test("waitlist dialog: consent unticked and required, says it reserves nothing, 
   expect(await violations(page, "dialog.waitlist")).toEqual([]);
   const before = await (await page.request.get("/__e2e/waitlist")).json();
   await dialog.getByRole("textbox", { name: "Email" }).fill("fern@example.com");
+  await dialog.getByText("One optional question", { exact: true }).click();
   await dialog.getByRole("radio", { name: "Maybe" }).check();
   await dialog.getByRole("button", { name: "Join the waitlist" }).click();
   // Not sent without the consent tick (the browser's required check).
@@ -139,6 +175,7 @@ test("no JavaScript: the banner is on the home page and the static pages, and th
   await expect(page.getByRole("checkbox", { name: /Email me about Mosshatch/ })).not.toBeChecked();
   await page.getByRole("textbox", { name: "Email" }).fill("nojs@example.com");
   await page.getByLabel("The name you hatched (optional)").fill("moonfern.com");
+  await page.getByText("One optional question", { exact: true }).click();
   await page.getByRole("radio", { name: "Yes" }).check();
   await page.getByRole("checkbox", { name: /Email me about Mosshatch/ }).check();
   await page.getByRole("button", { name: "Join the waitlist" }).click();
@@ -154,7 +191,7 @@ test("no JavaScript: the banner is on the home page and the static pages, and th
 test("axe: the waitlist pages at desktop and phone sizes, and the banner with no WebGL", async ({ page, browser }) => {
   for (const size of [{ width: 1280, height: 720 }, { width: 375, height: 740 }]) {
     await page.setViewportSize(size);
-    for (const url of ["/waitlist", "/waitlist-sent", "/waitlist-privacy", "/fees.html"]) {
+    for (const url of ["/waitlist", "/waitlist-sent", "/waitlist-privacy", "/fees.html", "/how-it-works", "/assistants"]) {
       await page.goto(url);
       expect((await violations(page)).map((v) => `${url} ${v}`)).toEqual([]);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${url} no sideways scroll`).toBe(true);
@@ -169,18 +206,18 @@ test("axe: the waitlist pages at desktop and phone sizes, and the banner with no
   const fb = await ctx.newPage();
   const bad = watch(fb);
   await fb.goto("/");
-  await expect(fb.getByText("This browser can't light the lanterns.")).toBeVisible();
+  await expect(fb.getByText("You're using the lightweight view. Search and preview work without the animated grove.")).toBeVisible();
   await expect(fb.getByRole("complementary", { name: "Preview notice" })).toContainText(BANNER);
-  await fb.fill("#fb-name", "moonfern");
+  await fb.fill("#name-input", "moonfern");
   await fb.getByRole("button", { name: "Search" }).click();
   await expect(fb.getByText("moonfern.com")).toBeVisible();
   // moonfern.com is registered (the fake registries mirror the real ones); the rest of the list says what the registry said, with no price.
-  const rows = fb.locator(".static-prices[aria-label='Results'] li");
-  await expect(rows.first()).toContainText("moonfern.comTaken, already registered");
-  await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · price at launch");
-  expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/simulated|\$\d/));
+  const rows = fb.locator(".shop-results .chip");
+  await expect(rows.first()).toContainText("moonfern.comTaken · already registered");
+  await expect(rows.filter({ hasText: "moonfern.dev" })).toContainText("Looks unregistered · reference price from 8 Oct 2026");
+  expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/simulated/));
   expect(await violations(fb)).toEqual([]);
-  await fb.getByRole("link", { name: "Join the waitlist" }).click();
+  await fb.getByRole("main").getByRole("link", { name: "Join the waitlist" }).click();
   await expect(fb.getByRole("dialog", { name: "Join the waitlist" })).toBeVisible();
   expect(await violations(fb, "dialog.waitlist")).toEqual([]);
   expect(bad).toEqual([]);
@@ -208,7 +245,7 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
     expect(await meta('meta[name="description"]'), url).toBeTruthy();
     expect(await meta('meta[property="og:title"]'), url).toBeTruthy();
   }
-  for (const url of ["/device", "/checkout/return", "/invite", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
+  for (const url of ["/device", "/checkout/return", "/checkout/cancelled", "/invite", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
     expect((await request.get(url)).headers()["x-robots-tag"], url).toBe("noindex");
   }
   expect((await request.get("/")).headers()["x-robots-tag"]).toBeUndefined();
@@ -222,6 +259,8 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
   expect(locs.length).toBeGreaterThan(5);
   for (const l of locs) expect(l).toMatch(/^https:\/\/mosshatch\.com\//);
   expect(locs).toContain("https://mosshatch.com/waitlist");
+  expect(locs).toContain("https://mosshatch.com/how-it-works");
+  expect(locs).toContain("https://mosshatch.com/assistants");
   for (const l of locs) expect(l).not.toMatch(/device|checkout|invite|oauth|waitlist-sent|404|500|debug|api/);
   const robots = await (await request.get("/robots.txt")).text();
   expect(robots).toContain("Sitemap: https://mosshatch.com/sitemap.xml");

@@ -8,7 +8,7 @@ import { mintEmailActionToken } from "../auth/email-actions.ts";
 import { sendMail } from "../email.ts";
 import { buildMail } from "../mail/templates.ts";
 import { customerAddresses } from "../orders/support.ts";
-import { CHARGE_DAYS_BEFORE_EXPIRY, DAY_MS, UUID_RE, addDays, loadDomain, type DomainRow, type Q } from "./common.ts";
+import { CHARGE_DAYS_BEFORE_EXPIRY, DAY_MS, UUID_RE, addDays, loadDomain, type DomainRow, type Q, renewalYears } from "./common.ts";
 import { renewalQuote } from "./terms.ts";
 
 /**
@@ -145,7 +145,7 @@ async function mailAutoRenewOn(ctx: AppContext, c: PoolClient, d: DomainRow, man
   const to = await customerAddresses(c, d.userId);
   if (to.length === 0 || !d.expiresAt) return;
   const { token } = await mintEmailActionToken(ctx, c, { userId: d.userId, purpose: "auto_renew_off", eventId: d.id, ttlMs: 400 * DAY_MS });
-  const msg = buildMail("auto_renew_on", { fqdn: d.fqdn, ceilingMinor: ceiling.toString(), chargeAt: addDays(d.expiresAt, -CHARGE_DAYS_BEFORE_EXPIRY).toISOString(), offToken: token }, { to, dedupeKey: `auto_renew_on:${mandateId}`, userId: d.userId, origin: ctx.config.origin });
+  const msg = buildMail("auto_renew_on", { fqdn: d.fqdn, ceilingMinor: ceiling.toString(), chargeAt: addDays(d.expiresAt, -CHARGE_DAYS_BEFORE_EXPIRY).toISOString(), offToken: token, years: renewalYears(d.tld) }, { to, dedupeKey: `auto_renew_on:${mandateId}`, userId: d.userId, origin: ctx.config.origin });
   await sendMail(c, ctx.email, msg);
 }
 

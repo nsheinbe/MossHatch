@@ -131,7 +131,9 @@ export function buildScenery(shared: Shared, opts: { trees: number; grass: numbe
       b.add(lantern, xf([x, y - 0.2, z]), { color: TOKENS.lantern, emit: 0.55, sway: 0.6 });
       b.add(cap, xf([x, y + 0.15, z]), { color: "#2a2020", sway: 0.6 });
     }
-    meshes.push(new THREE.Mesh(b.build(), hatchMaterial(shared)));
+    const props = new THREE.Mesh(b.build(), hatchMaterial(shared));
+    props.name = "props";
+    meshes.push(props);
   }
 
   // Grass tufts: merged blades with tip sway.
@@ -145,7 +147,10 @@ export function buildScenery(shared: Shared, opts: { trees: number; grass: numbe
       b.add(blade, xf([x, groundHeight(x, z) + h * 0.5, z], [(rnd() - 0.5) * 0.4, rnd() * 3, (rnd() - 0.5) * 0.4], [1, h, 1]),
         { color: new THREE.Color("#3b6a3a").lerp(new THREE.Color(TOKENS.moss), rnd() * 0.45), jitter: 0.1, sway: "height", swayY0: groundHeight(x, z), swayH: h, swayAmp: 2.2 });
     }
-    meshes.push(new THREE.Mesh(b.build(), hatchMaterial(shared)));
+    // Named so the portrait shot can hide it: blades in front of a creature's feet were the first thing wrong with the first live card.
+    const grass = new THREE.Mesh(b.build(), hatchMaterial(shared));
+    grass.name = "grass";
+    meshes.push(grass);
   }
 
   for (const m of meshes) { m.frustumCulled = false; m.matrixAutoUpdate = false; m.updateMatrix(); }

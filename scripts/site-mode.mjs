@@ -15,7 +15,17 @@ export const HOME = {
   live: { title: "Mosshatch: every name hatches", description: "Find a domain name and watch it hatch. Every domain you own is a living creature in a grove at dusk." },
 };
 
-export const BANNER = `<aside id="demo-banner" class="demo-banner" aria-label="Preview notice"><p><strong>Mosshatch isn't open yet.</strong> This is a preview — nothing you hatch is registered or charged.</p><a class="demo-banner-cta" href="/waitlist" data-waitlist="banner">Join the waitlist</a></aside>`;
+const bannerHtml = (text) => `<aside id="demo-banner" class="demo-banner" aria-label="Preview notice"><p>${text}</p><a class="demo-banner-cta" href="/waitlist" data-waitlist="banner">Join the waitlist</a></aside>`;
+export const BANNER = bannerHtml("<strong>Mosshatch isn't open yet.</strong> This is a preview — nothing you hatch is registered or charged.");
+// The invite build serves one set of static pages to visitors and to invited accounts. The app hides the banner for an invited account
+// at run time, but the static pages (fees, legal, waitlist, errors) run no script, so their banner has to be true for both readers.
+export const INVITE_BANNER = bannerHtml("<strong>Mosshatch is invite-only for now.</strong> Unless you have been invited, nothing you hatch is registered or charged.");
+
+/** Which banner the static pages carry: the demo one, the invite one (VITE_SITE_MODE=invite with the API on), or none (live). */
+export function bannerKind(env = process.env) {
+  if (siteMode(env) === "live") return "none";
+  return env.VITE_SITE_MODE === "invite" && env.VITE_API_ENABLED === "1" ? "invite" : "demo";
+}
 
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
@@ -35,21 +45,22 @@ export function shareTags({ title, description, url }) {
 }
 
 /** Mark the page as demo and put the banner first in <body> (after a skip link when there is one). Idempotent. */
-export function injectBanner(html) {
+export function injectBanner(html, kind = "demo") {
   if (html.includes('id="demo-banner"')) return html;
+  const banner = kind === "invite" ? INVITE_BANNER : BANNER;
   let out = html.replace(/<html lang="en"(?![^>]*data-site)/, '<html lang="en" data-site="demo"');
   const skip = /(<body>\s*<a class="skip"[^>]*>[^<]*<\/a>)/;
-  out = skip.test(out) ? out.replace(skip, `$1\n${BANNER}`) : out.replace(/<body>/, `<body>\n${BANNER}`);
+  out = skip.test(out) ? out.replace(skip, `$1\n${banner}`) : out.replace(/<body>/, `<body>\n${banner}`);
   return out;
 }
 
-/** index.html: title, description, canonical and share tags for the mode, and in demo mode the banner. */
-export function transformHome(html, mode) {
+/** index.html: title, description, canonical and share tags for the mode, and the banner of `kind` (bannerKind) unless it is none. */
+export function transformHome(html, mode, kind = mode === "demo" ? "demo" : "none") {
   const m = HOME[mode];
   let out = html
     .replace(/<title>[^<]*<\/title>/, `<title>${esc(m.title)}</title>`)
     .replace(/<meta name="description" content="[^"]*" \/>/, `<meta name="description" content="${esc(m.description)}" />\n  <link rel="canonical" href="${WEB_ORIGIN}/" />\n  ${shareTags({ title: m.title, description: m.description, url: WEB_ORIGIN + "/" }).replace(/\n/g, "\n  ")}`);
-  if (mode === "demo") out = injectBanner(out);
+  if (kind !== "none") out = injectBanner(out, kind);
   return out;
 }
 
@@ -59,8 +70,8 @@ export const HAND_WRITTEN = {
   "commitments.html": { title: "Our commitments · Mosshatch", description: "What Mosshatch promises about your searches, who sees them, how availability is checked, and money.", path: "/commitments" },
 };
 
-/** Any other page: share tags when it has a canonical URL (indexable pages only), and in demo mode the banner. */
-export function transformPage(html, mode, rel = "") {
+/** Any other page: share tags when it has a canonical URL (indexable pages only), and the banner of `kind` unless it is none. */
+export function transformPage(html, mode, rel = "", kind = mode === "demo" ? "demo" : "none") {
   let out = html;
   const hw = HAND_WRITTEN[rel];
   if (hw && !out.includes('rel="canonical"')) {
@@ -72,6 +83,6 @@ export function transformPage(html, mode, rel = "") {
     const description = unesc(/<meta name="description" content="([^"]*)" \/>/.exec(out)?.[1] ?? "");
     out = out.replace(canonical[0], `${canonical[0]}\n${shareTags({ title, description, url: canonical[1] })}`);
   }
-  if (mode === "demo") out = injectBanner(out);
+  if (kind !== "none") out = injectBanner(out, kind);
   return out;
 }

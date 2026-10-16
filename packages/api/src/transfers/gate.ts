@@ -84,7 +84,8 @@ export async function gateHandler(req: HandlerReq): Promise<HandlerResult> {
       locked: d.locked, unlocked_at: iso(sec?.unlocked_at),
       code: {
         issued_at: iso(sec?.code_issued_at), replace_at: iso(sec?.code_rerandomize_at), outstanding: codeOut, shown_once: true,
-        by_support: d.tld === "io",
+        // OpenSRS and the mock answer `.io` code requests with code_by_support; Openprovider issues them through its API.
+        by_support: d.tld === "io" && d.registrar !== "openprovider",
         request: codeTicket ? { opened_at: iso(codeTicket.opened_at), due_at: iso(codeTicket.sla_due_at), message: "Codes for this extension are set by our registrar's support team. We send the code within 5 days." } : null,
       },
       transferable: blocks.length === 0 && !d.released_at, transferable_from: until, blocks,

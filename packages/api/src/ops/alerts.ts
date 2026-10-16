@@ -10,6 +10,8 @@ export interface AlertInput {
   subject?: string;
   /** Ids, counts and enumerated codes only. Never values, addresses or tokens. */
   detail?: Record<string, unknown>;
+  /** Email the operator although this is not a page: a condition a person must act on that must not engage auto-safe. */
+  email?: boolean;
 }
 type Q = Pick<Pool | PoolClient, "query">;
 
@@ -35,8 +37,8 @@ export async function raiseAlert(ctx: Pick<AppContext, "services">, q: Q, a: Ale
     [a.severity, a.kind, a.subject ?? null, scrub(a.detail)],
   );
   const id = (r.rows[0]?.id as string | undefined) ?? null;
-  if (id && a.severity === "page") {
-    try { await optSvc(ctx, "alertNotifier")?.notify({ id, severity: a.severity, kind: a.kind, subject: a.subject ?? null }); } catch { /* the row is the record */ }
+  if (id && (a.severity === "page" || a.email)) {
+    try { await optSvc(ctx, "alertNotifier")?.notify({ id, severity: a.severity, kind: a.kind, subject: a.subject ?? null, email: a.email }); } catch { /* the row is the record */ }
   }
   return { id, created: id !== null };
 }

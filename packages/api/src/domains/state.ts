@@ -57,6 +57,7 @@ export function domainFacts(i: StateInputs): DomainFacts {
     attentionReason: attention,
     dnsWriteInFlight: i.dnsWriteInFlight,
     ageDays,
+    autoRenew: d.autoRenew,
   };
 }
 
