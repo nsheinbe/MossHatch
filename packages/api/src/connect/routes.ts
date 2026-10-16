@@ -2,7 +2,6 @@ import { z } from "zod";
 import { withNoUser, withUser } from "@mosshatch/db";
 import type { DnsRecord } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
-import type { AppContext } from "../ports.ts";
 import { HttpError, json, type Router } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
@@ -13,6 +12,10 @@ import { diffZones, sensitiveOf, writeZoneLocked, type ZoneWriter } from "../dom
 import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
 import { markExecuted, requireAction } from "../stepup/gate.ts";
 import { PRESETS, presetById, presetView } from "./presets.ts";
+import { flagOn } from "./flags.ts";
+import { discoverJob, registerDiscoveryRoutes } from "./discover.ts";
+import { getJobDef, registerJob } from "../jobs/registry.ts";
+import { registerRecurringJob } from "../jobs/engine.ts";
 import {
   buildConnectPlan, desiredFromPlan, planHash, planHashHex,
   type ConnectPlan, type ConnectRecordIn, type ConnectRequest, type ConnectSource,
@@ -56,11 +59,6 @@ interface Intent {
   alias: boolean;
   warnings: { code: string; message: string }[];
   txtMax?: number;
-}
-
-export async function flagOn(ctx: AppContext, name: string): Promise<boolean> {
-  const r = await ctx.runtime.query("select value from flags where name = $1", [name]);
-  return r.rows[0]?.value === true;
 }
 
 function parse<T extends z.ZodType>(schema: T, body: unknown): z.infer<T> {
@@ -254,6 +252,9 @@ async function approve(req: HandlerReq): Promise<HandlerResult> {
 
 export function registerConnectRoutes(router: Router): Router {
   registerActionSpec(connectApplySpec);
+  if (!getJobDef("connect.discover")) registerJob({ kind: "connect.discover", priority: 1, maxRuntimeSec: 60, handler: discoverJob });
+  registerRecurringJob({ kind: "connect.discover", everySec: 3600 });
+  registerDiscoveryRoutes(router);
   router.add(
     { method: "GET", path: "/api/v1/connect/capabilities", principals: ["anonymous", "session"], handler: capabilities, tag: "connect" },
     { method: "GET", path: "/api/v1/connect/presets", principals: ["anonymous", "session"], handler: listPresets, tag: "connect" },

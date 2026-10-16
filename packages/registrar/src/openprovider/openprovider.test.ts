@@ -280,6 +280,22 @@ describe("Openprovider DNS writes", () => {
     expect(shortPut).toEqual([{ add: [{ name: "", type: "TXT", value: "hi", ttl: 900 }] }]);
     await expect(rig([]).adapter.replaceZone(zone, [{ type: "TXT", name: "", value: "x".repeat(4097) }])).rejects.toMatchObject({ code: "txt_too_long" });
   });
+
+  it("addRecords adds a TXT and does not remove the A that was already there", async () => {
+    const zone = "abc.com";
+    const dom = ok({ id: 7, domain: { name: "abc", extension: "com" }, status: "ACT", name_servers: [{ name: "ns1.openprovider.nl" }, { name: "ns2.openprovider.be" }, { name: "ns3.openprovider.eu" }] });
+    const recs = (list: unknown[]) => ok({ results: list, total: list.length });
+    const soa = { name: zone, type: "SOA", value: "ns1.openprovider.nl dns@openprovider.eu 1 2 3 4 5", ttl: 86400 };
+    const a = { name: zone, type: "A", value: "192.0.2.1", ttl: 900 };
+    const txt = { name: "_domainconnect", type: "TXT", value: "dc.example.test", ttl: 900 };
+    const r = rig([listHit(7), dom, recs([soa, a]), ok({ success: true }), dom, recs([soa, a, txt])]);
+    const out = await r.adapter.addRecords!(zone, [{ type: "TXT", name: "_domainconnect", value: "dc.example.test" }]);
+    expect(out.records).toHaveLength(2);
+    expect(out.records).toContainEqual({ type: "A", name: "", value: "192.0.2.1" });
+    expect(out.records).toContainEqual({ type: "TXT", name: "_domainconnect", value: "dc.example.test" });
+    const puts = r.transport.sent.filter((x) => x.method === "PUT").map((x) => JSON.parse(x.body!).records);
+    expect(puts).toEqual([{ add: [{ name: "_domainconnect", type: "TXT", value: "dc.example.test", ttl: 900 }] }]);
+  });
 });
 
 describe("registrar selection (MH_REGISTRAR_PROVIDER)", () => {
