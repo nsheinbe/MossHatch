@@ -22,7 +22,7 @@ const PLAN_TTL_MS = 60 * 60_000;
 export type TxtLookup = (name: string) => Promise<string[]>;
 
 interface TplRecord { groupId?: string; type?: string; host?: string; pointsTo?: string; data?: string; priority?: string | number; spfRules?: string }
-interface Tpl {
+export interface Tpl {
   providerId?: string; providerName?: string; serviceId?: string; version?: number;
   syncPubKeyDomain?: string; syncRedirectDomain?: string; records?: TplRecord[];
 }
@@ -140,7 +140,7 @@ async function check(ctx: AppContext, providerId: string, serviceId: string, raw
   return { ok: { template, params: parts.params, redirect, state: parts.params.get("state"), domain, plan, intent: { add: built.add, remove: [], replace_addresses: [], spf: built.spf, alias: built.alias, warnings: built.warnings } } };
 }
 
-function intentFrom(template: Tpl, params: URLSearchParams): { add: ConnectRecordIn[]; spf: { name: string; mechanisms: string[] }[]; alias: boolean; warnings: { code: string; message: string }[] } | null {
+export function intentFrom(template: Tpl, params: URLSearchParams): { add: ConnectRecordIn[]; spf: { name: string; mechanisms: string[] }[]; alias: boolean; warnings: { code: string; message: string }[] } | null {
   const groups = params.get("groupId");
   const wanted = groups ? new Set(groups.split(",").filter(Boolean)) : null;
   const add: ConnectRecordIn[] = [];
