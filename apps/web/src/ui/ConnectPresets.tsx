@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  ALIAS_DELEGATE, APPLIED_NOTE, CHANGED_NOTE, approveConnectPlan, applyConnectPlan, blockedCopy, createConnectPlan, explainConnect,
+  ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, approveConnectPlan, applyConnectPlan, blockedCopy, createConnectPlan, explainConnect,
   getCapabilities, getConnectPlan, listConnectPresets, planLines, presetsRequestsOn, presetsSectionOn, readPlanError, verifyNote,
   type ConnectCapabilities, type PresetInfo, type StoredPlan,
 } from "../lib/connect";
@@ -61,6 +61,11 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
   };
   const preview = async () => {
     if (!preset || !caps.apply) return;
+    const host = (input.host ?? "").trim();
+    if (preset.id === "cloudflare-pages" && (host === "" || host === "@")) {
+      setPlanned(null); setApplied(false); setReq(null); setNote(caps.delegate ? ALIAS_DELEGATE : ALIAS_STAYS);
+      return;
+    }
     setBusy(true); setNote(null); setApplied(false); setReq(null); setPlanned(null);
     try {
       setPlanned(await createConnectPlan(d.fqdn, { source: "preset", source_id: preset.id, source_version: preset.version, input }));
@@ -90,6 +95,19 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
     <section className="recipe-card" aria-labelledby="connect-presets-h">
       <h4 id="connect-presets-h">DNS presets</h4>
       <p>These records are written here, on the nameservers this name already uses. You see every add and every remove before anything is written.</p>
+      {caps.delegate && (
+        <div className="plan-box">
+          <h5>When a record here cannot serve the apex</h5>
+          <p>Cloudflare Pages on the apex needs their nameservers. A subdomain can be a CNAME to the project pages.dev name. Choosing the apex here does not change DNS records.</p>
+          <p>Railway does not publish an apex address. A www CNAME and their verification TXT can be added as a preset. The apex needs their nameservers, or a host that flattens CNAMEs.</p>
+          <p>If Wix told you to change nameservers, use the form on the DNS tab. If Wix showed you an A address and a CNAME, paste those. Nothing is filled in for you.</p>
+          <p className="fineprint">If the name is signed and their DNS is not, remove DNSSEC first. That form does not remove it for you.</p>
+          <div className="row-actions">
+            <button type="button" className="btn secondary" onClick={() => { setPlanned(null); setApplied(false); setNote(ALIAS_DELEGATE); }}>Cloudflare Pages apex</button>
+            <button type="button" className="btn secondary" onClick={() => set({ domainTab: "dns" })}>Open the nameserver form</button>
+          </div>
+        </div>
+      )}
       {!caps.presets && <p>Presets are turned off.</p>}
       {caps.presets && !caps.apply && <p>Connect plans are turned off.</p>}
       {preset && (
