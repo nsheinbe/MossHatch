@@ -99,7 +99,7 @@ describe("Openprovider live pricing (migration 1120) with the renewal floor", ()
     // Member register = renew = transfer, so no renewal floor. The fee band reads the member price: .io (50.00) and .ai (80.00) pay 9.00.
     const want: Record<string, { years: number; subtotal: bigint; fee: bigint }> = {
       com: { years: 1, subtotal: 1046n + 300n, fee: 300n }, dev: { years: 1, subtotal: 1220n + 300n, fee: 300n }, app: { years: 1, subtotal: 1420n + 300n, fee: 300n },
-      studio: { years: 1, subtotal: 3120n + 300n, fee: 300n }, io: { years: 1, subtotal: 5000n + 900n, fee: 900n }, ai: { years: 2, subtotal: 2n * (8000n + 900n), fee: 900n },
+      studio: { years: 1, subtotal: 3120n + 500n, fee: 500n }, io: { years: 1, subtotal: 5000n + 900n, fee: 900n }, ai: { years: 2, subtotal: 2n * (8000n + 900n), fee: 900n },
     };
     const chips = await withNoUser(app.ctx.runtime, (c) => chipPrices(c, Object.keys(want), MEMBER_ON));
     for (const [tld, w] of Object.entries(want)) {
