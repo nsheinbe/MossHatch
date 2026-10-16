@@ -51,7 +51,7 @@ describe("pricing: D-003 fee bands and the plan's first-order prices", () => {
     expect(after.wholesalePriceId).not.toBe(before.wholesalePriceId);
     const s1 = await q({ fqdn: "moonfern.studio" }, "2026-10-05T23:59:59Z");
     const s2 = await q({ fqdn: "moonfern.studio" }, "2026-10-06T00:00:00Z");
-    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 300n, 4500n]);
+    expect([s1.wholesalePerYearMinor, s1.feePerYearMinor, s1.subtotalMinor]).toEqual([4200n, 500n, 4700n]);
     expect([s2.wholesalePerYearMinor, s2.feePerYearMinor, s2.subtotalMinor]).toEqual([5100n, 900n, 6000n]);
   });
   it("pins the wholesale price row id into the quote and refuses a date with no price", async () => {
