@@ -75,6 +75,8 @@ describe("DC-12: the panel does not call a name visible early", () => {
     expect(section).toContain("caps.verify");
     expect(section).toContain("verifyNote(verifyState)");
     expect(section).toContain("caps.delegate");
+    expect(section).toContain("caps.ai");
+    expect(section).toContain("proposeConnect");
     expect(section).toContain('preset.id === "cloudflare-pages"');
     const apex = section.slice(section.indexOf('preset.id === "cloudflare-pages"'), section.indexOf("setBusy(true)"));
     expect(apex).not.toContain("createConnectPlan");
