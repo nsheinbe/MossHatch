@@ -12,6 +12,7 @@ import { mapRegistrarError, normalizeFqdn, notFound, ownedDomain, registrarOf, u
 import { diffZones, sensitiveOf, writeZoneLocked, type ZoneWriter } from "../domain-mgmt/dns.ts";
 import { registerActionSpec, type ActionSpec } from "../stepup/specs.ts";
 import { markExecuted, requireAction } from "../stepup/gate.ts";
+import { PRESETS, presetById, presetView } from "./presets.ts";
 import {
   buildConnectPlan, desiredFromPlan, planHash, planHashHex,
   type ConnectPlan, type ConnectRecordIn, type ConnectRequest, type ConnectSource,
@@ -43,6 +44,7 @@ const PlanBody = z.object({
   replace_addresses: z.array(z.string().trim().max(253)).max(20).optional(),
   spf: z.array(z.object({ name: z.string().trim().max(253), mechanisms: z.array(z.string().trim().min(1).max(200)).max(20) }).strict()).max(5).optional(),
   alias: z.boolean().optional(),
+  input: z.record(z.string().max(40), z.string().max(500)).optional(),
 }).strict();
 const ApplyBody = z.object({ plan_hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 
@@ -87,22 +89,39 @@ async function capabilities(req: HandlerReq): Promise<HandlerResult> {
   });
 }
 
+async function listPresets(req: HandlerReq): Promise<HandlerResult> {
+  if (!(await flagOn(req.ctx, "connect.presets"))) throw new HttpError(404, "not_found");
+  return json({ presets: PRESETS.map(presetView) });
+}
+
 async function createPlan(req: HandlerReq): Promise<HandlerResult> {
   const { ctx } = req;
   if (!(await flagOn(ctx, "connect.apply"))) throw new HttpError(404, "not_found");
   const userId = userIdOf(req);
   const body = parse(PlanBody, req.body);
-  if (body.source !== "pasted") throw new HttpError(404, "not_found");
+  if (body.source !== "pasted" && body.source !== "preset") throw new HttpError(404, "not_found");
+  if (body.source === "preset" && !(await flagOn(ctx, "connect.presets"))) throw new HttpError(404, "not_found");
   const rl = await withNoUser(ctx.runtime, (c) => hit(ctx, c, `connect:plan:${userId}`, { bucket: "connect.plan", max: 30, windowSeconds: 3600 }));
   if (!rl.allowed) throw new HttpError(429, "rate_limited", "rate_limited", { "Retry-After": String(rl.retryAfterSeconds) });
-  const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
-  let zone;
-  try { zone = await registrarOf(ctx).getDns(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); }
-  const intent: Intent = {
+  let source: ConnectSource = "pasted";
+  let sourceId = body.source_id ?? "pasted";
+  let version = body.source_version ?? 1;
+  let intent: Intent = {
     add: body.records ?? [], remove: body.remove ?? [], replace_addresses: body.replace_addresses ?? [],
     spf: body.spf ?? [], alias: body.alias ?? false, warnings: [],
   };
-  const plan = buildConnectPlan(requestOf(d, "pasted", body.source_id ?? "pasted", body.source_version ?? 1, intent, zone.hosted, zone.records));
+  if (body.source === "preset") {
+    const preset = presetById(body.source_id ?? "");
+    if (!preset) throw new HttpError(404, "not_found");
+    const draft = preset.build(body.input ?? {});
+    if (draft.blocked) throw new HttpError(422, draft.blocked.code, draft.blocked.message);
+    source = "preset"; sourceId = preset.id; version = preset.version;
+    intent = { add: draft.add, remove: [], replace_addresses: draft.replace_addresses ?? [], spf: draft.spf ?? [], alias: draft.alias ?? false, warnings: draft.warnings };
+  }
+  const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, req.params.fqdn ?? ""));
+  let zone;
+  try { zone = await registrarOf(ctx).getDns(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); }
+  const plan = buildConnectPlan(requestOf(d, source, sourceId, version, intent, zone.hosted, zone.records));
   if (plan.blocked) throw new HttpError(422, plan.blocked.code, plan.blocked.message, undefined, { plan: publicPlan(plan) });
   const hash = planHash(plan);
   const now = ctx.clock.now();
@@ -237,6 +256,7 @@ export function registerConnectRoutes(router: Router): Router {
   registerActionSpec(connectApplySpec);
   router.add(
     { method: "GET", path: "/api/v1/connect/capabilities", principals: ["anonymous", "session"], handler: capabilities, tag: "connect" },
+    { method: "GET", path: "/api/v1/connect/presets", principals: ["anonymous", "session"], handler: listPresets, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans", principals: ["session"], handler: createPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans/:id/apply", principals: ["session"], handler: applyPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/connect/plans/:id/approve", principals: ["session"], stepUp: "connect.apply", handler: approve, tag: "connect" },
