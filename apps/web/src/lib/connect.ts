@@ -34,6 +34,33 @@ export const applyConnectPlan = (fqdn: string, id: string, planHash: string) =>
 export const approveConnectPlan = (id: string, actionId: string) =>
   api<{ plan_id: string; state: string }>("POST", `/api/v1/connect/plans/${enc(id)}/approve`, {}, gated(actionId));
 
+export interface DomainConnectPreview {
+  provider_name?: string;
+  fqdn?: string;
+  redirect?: string;
+  plan?: ConnectPlanView;
+}
+export interface DomainConnectConfirm { redirect?: string; plan_id?: string; state?: string }
+
+/** The consent page lives at `/domainconnect/consent/:provider/:service`. Anything else is not that page. */
+export function consentPath(pathname: string): { providerId: string; serviceId: string } | null {
+  const m = /^\/domainconnect\/consent\/([^/]+)\/([^/]+)\/?$/.exec(pathname);
+  if (!m) return null;
+  try {
+    const providerId = decodeURIComponent(m[1]!);
+    const serviceId = decodeURIComponent(m[2]!);
+    if (!providerId || !serviceId || providerId.includes("/") || serviceId.includes("/")) return null;
+    return { providerId, serviceId };
+  } catch { return null; }
+}
+
+export const previewDomainConnect = (body: { query: string; provider_id: string; service_id: string }) =>
+  api<DomainConnectPreview>("POST", "/api/v1/connect/domainconnect/preview", body);
+export const confirmDomainConnect = (
+  body: { query: string; provider_id: string; service_id: string; decision: "confirm" | "cancel" },
+  actionId?: string,
+) => api<DomainConnectConfirm>("POST", "/api/v1/connect/domainconnect/confirm", body, actionId ? gated(actionId) : {});
+
 /** The presets section is absent unless the UI flag is on. A missing read counts as off. */
 export const presetsSectionOn = (caps: ConnectCapabilities | null | undefined): boolean => caps?.ui === true;
 /** Preset list and plan posts happen only from a visible section whose presets flag is on. */

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withNoUser, withUser } from "@mosshatch/db";
 import type { DnsRecord } from "@mosshatch/registrar/port";
 import { zoneHash } from "@mosshatch/registrar/dns";
+import type { AppContext } from "../ports.ts";
 import { HttpError, json, type Router } from "../http/router.ts";
 import type { HandlerReq, HandlerResult } from "../http/types.ts";
 import { appendAudit } from "../audit.ts";
@@ -14,6 +15,7 @@ import { markExecuted, requireAction } from "../stepup/gate.ts";
 import { PRESETS, presetById, presetView } from "./presets.ts";
 import { flagOn } from "./flags.ts";
 import { discoverJob, registerDiscoveryRoutes } from "./discover.ts";
+import { syncApplyGet, syncConfirm, syncPreview } from "./sync.ts";
 import { getJobDef, registerJob } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import {
@@ -156,19 +158,21 @@ const connectWriter = (userId: string, source: string): ZoneWriter => ({
 });
 
 async function applyPlan(req: HandlerReq): Promise<HandlerResult> {
-  const { ctx } = req;
-  if (!(await flagOn(ctx, "connect.apply"))) throw new HttpError(404, "not_found");
-  const userId = userIdOf(req);
-  const id = req.params.id ?? "";
-  if (!UUID.test(id)) throw notFound();
   const body = parse(ApplyBody, req.body ?? {});
+  return applyStoredPlan(req.ctx, userIdOf(req), req.params.fqdn ?? "", req.params.id ?? "", body.plan_hash);
+}
+
+/** Recompute a stored plan and write it. A sensitive plan that is not approved throws 403 and writes nothing. */
+export async function applyStoredPlan(ctx: AppContext, userId: string, fqdn: string, id: string, planHash: string): Promise<HandlerResult> {
+  if (!(await flagOn(ctx, "connect.apply"))) throw new HttpError(404, "not_found");
+  if (!UUID.test(id)) throw notFound();
   const row = await withUser(ctx.runtime, userId, async (c) => (await c.query(
     `select p.*, d.fqdn_ascii from connect_plans p join domains d on d.id = p.domain_id
       where p.id = $1 and p.user_id = $2 and d.user_id = $2 and d.released_at is null`, [id, userId])).rows[0]);
-  if (!row || normalizeFqdn(req.params.fqdn ?? "") !== row.fqdn_ascii) throw notFound();
+  if (!row || normalizeFqdn(fqdn) !== row.fqdn_ascii) throw notFound();
   if (new Date(row.expires_at) <= ctx.clock.now() || (row.state !== "planned" && row.state !== "approved")) throw new HttpError(409, "plan_used");
   const stored = Buffer.from(row.plan_hash) as Buffer;
-  if (!safeEqual(stored, Buffer.from(body.plan_hash, "hex"))) throw new HttpError(409, "plan_changed");
+  if (!safeEqual(stored, Buffer.from(planHash, "hex"))) throw new HttpError(409, "plan_changed");
   const d = await withUser(ctx.runtime, userId, (c) => ownedDomain(c, userId, row.fqdn_ascii));
   let zone;
   try { zone = await registrarOf(ctx).getDns(d.fqdn_ascii); } catch (e) { throw mapRegistrarError(e); }
@@ -261,6 +265,9 @@ export function registerConnectRoutes(router: Router): Router {
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans", principals: ["session"], handler: createPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans/:id/apply", principals: ["session"], handler: applyPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/connect/plans/:id/approve", principals: ["session"], stepUp: "connect.apply", handler: approve, tag: "connect" },
+    { method: "GET", path: "/v2/domainTemplates/providers/:providerId/services/:serviceId/apply", principals: ["anonymous", "session"], handler: syncApplyGet, tag: "connect" },
+    { method: "POST", path: "/api/v1/connect/domainconnect/preview", principals: ["anonymous", "session"], handler: syncPreview, tag: "connect" },
+    { method: "POST", path: "/api/v1/connect/domainconnect/confirm", principals: ["anonymous", "session"], body: "form", handler: syncConfirm, tag: "connect" },
   );
   return router;
 }

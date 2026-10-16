@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api";
 import {
-  ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, blockedCopy, explainConnect, planLines, presetsRequestsOn, presetsSectionOn, readPlanError,
+  ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, blockedCopy, consentPath, explainConnect, planLines, presetsRequestsOn, presetsSectionOn, readPlanError,
   type ConnectCapabilities, type ConnectPlanView,
 } from "./connect";
 
@@ -53,5 +53,14 @@ describe("DC-06: the presets section stays quiet until its flags are on", () => 
     expect(blockedCopy("wildcard_refused", "A wildcard host is not added.", false)).toBe("A wildcard host is not added.");
     const blocked = new ApiError(422, "needs_alias", undefined, { plan: { ...plan([]), blocked: { code: "needs_alias", message: "alias" } } });
     expect(readPlanError(blocked)?.kind).toBe("blocked");
+  });
+});
+
+describe("DC-08: the consent page is only the two-segment path", () => {
+  it("reads the provider and service from the path and ignores other routes", () => {
+    expect(consentPath("/domainconnect/consent/example.com/site")).toEqual({ providerId: "example.com", serviceId: "site" });
+    expect(consentPath("/domainconnect/consent/example.com%2Fevil/site")).toBeNull();
+    expect(consentPath("/device")).toBeNull();
+    expect(consentPath("/domainconnect/consent/example.com")).toBeNull();
   });
 });
