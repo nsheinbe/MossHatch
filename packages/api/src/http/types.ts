@@ -19,13 +19,15 @@ export type ActionType =
   | "agent.purchase.approve" | "agent.token.create" | "agent.token.widen" | "dns.sensitive.approve" | "device.approve"
   | "passkey.add" | "card.publish" | "mandate.sign"
   // Account closure and export (closure module, migration 1050).
-  | "account.close" | "account.export";
+  | "account.close" | "account.export"
+  | "connect.apply";
 
 export const ACTION_TYPES: readonly ActionType[] = [
   "secret.reveal", "domain.nameservers.change", "domain.unlock", "domain.transfer_out", "domain.contact.change",
   "agent.purchase.approve", "agent.token.create", "agent.token.widen", "dns.sensitive.approve", "device.approve",
   "passkey.add", "card.publish", "mandate.sign",
   "account.close", "account.export",
+  "connect.apply",
 ];
 
 export interface HandlerReq {

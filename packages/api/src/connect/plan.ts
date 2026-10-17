@@ -61,6 +61,14 @@ export interface ConnectRequest {
 const SUPPORTED = new Set<string>(DNS_RECORD_TYPES);
 const ALL_QUAL = /^(.*?)(\s[+\-~?]all)\s*$/i;
 
+const recKey = (r: DnsRecord) => `${r.type}|${r.name}|${r.value}|${r.priority ?? ""}|${r.weight ?? ""}|${r.port ?? ""}`;
+
+/** The zone `plan` asks for, applied to a live read. Used when the live hash still matches `zone_before`. */
+export function desiredFromPlan(live: readonly DnsRecord[], plan: ConnectPlan): DnsRecord[] {
+  const rm = new Set(plan.dns.remove.map(recKey));
+  return canonicalZone([...canonicalZone(live).filter((r) => !rm.has(recKey(r))), ...plan.dns.add]);
+}
+
 export const planHash = (p: ConnectPlan): Buffer => hashOf(p);
 export const planHashHex = (p: ConnectPlan): string => planHash(p).toString("hex");
 

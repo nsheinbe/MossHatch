@@ -42,6 +42,8 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/agent\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
   // Account closure and export (closure module): A's ready export.
   { match: /^\/api\/v1\/account\/exports\/:id/, param: "id", id: () => ids.accountExport! },
+  // Connect: approving a stored plan takes that plan's id. Domain routes above cover /domains/:fqdn/connect/*.
+  { match: /^\/api\/v1\/connect\/plans\/:id/, param: "id", id: () => ids.connectPlan! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
@@ -76,6 +78,9 @@ beforeAll(async () => {
   const oc = (await h.app.db.owner.query("insert into oauth_clients (client_id, registration, redirect_uris) values ('mhc_matrixclient00000000000000000000','dcr','{https://matrix.example/cb}') returning id")).rows[0].id;
   ids.oauthRequest = (await h.app.db.owner.query("insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, created_at, expires_at) values ($1,'https://matrix.example/cb',$2,$3, now(), now() + interval '1 hour') returning id", [oc, "a".repeat(43), a.userId])).rows[0].id;
   ids.accountExport = (await h.app.db.owner.query("insert into account_exports (user_id, state, ready_at, expires_at, storage_ref) values ($1,'ready', now(), now() + interval '7 days', 'db:x') returning id", [a.userId])).rows[0].id;
+  ids.connectPlan = (await h.app.db.owner.query(
+    "insert into connect_plans (user_id, domain_id, source, source_id, source_version, intent, plan, plan_hash, expires_at, created_at) values ($1,$2,'pasted','matrix',1,'{}'::jsonb,'{}'::jsonb,$3, now() + interval '1 hour', now()) returning id",
+    [a.userId, ids.domain, sha256("matrix-connect")])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;
