@@ -437,6 +437,7 @@ export class MockRegistrarPort implements RegistrarPort {
   async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
     this.calls.replaceZone++; this.tick();
     validateZone(records);
+    if (records.some((r) => r.type === "CAA")) throw rejected("unsupported_record_type", "record type is not supported");
     const dom = this.own(fqdn);
     if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
     const want = canonicalZone(records);

@@ -32,6 +32,7 @@ describe("DC-02: one connect plan", () => {
     expect(buildConnectPlan(base({ add: [{ type: "NS", name: "sub", value: "ns.example.net" }] })).blocked?.code).toBe("unsupported_type");
     expect(buildConnectPlan(base({ add: [{ type: "REDIR301", name: "", value: "https://example.net" }] })).blocked?.code).toBe("unsupported_type");
     expect(buildConnectPlan(base({ add: [txt("", "x".repeat(255))] })).blocked?.code).toBe("txt_too_long");
+    expect(buildConnectPlan(base({ add: [txt("", "x".repeat(300))], txtMax: 4096 })).blocked).toBeNull();
     for (const p of [buildConnectPlan(base({ hosted: false })), buildConnectPlan(base({ add: [{ type: "CNAME", name: "", value: "x.example.net" }] }))]) {
       expect(p.dns).toEqual({ add: [], remove: [] });
     }

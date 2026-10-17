@@ -84,9 +84,12 @@ export interface RegistrarCapabilities {
 
 export type Registrant = RegisterRequest["registrant"];
 
-export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT";
-export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "SRV", "TXT"];
-/** `name` is the label relative to the zone apex ("" is the apex). No TTL and no CAA/NS: OpenSRS SystemDNS has neither (docs/research/reg-opensrs.md 2). */
+export type DnsRecordType = "A" | "AAAA" | "CAA" | "CNAME" | "MX" | "SRV" | "TXT";
+export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CAA", "CNAME", "MX", "SRV", "TXT"];
+/**
+ * `name` is the label relative to the zone apex ("" is the apex). No TTL and no NS.
+ * CAA is stored only by Openprovider. OpenSRS SystemDNS and the mock still refuse it (docs/research/reg-opensrs.md 2).
+ */
 export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number }
 export interface DnsZone { hosted: boolean; records: DnsRecord[] }
 

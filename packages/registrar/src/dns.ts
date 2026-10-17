@@ -38,11 +38,16 @@ export function canonicalZone(records: readonly DnsRecord[]): DnsRecord[] {
 export function zoneHash(records: readonly DnsRecord[]): string {
   return createHash("sha256").update(canonicalZone(records).map(key).join("\n")).digest("hex");
 }
-/** Refuses what SystemDNS cannot hold (types other than the six, over-long TXT). Messages carry codes, never record values. */
-export function validateZone(records: readonly DnsRecord[]): void {
+/**
+ * Refuses types outside the port and over-long TXT. The default cap is SystemDNS's 254 characters.
+ * Openprovider passes a higher cap; a value over 255 is sent as quoted chunks by that adapter.
+ * Messages carry codes, never record values.
+ */
+export function validateZone(records: readonly DnsRecord[], opts?: { txtMax?: number }): void {
+  const txtMax = opts?.txtMax ?? TXT_MAX;
   for (const r of records) {
     if (!(DNS_RECORD_TYPES as readonly string[]).includes(r.type)) throw new RegistrarError("rejected", "record type is not supported", { retryable: false, outcomeUnknown: false, code: "unsupported_record_type" });
-    if (r.type === "TXT" && r.value.length > TXT_MAX) throw new RegistrarError("rejected", "TXT value is too long", { retryable: false, outcomeUnknown: false, code: "txt_too_long" });
+    if (r.type === "TXT" && r.value.length > txtMax) throw new RegistrarError("rejected", "TXT value is too long", { retryable: false, outcomeUnknown: false, code: "txt_too_long" });
     if (r.value.length === 0) throw new RegistrarError("rejected", "record value is empty", { retryable: false, outcomeUnknown: false, code: "empty_value" });
   }
 }

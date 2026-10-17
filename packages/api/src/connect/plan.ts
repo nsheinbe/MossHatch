@@ -200,7 +200,7 @@ export function buildConnectPlan(req: ConnectRequest): ConnectPlan {
   }
 
   desired = canonicalZone(desired);
-  try { checkShape(desired); validateZone(desired); }
+  try { checkShape(desired); validateZone(desired, { txtMax: cap }); }
   catch (e) {
     const b = shapeCode(e);
     if (b) return emptyPlan(req, live, b, warnings);
