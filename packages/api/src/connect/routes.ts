@@ -19,6 +19,7 @@ import { syncApplyGet, syncConfirm, syncPreview } from "./sync.ts";
 import { loadPinList } from "./pin-load.ts";
 import { PRODUCTION_PINS } from "./pins.ts";
 import { enqueueVerify, verifyJob } from "./verify.ts";
+import { proposePlan } from "./propose.ts";
 import { getJobDef, registerJob } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import {
@@ -281,6 +282,7 @@ export function registerConnectRoutes(router: Router): Router {
     { method: "GET", path: "/api/v1/connect/capabilities", principals: ["anonymous", "session"], handler: capabilities, tag: "connect" },
     { method: "GET", path: "/api/v1/connect/presets", principals: ["anonymous", "session"], handler: listPresets, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans", principals: ["session"], handler: createPlan, tag: "connect" },
+    { method: "POST", path: "/api/v1/domains/:fqdn/connect/propose", principals: ["session"], handler: proposePlan, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans/:id/apply", principals: ["session"], handler: applyPlan, tag: "connect" },
     { method: "GET", path: "/api/v1/domains/:fqdn/connect/plans/:id", principals: ["session"], handler: readPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/connect/plans/:id/approve", principals: ["session"], stepUp: "connect.apply", handler: approve, tag: "connect" },

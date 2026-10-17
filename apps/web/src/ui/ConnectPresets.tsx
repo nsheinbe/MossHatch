@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ALIAS_DELEGATE, ALIAS_STAYS, APPLIED_NOTE, CHANGED_NOTE, approveConnectPlan, applyConnectPlan, blockedCopy, createConnectPlan, explainConnect,
-  getCapabilities, getConnectPlan, listConnectPresets, planLines, presetsRequestsOn, presetsSectionOn, readPlanError, verifyNote,
+  getCapabilities, getConnectPlan, listConnectPresets, planLines, presetsRequestsOn, presetsSectionOn, proposeConnect, readPlanError, verifyNote,
   type ConnectCapabilities, type PresetInfo, type StoredPlan,
 } from "../lib/connect";
 import type { DomainDetail } from "../lib/domains";
@@ -25,6 +25,7 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
   const [busy, setBusy] = useState(false);
   const [req, setReq] = useState<StepUpRequest | null>(null);
   const [verifyState, setVerifyState] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -58,6 +59,18 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
     setApplied(false);
     setNote(CHANGED_NOTE);
     return true;
+  };
+  const ask = async () => {
+    if (!caps.ai || !prompt.trim()) return;
+    setBusy(true); setNote(null); setApplied(false); setReq(null); setPlanned(null);
+    try { setPlanned(await proposeConnect(d.fqdn, prompt)); }
+    catch (e) {
+      if (e instanceof ApiError) {
+        const fault = readPlanError(e);
+        if (fault?.kind === "blocked") { setNote(blockedCopy(fault.code, fault.message, caps.delegate)); return; }
+      }
+      setNote(explainConnect(e));
+    } finally { setBusy(false); }
   };
   const preview = async () => {
     if (!preset || !caps.apply) return;
@@ -95,6 +108,15 @@ export function ConnectPresets({ d }: { d: DomainDetail }) {
     <section className="recipe-card" aria-labelledby="connect-presets-h">
       <h4 id="connect-presets-h">DNS presets</h4>
       <p>These records are written here, on the nameservers this name already uses. You see every add and every remove before anything is written.</p>
+      {caps.ai && (
+        <form className="form-grid" onSubmit={(e) => { e.preventDefault(); void ask(); }} aria-label="Describe a DNS change">
+          <label htmlFor="connect-prompt">Describe the DNS change
+            <textarea id="connect-prompt" className="text-input" value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={8000} />
+          </label>
+          <p className="fineprint">A model proposes records. You still see every one, and nothing is written until you apply them.</p>
+          <div className="row-actions"><button type="submit" className="btn secondary" disabled={busy || !caps.apply || !prompt.trim()}>Preview the proposal</button></div>
+        </form>
+      )}
       {caps.delegate && (
         <div className="plan-box">
           <h5>When a record here cannot serve the apex</h5>

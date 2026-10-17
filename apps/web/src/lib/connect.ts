@@ -29,6 +29,7 @@ export const getCapabilities = () => api<ConnectCapabilities>("GET", "/api/v1/co
 export const listConnectPresets = () => api<{ presets: PresetInfo[] }>("GET", "/api/v1/connect/presets");
 export const createConnectPlan = (fqdn: string, body: { source: "preset"; source_id: string; source_version: number; input: Record<string, string> }) =>
   api<StoredPlan>("POST", `${D(fqdn)}/connect/plans`, body);
+export const proposeConnect = (fqdn: string, text: string) => api<StoredPlan>("POST", `${D(fqdn)}/connect/propose`, { text });
 export const applyConnectPlan = (fqdn: string, id: string, planHash: string) =>
   api<{ plan_id: string; state: string; changed: boolean }>("POST", `${D(fqdn)}/connect/plans/${enc(id)}/apply`, { plan_hash: planHash });
 export const getConnectPlan = (fqdn: string, id: string) =>
