@@ -49,6 +49,10 @@
     {
       "source": "/invite",
       "destination": "/"
+    },
+    {
+      "source": "/domainconnect/consent/:provider/:service",
+      "destination": "/"
     }
   ],
   "headers": [
@@ -131,6 +135,15 @@
     },
     {
       "source": "/invite",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    },
+    {
+      "source": "/domainconnect/consent/:provider/:service",
       "headers": [
         {
           "key": "X-Robots-Tag",
