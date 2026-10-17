@@ -224,6 +224,12 @@ export interface RegistrarPort {
    * The caller holds the per-domain lock and keeps the pre-write snapshot.
    */
   replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
+  /**
+   * Adds records and leaves every other record in place. The read-back requires each added record to be present,
+   * not that the zone equals only those records. Omitted when the provider has no add-only write. Callers must not
+   * fall back to `replaceZone`.
+   */
+  addRecords?(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
   getDs(fqdn: string): Promise<DsRecord[]>;
   addDs(fqdn: string, ds: DsRecord): Promise<void>;
   removeDs(fqdn: string, ds: DsRecord): Promise<void>;

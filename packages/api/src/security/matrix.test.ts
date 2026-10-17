@@ -8,7 +8,7 @@ import { sha256 } from "../util/bytes.ts";
 
 /**
  * ST-91, ST-92, ST-93, ST-67, ST-137, ST-16: the cross-tenant matrix and the principal walks, both GENERATED from the route
- * table. A route added without an entry in FIXTURES or NO_TENANT_INPUT fails the build.
+ * table. A route added without an entry in FIXTURES, TOKEN_ROUTES, or PUBLIC_PARAM_ROUTES fails the build.
  */
 
 let h: OrdersHarness;
@@ -47,6 +47,14 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
+/**
+ * Public Domain Connect paths. The parameter names a domain or a service provider, not a tenant row, and the
+ * caller may be anonymous, so these stay out of the session cross-tenant loop.
+ */
+const PUBLIC_PARAM_ROUTES = [
+  /^\/v2\/domainconnect\/:domain\/settings$/,
+  /^\/v2\/domainTemplates\/providers\/:providerId\/services\/:serviceId$/,
+];
 /** Routes with no path parameter: tenant comes from the credential only, so the check is "B never sees A's data". */
 const isParam = (r: Route) => r.path.includes(":");
 
@@ -101,7 +109,7 @@ async function callAs(who: Buyer | null, r: Route, path: string, extra: Record<s
 const shape = (res: { status: number; json: unknown; headers: Headers }) => JSON.stringify([res.status, res.json, res.headers.get("content-type"), res.headers.get("cache-control")]);
 
 async function runMatrix() {
-  const tenantRoutes = router.routes.filter((r) => isParam(r) && r.principals.includes("session") && !TOKEN_ROUTES.some((t) => t.test(r.path)));
+  const tenantRoutes = router.routes.filter((r) => isParam(r) && r.principals.includes("session") && !TOKEN_ROUTES.some((t) => t.test(r.path)) && !PUBLIC_PARAM_ROUTES.some((t) => t.test(r.path)));
   expect(tenantRoutes.length).toBeGreaterThan(0);
   for (const r of tenantRoutes) {
     const fx = FIXTURES.find((f) => f.match.test(r.path));
@@ -153,7 +161,7 @@ describe("ST-91: cross-tenant matrix, generated from the route table", () => {
   it("every route is either in the matrix, a token route, a webhook/cron route, or has no tenant input", () => {
     for (const r of router.routes) {
       if (!isParam(r)) continue;
-      const ok = FIXTURES.some((f) => f.match.test(r.path)) || TOKEN_ROUTES.some((t) => t.test(r.path));
+      const ok = FIXTURES.some((f) => f.match.test(r.path)) || TOKEN_ROUTES.some((t) => t.test(r.path)) || PUBLIC_PARAM_ROUTES.some((t) => t.test(r.path));
       expect(ok, `route ${r.method} ${r.path} has a path parameter but no matrix entry`).toBe(true);
     }
   });

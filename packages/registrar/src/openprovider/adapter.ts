@@ -635,6 +635,27 @@ export class OpenproviderAdapter implements RegistrarPort {
     return { hash: zoneHash(back.records), records: back.records };
   }
 
+  /** Add-only PUT. A missing record is added; nothing is removed, including types this port does not model. */
+  async addRecords(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+    const { d } = this.split(fqdn);
+    validateZone(records, { txtMax: 4096 });
+    for (const r of records) {
+      if (r.type === "SRV" && (r.priority === undefined || r.weight === undefined || r.port === undefined)) throw rejected("srv_fields_required");
+      if (r.type === "MX" && r.priority === undefined) throw rejected("mx_priority_required");
+      if (r.type === "CAA" && !/^\d+\s+(issue|issuewild|iodef)\s+".+"$/.test(r.value)) throw rejected("unsupported_record_type");
+    }
+    const cur = await this.zoneState(d);
+    if (!cur.hosted) throw rejected("dns_not_hosted");
+    const have = canonicalZone(cur.raw.flatMap((w) => { const r = this.fromWire(w, d); return r ? [r] : []; }));
+    const haveKeys = new Set(have.map((r) => zoneHash([r])));
+    const missing = canonicalZone(records).filter((r) => !haveKeys.has(zoneHash([r])));
+    if (missing.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { add: missing.map((r) => this.toWire(r) as unknown as Json) } } });
+    const back = await this.getDns(fqdn);
+    const backKeys = new Set(back.records.map((r) => zoneHash([r])));
+    if (!back.hosted || have.some((r) => !backKeys.has(zoneHash([r]))) || canonicalZone(records).some((r) => !backKeys.has(zoneHash([r])))) throw rejected("dns_readback_mismatch");
+    return { hash: zoneHash(back.records), records: back.records };
+  }
+
   // ---- DNSSEC -----------------------------------------------------------------------------------------------------
   /**
    * DS records as the registry derives them (SHA-256) from the DNSKEYs Openprovider holds for the domain. The key Openprovider's own DNS manages

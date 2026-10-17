@@ -11,6 +11,10 @@
       "destination": "/api/index"
     },
     {
+      "source": "/v2/:path*",
+      "destination": "/api/index"
+    },
+    {
       "source": "/mcp",
       "destination": "/api/index"
     },
