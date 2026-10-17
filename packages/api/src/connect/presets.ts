@@ -33,6 +33,9 @@ const WEBFLOW_DOC = "https://university.webflow.com/lesson/connect-a-custom-doma
 const RENDER_DOC = "https://render.com/docs/custom-domains";
 const GOOGLE_DOC = "https://support.google.com/a/answer/140034";
 const M365_DOC = "https://learn.microsoft.com/microsoft-365/admin/get-help-with-domains/create-dns-records-at-any-dns-hosting-provider";
+const PAGES_DOC = "https://developers.cloudflare.com/pages/configuration/custom-domains/";
+const RAILWAY_DOC = "https://docs.railway.com/integrations/api/manage-domains";
+const WIX_DOC = "https://support.wix.com/en/article/connecting-a-domain-to-wix-using-the-pointing-method";
 
 /** GitHub Pages apex addresses, from the doc above. They are the published anycast set, not a guess. */
 const GITHUB_A = ["185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153"];
@@ -147,6 +150,68 @@ export const PRESETS: readonly Preset[] = [
         ],
         spf: [{ name: "", mechanisms: ["include:spf.protection.outlook.com"] }],
         warnings: [doc(M365_DOC)],
+      };
+    },
+  },
+  {
+    id: "cloudflare-pages", version: 1, title: "Cloudflare Pages", doc: PAGES_DOC,
+    fields: [
+      { name: "project", label: "Pages project name", required: true, placeholder: "my-project" },
+      { name: "host", label: "Subdomain, or leave empty for the apex", required: false, placeholder: "www" },
+    ],
+    build(input) {
+      const project = (input.project ?? "").trim().toLowerCase();
+      const host = (input.host ?? "").trim().toLowerCase();
+      if (!project) return need("Pages project name");
+      if (wild(project) || wild(host)) return { add: [], warnings: [doc(PAGES_DOC)], blocked: { code: "wildcard_refused", message: "A wildcard host is not added." } };
+      if (!/^[a-z0-9-]+$/.test(project)) return { add: [], warnings: [], blocked: { code: "invalid_input", message: "The project name is not a single name." } };
+      // The apex cannot be a CNAME here. Cloudflare's own nameservers serve it. An empty host asks for that, and writes nothing.
+      if (host === "" || host === "@") return { add: [], alias: true, warnings: [doc(PAGES_DOC)] };
+      if (!/^[a-z0-9-]+$/.test(host)) return { add: [], warnings: [], blocked: { code: "invalid_input", message: "The subdomain is not a single label." } };
+      return { add: [{ type: "CNAME", name: host, value: `${project}.pages.dev` }], warnings: [doc(PAGES_DOC)] };
+    },
+  },
+  {
+    id: "railway", version: 1, title: "Railway", doc: RAILWAY_DOC,
+    fields: [
+      { name: "www", label: "www CNAME target from Railway", required: true, placeholder: "Paste the CNAME target" },
+      { name: "verification_name", label: "Verification TXT name", required: true },
+      { name: "verification", label: "Verification TXT value", required: true },
+    ],
+    build(input) {
+      const www = (input.www ?? "").trim().replace(/\.$/, "");
+      const name = (input.verification_name ?? "").trim();
+      const value = (input.verification ?? "").trim();
+      if (!www || !name || !value) return need("Railway www target and verification");
+      if ([www, name, value].some(wild)) return { add: [], warnings: [doc(RAILWAY_DOC)], blocked: { code: "wildcard_refused", message: "A wildcard host is not added." } };
+      return {
+        add: [
+          { type: "CNAME", name: "www", value: www },
+          { type: "TXT", name, value },
+        ],
+        warnings: [doc(RAILWAY_DOC)],
+      };
+    },
+  },
+  {
+    id: "wix", version: 1, title: "Wix by records", doc: WIX_DOC,
+    fields: [
+      { name: "apex_a", label: "Apex A address Wix showed you", required: true, placeholder: "Paste the A address" },
+      { name: "cname_host", label: "CNAME host Wix showed you", required: true, placeholder: "www" },
+      { name: "cname_target", label: "CNAME target Wix showed you", required: true, placeholder: "Paste the CNAME target" },
+    ],
+    build(input) {
+      const apex = (input.apex_a ?? "").trim();
+      const host = (input.cname_host ?? "").trim().toLowerCase();
+      const target = (input.cname_target ?? "").trim().replace(/\.$/, "");
+      if (!apex || !host || !target) return need("The A address and CNAME Wix showed you");
+      if ([apex, host, target].some(wild)) return { add: [], warnings: [doc(WIX_DOC)], blocked: { code: "wildcard_refused", message: "A wildcard host is not added." } };
+      return {
+        add: [
+          { type: "A", name: "", value: apex },
+          { type: "CNAME", name: host === "@" ? "" : host, value: target },
+        ],
+        warnings: [doc(WIX_DOC)],
       };
     },
   },

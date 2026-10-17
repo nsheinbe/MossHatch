@@ -28,7 +28,7 @@ describe("DC-05: presets", () => {
     const d = await makeDomain(k, p, "presets.dev");
     const list = await call(k, p, "GET", "/api/v1/connect/presets");
     expect(list.status).toBe(200);
-    expect(list.json.presets.map((x: { id: string }) => x.id)).toEqual(["github-pages", "webflow", "render", "google-workspace", "microsoft-365"]);
+    expect(list.json.presets.map((x: { id: string }) => x.id)).toEqual(["github-pages", "webflow", "render", "google-workspace", "microsoft-365", "cloudflare-pages", "railway", "wix"]);
 
     const gh = await plan(d.fqdn, { source: "preset", source_id: "github-pages", input: { user: "Octocat" } });
     expect(gh.status, JSON.stringify(gh.json)).toBe(200);
