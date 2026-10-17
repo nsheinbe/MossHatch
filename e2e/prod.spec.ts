@@ -224,3 +224,22 @@ test("ST-70 /device ignores a code in the URL, and the page is accessible", asyn
   expect(r.violations.map((v) => `${v.id}: ${v.nodes[0]?.html.slice(0, 80)}`)).toEqual([]);
   expect(bad).toEqual([]);
 });
+
+test("Web Analytics loads from this origin under the CSP, and the queued filter strips the query", async ({ page }) => {
+  const bad = watch(page);
+  const insights = page.waitForResponse((r) => new URL(r.url()).pathname === "/_vercel/insights/script.js");
+  await page.goto("/");
+  const res = await insights;
+  expect(res.status()).toBe(200);
+  expect(new URL(res.url()).origin).toBe(new URL(page.url()).origin);
+  await page.waitForSelector("html[data-booted='1']");
+  const filtered = await page.evaluate(() => {
+    const queued = (window as unknown as { vaq?: [string, (event: { url: string }) => { url: string } | null][] }).vaq ?? [];
+    const fn = queued.find((call) => call[0] === "beforeSend")?.[1];
+    return fn?.({ url: "https://mosshatch.com/invite?t=secret#code" })?.url ?? "";
+  });
+  expect(filtered).toBe("https://mosshatch.com/invite");
+  expect(await page.locator('script[src="/insights.js"]').count()).toBe(1);
+  expect(await page.locator('script[src="/_vercel/insights/script.js"]').count()).toBe(1);
+  expect(bad.filter((line) => /Content Security Policy|Trusted Type/i.test(line))).toEqual([]);
+});
