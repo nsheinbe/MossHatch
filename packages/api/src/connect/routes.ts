@@ -16,6 +16,8 @@ import { PRESETS, presetById, presetView } from "./presets.ts";
 import { flagOn } from "./flags.ts";
 import { discoverJob, registerDiscoveryRoutes } from "./discover.ts";
 import { syncApplyGet, syncConfirm, syncPreview } from "./sync.ts";
+import { loadPinList } from "./pin-load.ts";
+import { PRODUCTION_PINS } from "./pins.ts";
 import { getJobDef, registerJob } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import {
@@ -255,6 +257,7 @@ async function approve(req: HandlerReq): Promise<HandlerResult> {
 }
 
 export function registerConnectRoutes(router: Router): Router {
+  loadPinList(PRODUCTION_PINS);
   registerActionSpec(connectApplySpec);
   if (!getJobDef("connect.discover")) registerJob({ kind: "connect.discover", priority: 1, maxRuntimeSec: 60, handler: discoverJob });
   registerRecurringJob({ kind: "connect.discover", everySec: 3600 });
