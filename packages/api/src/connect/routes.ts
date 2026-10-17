@@ -18,6 +18,7 @@ import { discoverJob, registerDiscoveryRoutes } from "./discover.ts";
 import { syncApplyGet, syncConfirm, syncPreview } from "./sync.ts";
 import { loadPinList } from "./pin-load.ts";
 import { PRODUCTION_PINS } from "./pins.ts";
+import { enqueueVerify, verifyJob } from "./verify.ts";
 import { getJobDef, registerJob } from "../jobs/registry.ts";
 import { registerRecurringJob } from "../jobs/engine.ts";
 import {
@@ -214,6 +215,7 @@ export async function applyStoredPlan(ctx: AppContext, userId: string, fqdn: str
       },
     });
     const changed = written.change !== null;
+    if (changed) await enqueueVerify(ctx, userId, id);
     return json({ plan_id: id, state: "applied", changed, snapshot_id: written.snapshotId, zone_hash: written.zoneHash }, changed ? 202 : 200);
   } catch (e) { throw mapRegistrarError(e); }
 }
@@ -256,10 +258,23 @@ async function approve(req: HandlerReq): Promise<HandlerResult> {
   return json({ plan_id: q.plan_id, state: "approved" });
 }
 
+async function readPlan(req: HandlerReq): Promise<HandlerResult> {
+  if (!(await flagOn(req.ctx, "connect.apply"))) throw new HttpError(404, "not_found");
+  if (!UUID.test(req.params.id ?? "")) throw notFound();
+  const userId = userIdOf(req);
+  const row = await withUser(req.ctx.runtime, userId, async (c) => (await c.query(
+    `select p.id, p.state, p.verify_state from connect_plans p join domains d on d.id = p.domain_id
+      where p.id = $1 and p.user_id = $2 and d.user_id = $2 and d.fqdn_ascii = $3 and d.released_at is null`,
+    [req.params.id, userId, normalizeFqdn(req.params.fqdn ?? "")])).rows[0]);
+  if (!row) throw notFound();
+  return json({ plan_id: row.id, state: row.state, verify_state: row.verify_state ?? null });
+}
+
 export function registerConnectRoutes(router: Router): Router {
   loadPinList(PRODUCTION_PINS);
   registerActionSpec(connectApplySpec);
   if (!getJobDef("connect.discover")) registerJob({ kind: "connect.discover", priority: 1, maxRuntimeSec: 60, handler: discoverJob });
+  if (!getJobDef("dns.verify")) registerJob({ kind: "dns.verify", priority: 1, maxRuntimeSec: 60, handler: verifyJob });
   registerRecurringJob({ kind: "connect.discover", everySec: 3600 });
   registerDiscoveryRoutes(router);
   router.add(
@@ -267,6 +282,7 @@ export function registerConnectRoutes(router: Router): Router {
     { method: "GET", path: "/api/v1/connect/presets", principals: ["anonymous", "session"], handler: listPresets, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans", principals: ["session"], handler: createPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/domains/:fqdn/connect/plans/:id/apply", principals: ["session"], handler: applyPlan, tag: "connect" },
+    { method: "GET", path: "/api/v1/domains/:fqdn/connect/plans/:id", principals: ["session"], handler: readPlan, tag: "connect" },
     { method: "POST", path: "/api/v1/connect/plans/:id/approve", principals: ["session"], stepUp: "connect.apply", handler: approve, tag: "connect" },
     { method: "GET", path: "/v2/domainTemplates/providers/:providerId/services/:serviceId/apply", principals: ["anonymous", "session"], handler: syncApplyGet, tag: "connect" },
     { method: "POST", path: "/api/v1/connect/domainconnect/preview", principals: ["anonymous", "session"], handler: syncPreview, tag: "connect" },
