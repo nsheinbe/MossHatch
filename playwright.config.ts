@@ -22,7 +22,7 @@ export default defineConfig({
     { name: "cards", testMatch: /cards\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4175", viewport: { width: 1280, height: 720 } } },
     { name: "public", testMatch: /public\.spec\.ts/, use: { baseURL: "http://127.0.0.1:4173", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
     { name: "publish", testMatch: /publish\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
-    { name: "invite", testMatch: /invite\.spec\.ts/, use: { baseURL: "http://localhost:5176", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
+    { name: "invite", testMatch: /(?:invite|pageviews)\.spec\.ts/, use: { baseURL: "http://localhost:5176", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
     { name: "account", testMatch: /account\.spec\.ts/, use: { baseURL: "http://localhost:5174", launchOptions: { args: gl }, viewport: { width: 1280, height: 720 } } },
   ],
 });
