@@ -22,10 +22,10 @@
     "pages": "node scripts/render-public-pages.mjs"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
-    "@playwright/test": "1.56.1",
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
     "typescript": "7.0.2",
-    "vitest": "5.0.2"
+    "vitest": "5.0.5"
   },
   "dependencies": {
     "@mosshatch/api": "*"
