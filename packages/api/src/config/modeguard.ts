@@ -89,7 +89,7 @@ function hostOf(url: string | undefined): string | undefined {
  * Build Config from environment variables and run the mode guard. Values are never logged or put in errors.
  * Variables: MH_MODE (local|preview|staging|production; default derived from VERCEL_ENV, else local), VERCEL_ENV, MH_ORIGIN, MH_RP_ID,
  * MH_ALLOWED_ORIGINS (comma list), CRON_SECRET (32+ characters), STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
- * MH_REGISTRAR_MODE (mock|sandbox|live; default mock), DATABASE_URL (host hint only), MH_KMS_ALIAS (hint only),
+ * MH_REGISTRAR_MODE (mock|sandbox|live; default mock), MH_DOMAINCONNECT_HOST (optional hostname), DATABASE_URL (host hint only), MH_KMS_ALIAS (hint only),
  * MH_SCOPE (`registrar` only in the registrar project), REGISTRAR_RPC_URL (host compared with the environment); OPENSRS_* / REGISTRAR_LIVE_* credentials are refused outside the registrar scope.
  */
 /** The deployment mode alone (MH_MODE, else derived from VERCEL_ENV, else local), before the rest of the config is checked. */
@@ -120,5 +120,7 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   let rpId = env.MH_RP_ID;
   if (!rpId) { try { rpId = new URL(origin).hostname; } catch { throw new ModeError(["config_missing"]); } }
   const allowedOrigins = env.MH_ALLOWED_ORIGINS ? env.MH_ALLOWED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean) : [origin];
-  return { mode, origin, rpId, allowedOrigins, cronSecret, livemode: stripeKeyKind === "live", stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET, stripeKeyKind, registrarMode };
+  const domainConnectHost = env.MH_DOMAINCONNECT_HOST?.trim().toLowerCase().replace(/\.$/, "");
+  if (domainConnectHost && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domainConnectHost)) throw new ModeError(["config_missing"]);
+  return { mode, origin, rpId, allowedOrigins, cronSecret, livemode: stripeKeyKind === "live", stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET, stripeKeyKind, registrarMode, ...(domainConnectHost ? { domainConnectHost } : {}) };
 }

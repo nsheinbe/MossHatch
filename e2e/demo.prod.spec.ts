@@ -245,7 +245,7 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
     expect(await meta('meta[name="description"]'), url).toBeTruthy();
     expect(await meta('meta[property="og:title"]'), url).toBeTruthy();
   }
-  for (const url of ["/device", "/checkout/return", "/checkout/cancelled", "/invite", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
+  for (const url of ["/device", "/checkout/return", "/checkout/cancelled", "/invite", "/domainconnect/consent/example.com/site", "/?oauth_request=0190f0f0-0000-7000-8000-000000000001"]) {
     expect((await request.get(url)).headers()["x-robots-tag"], url).toBe("noindex");
   }
   expect((await request.get("/")).headers()["x-robots-tag"]).toBeUndefined();
@@ -261,7 +261,7 @@ test("SEO: title, description, canonical and share tags; app-only routes are noi
   expect(locs).toContain("https://mosshatch.com/waitlist");
   expect(locs).toContain("https://mosshatch.com/how-it-works");
   expect(locs).toContain("https://mosshatch.com/assistants");
-  for (const l of locs) expect(l).not.toMatch(/device|checkout|invite|oauth|waitlist-sent|404|500|debug|api/);
+  for (const l of locs) expect(l).not.toMatch(/device|checkout|invite|oauth|domainconnect|waitlist-sent|404|500|debug|api/);
   const robots = await (await request.get("/robots.txt")).text();
   expect(robots).toContain("Sitemap: https://mosshatch.com/sitemap.xml");
 });

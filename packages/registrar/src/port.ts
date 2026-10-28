@@ -84,9 +84,12 @@ export interface RegistrarCapabilities {
 
 export type Registrant = RegisterRequest["registrant"];
 
-export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT";
-export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME", "MX", "SRV", "TXT"];
-/** `name` is the label relative to the zone apex ("" is the apex). No TTL and no CAA/NS: OpenSRS SystemDNS has neither (docs/research/reg-opensrs.md 2). */
+export type DnsRecordType = "A" | "AAAA" | "CAA" | "CNAME" | "MX" | "SRV" | "TXT";
+export const DNS_RECORD_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CAA", "CNAME", "MX", "SRV", "TXT"];
+/**
+ * `name` is the label relative to the zone apex ("" is the apex). No TTL and no NS.
+ * CAA is stored only by Openprovider. OpenSRS SystemDNS and the mock still refuse it (docs/research/reg-opensrs.md 2).
+ */
 export interface DnsRecord { type: DnsRecordType; name: string; value: string; priority?: number; weight?: number; port?: number }
 export interface DnsZone { hosted: boolean; records: DnsRecord[] }
 
@@ -221,6 +224,12 @@ export interface RegistrarPort {
    * The caller holds the per-domain lock and keeps the pre-write snapshot.
    */
   replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
+  /**
+   * Adds records and leaves every other record in place. The read-back requires each added record to be present,
+   * not that the zone equals only those records. Omitted when the provider has no add-only write. Callers must not
+   * fall back to `replaceZone`.
+   */
+  addRecords?(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }>;
   getDs(fqdn: string): Promise<DsRecord[]>;
   addDs(fqdn: string, ds: DsRecord): Promise<void>;
   removeDs(fqdn: string, ds: DsRecord): Promise<void>;

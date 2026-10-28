@@ -8,7 +8,7 @@ import { sha256 } from "../util/bytes.ts";
 
 /**
  * ST-91, ST-92, ST-93, ST-67, ST-137, ST-16: the cross-tenant matrix and the principal walks, both GENERATED from the route
- * table. A route added without an entry in FIXTURES or NO_TENANT_INPUT fails the build.
+ * table. A route added without an entry in FIXTURES, TOKEN_ROUTES, or PUBLIC_PARAM_ROUTES fails the build.
  */
 
 let h: OrdersHarness;
@@ -42,9 +42,20 @@ const FIXTURES: { match: RegExp; param: string; id: () => string }[] = [
   { match: /^\/api\/v1\/agent\/domains\/:fqdn/, param: "fqdn", id: () => names.domain! },
   // Account closure and export (closure module): A's ready export.
   { match: /^\/api\/v1\/account\/exports\/:id/, param: "id", id: () => ids.accountExport! },
+  // Connect: approving a stored plan takes that plan's id. Domain routes above cover /domains/:fqdn/connect/*.
+  { match: /^\/api\/v1\/connect\/plans\/:id/, param: "id", id: () => ids.connectPlan! },
 ];
 /** Parameterised routes whose authority is a token in the path, not a tenant id (checked separately). */
 const TOKEN_ROUTES = [/^\/api\/v1\/email-actions\/:token$/, /^\/api\/v1\/binding-revoke\/:token$/];
+/**
+ * Public Domain Connect paths. The parameter names a domain or a service provider, not a tenant row, and the
+ * caller may be anonymous, so these stay out of the session cross-tenant loop.
+ */
+const PUBLIC_PARAM_ROUTES = [
+  /^\/v2\/domainconnect\/:domain\/settings$/,
+  /^\/v2\/domainTemplates\/providers\/:providerId\/services\/:serviceId$/,
+  /^\/v2\/domainTemplates\/providers\/:providerId\/services\/:serviceId\/apply$/,
+];
 /** Routes with no path parameter: tenant comes from the credential only, so the check is "B never sees A's data". */
 const isParam = (r: Route) => r.path.includes(":");
 
@@ -76,6 +87,9 @@ beforeAll(async () => {
   const oc = (await h.app.db.owner.query("insert into oauth_clients (client_id, registration, redirect_uris) values ('mhc_matrixclient00000000000000000000','dcr','{https://matrix.example/cb}') returning id")).rows[0].id;
   ids.oauthRequest = (await h.app.db.owner.query("insert into oauth_authorizations (client_ref, redirect_uri, code_challenge, user_id, created_at, expires_at) values ($1,'https://matrix.example/cb',$2,$3, now(), now() + interval '1 hour') returning id", [oc, "a".repeat(43), a.userId])).rows[0].id;
   ids.accountExport = (await h.app.db.owner.query("insert into account_exports (user_id, state, ready_at, expires_at, storage_ref) values ($1,'ready', now(), now() + interval '7 days', 'db:x') returning id", [a.userId])).rows[0].id;
+  ids.connectPlan = (await h.app.db.owner.query(
+    "insert into connect_plans (user_id, domain_id, source, source_id, source_version, intent, plan, plan_hash, expires_at, created_at) values ($1,$2,'pasted','matrix',1,'{}'::jsonb,'{}'::jsonb,$3, now() + interval '1 hour', now()) returning id",
+    [a.userId, ids.domain, sha256("matrix-connect")])).rows[0].id;
   const m = mintToken("live");
   await h.app.db.owner.query("insert into bindings (user_id, kind, name, token_prefix, token_hash, expires_at) values ($1,'agent','b',$2,$3, now() + interval '30 days')", [b.userId, m.prefix, m.hash]);
   bBinding = m.token;
@@ -96,7 +110,7 @@ async function callAs(who: Buyer | null, r: Route, path: string, extra: Record<s
 const shape = (res: { status: number; json: unknown; headers: Headers }) => JSON.stringify([res.status, res.json, res.headers.get("content-type"), res.headers.get("cache-control")]);
 
 async function runMatrix() {
-  const tenantRoutes = router.routes.filter((r) => isParam(r) && r.principals.includes("session") && !TOKEN_ROUTES.some((t) => t.test(r.path)));
+  const tenantRoutes = router.routes.filter((r) => isParam(r) && r.principals.includes("session") && !TOKEN_ROUTES.some((t) => t.test(r.path)) && !PUBLIC_PARAM_ROUTES.some((t) => t.test(r.path)));
   expect(tenantRoutes.length).toBeGreaterThan(0);
   for (const r of tenantRoutes) {
     const fx = FIXTURES.find((f) => f.match.test(r.path));
@@ -148,7 +162,7 @@ describe("ST-91: cross-tenant matrix, generated from the route table", () => {
   it("every route is either in the matrix, a token route, a webhook/cron route, or has no tenant input", () => {
     for (const r of router.routes) {
       if (!isParam(r)) continue;
-      const ok = FIXTURES.some((f) => f.match.test(r.path)) || TOKEN_ROUTES.some((t) => t.test(r.path));
+      const ok = FIXTURES.some((f) => f.match.test(r.path)) || TOKEN_ROUTES.some((t) => t.test(r.path)) || PUBLIC_PARAM_ROUTES.some((t) => t.test(r.path));
       expect(ok, `route ${r.method} ${r.path} has a path parameter but no matrix entry`).toBe(true);
     }
   });

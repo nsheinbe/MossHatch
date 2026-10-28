@@ -171,7 +171,7 @@ export class MockRegistrarPort implements RegistrarPort {
 
   /** Call counters, by adapter method: `calls.register` is the number of times the caller invoked it. */
   readonly calls = { checkAvailability: 0, checkAvailabilityNoCache: 0, quote: 0, register: 0, renew: 0, getDomain: 0, getOrdersByDomain: 0, cancelPendingOrder: 0, getFundingStatus: 0, health: 0,
-    setLock: 0, setNameservers: 0, issueAuthCode: 0, rerandomizeAuthCode: 0, getDns: 0, replaceZone: 0, getDs: 0, addDs: 0, removeDs: 0, updateContact: 0,
+    setLock: 0, setNameservers: 0, issueAuthCode: 0, rerandomizeAuthCode: 0, getDns: 0, replaceZone: 0, addRecords: 0, getDs: 0, addDs: 0, removeDs: 0, updateContact: 0,
     getTransfersAway: 0, cancelTransfer: 0, stopTransferAway: 0, setAutoRenew: 0, listDomains: 0, getDeletedDomains: 0, restore: 0, getBalance: 0,
     checkTransferIn: 0, startTransferIn: 0, getTransferInStatus: 0, cancelTransferIn: 0 };
   /** What actually reached the upstream (differs from `calls` under `duplicateSubmit`). */
@@ -437,6 +437,7 @@ export class MockRegistrarPort implements RegistrarPort {
   async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
     this.calls.replaceZone++; this.tick();
     validateZone(records);
+    if (records.some((r) => r.type === "CAA")) throw rejected("unsupported_record_type", "record type is not supported");
     const dom = this.own(fqdn);
     if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
     const want = canonicalZone(records);
@@ -445,6 +446,28 @@ export class MockRegistrarPort implements RegistrarPort {
     this.rawSetZone(dom.fqdn, payload);
     const back = canonicalZone([...dom.zone.values()].flat());
     if (zoneHash(back) !== zoneHash(want)) throw rejected("dns_readback_mismatch", "the zone read back does not match what was written");
+    return { hash: zoneHash(back), records: back };
+  }
+
+  /** Add-only. Existing types stay, including ones this list does not mention. */
+  async addRecords(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+    this.calls.addRecords++; this.tick();
+    validateZone(records);
+    if (records.some((r) => r.type === "CAA")) throw rejected("unsupported_record_type", "record type is not supported");
+    const dom = this.own(fqdn);
+    if (!this.hosted(dom)) throw rejected("dns_not_hosted", "nameservers are not SystemDNS");
+    const before = canonicalZone([...dom.zone.values()].flat());
+    const have = new Set(before.map((r) => zoneHash([r])));
+    for (const r of canonicalZone(records)) {
+      if (have.has(zoneHash([r]))) continue;
+      const list = dom.zone.get(r.type) ?? [];
+      list.push({ ...r });
+      dom.zone.set(r.type, list);
+      have.add(zoneHash([r]));
+    }
+    const back = canonicalZone([...dom.zone.values()].flat());
+    const backKeys = new Set(back.map((r) => zoneHash([r])));
+    if (before.some((r) => !backKeys.has(zoneHash([r]))) || canonicalZone(records).some((r) => !backKeys.has(zoneHash([r])))) throw rejected("dns_readback_mismatch", "the zone read back does not match what was written");
     return { hash: zoneHash(back), records: back };
   }
 

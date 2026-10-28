@@ -46,6 +46,8 @@ export interface Config {
   /** Test key kind seen by the mode guard, never the key itself. */
   stripeKeyKind: "test" | "live" | "none";
   registrarMode: "mock" | "sandbox" | "live";
+  /** Hostname published in the `_domainconnect` TXT. Unset means discovery writes nothing. */
+  domainConnectHost?: string;
 }
 
 export interface AppContext {

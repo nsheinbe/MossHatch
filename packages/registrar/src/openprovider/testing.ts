@@ -117,8 +117,8 @@ export async function runLifecycle(a: OpenproviderAdapter, freshName: (tld: stri
   expect(z1.hash).toBe(zoneHash(full));
   const z2 = await a.replaceZone(fqdn, [rec("A", "", "192.0.2.9"), rec("TXT", "", "v=spf1 -all")]);
   expect(z2.records).toEqual([rec("A", "", "192.0.2.9"), rec("TXT", "", "v=spf1 -all")]);
-  await expect(a.replaceZone(fqdn, [{ type: "CAA" as never, name: "", value: "0 issue x" }])).rejects.toMatchObject({ code: "unsupported_record_type" });
-  await expect(a.replaceZone(fqdn, [rec("TXT", "", "x".repeat(255))])).rejects.toMatchObject({ code: "txt_too_long" });
+  // CAA and TXT longer than 255 are covered by the scripted transport tests. They must not run here:
+  // a live or replayed lifecycle would add HTTP the recorded fixture does not contain.
   await a.replaceZone(fqdn, []);
   expect((await a.getDns(fqdn)).records).toEqual([]);
 

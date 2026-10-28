@@ -11,6 +11,10 @@
       "destination": "/api/index"
     },
     {
+      "source": "/v2/:path*",
+      "destination": "/api/index"
+    },
+    {
       "source": "/mcp",
       "destination": "/api/index"
     },
@@ -44,6 +48,10 @@
     },
     {
       "source": "/invite",
+      "destination": "/"
+    },
+    {
+      "source": "/domainconnect/consent/:provider/:service",
       "destination": "/"
     }
   ],
@@ -135,6 +143,15 @@
       ]
     },
     {
+      "source": "/domainconnect/consent/:provider/:service",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    },
+    {
       "source": "/",
       "has": [
         {
@@ -151,6 +168,15 @@
     },
     {
       "source": "/boot.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/insights.js",
       "headers": [
         {
           "key": "Cache-Control",
@@ -185,7 +211,7 @@
   "crons": [
     {
       "path": "/api/cron/tick",
-      "schedule": "* * * * *"
+      "schedule": "0 * * * *"
     }
   ]
 }

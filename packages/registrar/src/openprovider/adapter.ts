@@ -536,10 +536,17 @@ export class OpenproviderAdapter implements RegistrarPort {
     const n = name.trim().toLowerCase().replace(/\.$/, "");
     return n === zone ? "" : n.endsWith(`.${zone}`) ? n.slice(0, -zone.length - 1) : n;
   }
-  /** Observed: TXT values come back wrapped in double quotes; a 300-character value came back as one quoted string. Multi-string join is UNVERIFIED. */
+  /** Observed: TXT values come back wrapped in double quotes; a 300-character value came back as one quoted string. Quoted chunks are joined into one logical value. */
   private unquoteTxt(v: string): string {
     const segs = [...v.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]!.replace(/\\(["\\])/g, "$1"));
     return segs.length ? segs.join("") : v;
+  }
+  /** A short TXT is sent as one unquoted string, matching the recorded sandbox wire. Longer than 255 octets, it is quoted 255-octet chunks. */
+  private quoteTxt(v: string): string {
+    if (v.length <= 255) return v;
+    const parts: string[] = [];
+    for (let i = 0; i < v.length; i += 255) parts.push(`"${v.slice(i, i + 255).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
+    return parts.join(" ");
   }
   private fromWire(w: WireRecord, zone: string): DnsRecord | null {
     const type = w.type.toUpperCase();
@@ -557,7 +564,7 @@ export class OpenproviderAdapter implements RegistrarPort {
   }
   private toWire(r: DnsRecord): WireRecord {
     if (r.type === "SRV") return { name: r.name, type: "SRV", value: `${r.weight ?? 0} ${r.port ?? 0} ${r.value}`, prio: r.priority ?? 0, ttl: DNS_TTL };
-    const w: WireRecord = { name: r.name, type: r.type, value: r.value, ttl: DNS_TTL };
+    const w: WireRecord = { name: r.name, type: r.type, value: r.type === "TXT" ? this.quoteTxt(r.value) : r.value, ttl: DNS_TTL };
     if (r.type === "MX") w.prio = r.priority ?? 0;
     return w;
   }
@@ -595,14 +602,15 @@ export class OpenproviderAdapter implements RegistrarPort {
    *    removes nothing, or 18002 when nothing in the batch matched;
    *  - `replace` swaps the whole zone at once (observed), but it is not used: the brief asks for per-record operations, and a half-applied remove
    *    or add is caught by the read-back like any other mismatch.
-   * Records of types the port cannot express (CAA and so on) are removed too: this is a replace of the whole zone except SOA and NS.
+   * Types the port cannot express (TLSA, SSHFP, and the rest) are left in place. CAA is expressed. NS and SOA stay the provider's.
    */
   async replaceZone(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
     const { d } = this.split(fqdn);
-    validateZone(records);
+    validateZone(records, { txtMax: 4096 });
     for (const r of records) {
       if (r.type === "SRV" && (r.priority === undefined || r.weight === undefined || r.port === undefined)) throw rejected("srv_fields_required");
       if (r.type === "MX" && r.priority === undefined) throw rejected("mx_priority_required");
+      if (r.type === "CAA" && !/^\d+\s+(issue|issuewild|iodef)\s+".+"$/.test(r.value)) throw rejected("unsupported_record_type");
     }
     const cur = await this.zoneState(d);
     if (!cur.hosted) throw rejected("dns_not_hosted");
@@ -613,8 +621,9 @@ export class OpenproviderAdapter implements RegistrarPort {
     const remove: WireRecord[] = [];
     for (const w of cur.raw) {
       const r = this.fromWire(w, d);
-      const k = r ? key(r) : null;
-      if (k && wantKeys.has(k) && !haveKeys.has(k)) { haveKeys.add(k); continue; }
+      if (!r) continue; // unmodeled types are not part of the replace
+      const k = key(r);
+      if (wantKeys.has(k) && !haveKeys.has(k)) { haveKeys.add(k); continue; }
       remove.push({ name: this.relName(w.name, d), type: w.type, value: w.value, ttl: w.ttl, ...(w.prio !== undefined && (w.type === "MX" || w.type === "SRV") ? { prio: w.prio } : {}) });
     }
     const add = want.filter((r) => !haveKeys.has(key(r))).map((r) => this.toWire(r));
@@ -623,6 +632,27 @@ export class OpenproviderAdapter implements RegistrarPort {
     if (add.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { add: recs(add) } } });
     const back = await this.getDns(d);
     if (!back.hosted || zoneHash(back.records) !== zoneHash(want)) throw rejected("dns_readback_mismatch");
+    return { hash: zoneHash(back.records), records: back.records };
+  }
+
+  /** Add-only PUT. A missing record is added; nothing is removed, including types this port does not model. */
+  async addRecords(fqdn: string, records: DnsRecord[]): Promise<{ hash: string; records: DnsRecord[] }> {
+    const { d } = this.split(fqdn);
+    validateZone(records, { txtMax: 4096 });
+    for (const r of records) {
+      if (r.type === "SRV" && (r.priority === undefined || r.weight === undefined || r.port === undefined)) throw rejected("srv_fields_required");
+      if (r.type === "MX" && r.priority === undefined) throw rejected("mx_priority_required");
+      if (r.type === "CAA" && !/^\d+\s+(issue|issuewild|iodef)\s+".+"$/.test(r.value)) throw rejected("unsupported_record_type");
+    }
+    const cur = await this.zoneState(d);
+    if (!cur.hosted) throw rejected("dns_not_hosted");
+    const have = canonicalZone(cur.raw.flatMap((w) => { const r = this.fromWire(w, d); return r ? [r] : []; }));
+    const haveKeys = new Set(have.map((r) => zoneHash([r])));
+    const missing = canonicalZone(records).filter((r) => !haveKeys.has(zoneHash([r])));
+    if (missing.length) await this.call("UPDATE_ZONE", { params: { name: d }, body: { records: { add: missing.map((r) => this.toWire(r) as unknown as Json) } } });
+    const back = await this.getDns(fqdn);
+    const backKeys = new Set(back.records.map((r) => zoneHash([r])));
+    if (!back.hosted || have.some((r) => !backKeys.has(zoneHash([r]))) || canonicalZone(records).some((r) => !backKeys.has(zoneHash([r])))) throw rejected("dns_readback_mismatch");
     return { hash: zoneHash(back.records), records: back.records };
   }
 

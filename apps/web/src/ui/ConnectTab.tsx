@@ -5,6 +5,7 @@ import {
   type ApplicationRow, type ConnectionView, type Finding, type Planned, type PlanView, type RecipeInfo, type Service,
 } from "../lib/recipes";
 import { useUi } from "../store";
+import { ConnectPresets } from "./ConnectPresets";
 import { StepUp, type StepUpRequest } from "./StepUp";
 
 const PROVIDER: Record<Service, { name: string; ref: string | null; refHint: string; help: string; link: string }> = {
@@ -220,6 +221,7 @@ export default function ConnectTab({ d, reloadAll }: { d: DomainDetail; reloadAl
     <div>
       <p>Point {d.fqdn} at your hosting, mail and database. Mosshatch asks the provider what to set, writes the DNS records and stores the keys your app needs in the Nest. You see every change before it happens, and anything sensitive waits for your passkey.</p>
       {!d.dns_hosted_here && <p className="notice">This name uses other nameservers, so recipes that write DNS records cannot run until it uses ours. Postgres on Neon still works.</p>}
+      <ConnectPresets d={d} />
       {err && <p role="alert" className="notice">{err}</p>}
       {waiting.length > 0 && (
         <div className="banner" role="status">

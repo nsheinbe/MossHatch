@@ -53,7 +53,7 @@ describe("holds table (4.5)", () => {
     const held = rows.filter((r) => r[2]!.trim() === "H").map((r) => r[1]!).sort();
     expect(held).toEqual([...HELD_ACTIONS].sort());
     expect(HELD_ACTIONS).not.toContain("mandate.sign");
-    expect(HELD_ACTIONS).toHaveLength(14);                              // the H rows of PLAN 4.5: twelve, plus account.close and account.export (closure module)
+    expect(HELD_ACTIONS).toHaveLength(15);                              // the H rows of PLAN 4.5: twelve, plus account.close, account.export, and connect.apply
   });
 });
 
@@ -78,7 +78,7 @@ describe("recovery", () => {
       for (const t of HELD_ACTIONS) await expect(assertNotHeld(app.ctx, c, p.userId, t), t).rejects.toMatchObject({ status: 423, code: "recovery_hold" });
       await expect(assertNotHeld(app.ctx, c, p.userId, "mandate.sign")).resolves.toBeUndefined();
     });
-    expect(await heldIds(p.userId)).toHaveLength(14);
+    expect(await heldIds(p.userId)).toHaveLength(15);
     const m = await me(app, done.cookie!);
     expect(m.json.hold).toMatchObject({ active: true });
     expect(m.json.recovery).toMatchObject({ status: "holding", path: "codes_email" });
@@ -113,9 +113,9 @@ describe("recovery", () => {
     expect(done.reg!.status).toBe(201);
     const hold = (await app.db.owner.query("select until from action_holds where user_id = $1", [p.userId])).rows[0];
     expect(new Date(hold.until).getTime() - app.clock.now().getTime()).toBe(72 * 3600_000);
-    expect(await heldIds(p.userId)).toHaveLength(14);
+    expect(await heldIds(p.userId)).toHaveLength(15);
     app.clock.advance(72 * 3600_000 - 1000);
-    expect(await heldIds(p.userId)).toHaveLength(14);
+    expect(await heldIds(p.userId)).toHaveLength(15);
     app.clock.advance(2000);
     expect(await heldIds(p.userId)).toEqual([]);
   });
@@ -276,7 +276,7 @@ describe("recovery", () => {
     for (const c of [recSession, atk.cookie!]) expect((await me(app, c)).status).toBe(401);
     expect((await me(app, undo.cookie!)).status).toBe(200);
     expect((await signIn(app, done.newAuth!)).res.status).toBe(401);       // the recovery's credential is dead
-    expect(await heldIds(p.userId)).toHaveLength(14);                       // held again
+    expect(await heldIds(p.userId)).toHaveLength(15);                       // held again
     const hold = (await app.db.owner.query("select until from action_holds where user_id = $1 order by created_at desc", [p.userId])).rows[0];
     expect(new Date(hold.until).getTime() - app.clock.now().getTime()).toBe(24 * 3600_000);
     expect(app.email.to(p.email).some((m) => m.kind === "recovery.undone")).toBe(true);
@@ -331,7 +331,7 @@ describe("recovery", () => {
     for (const a of [r1.newAuth!, r2.newAuth!, a3]) expect(byId(a.id).revoked_at, a.id).not.toBeNull();
     for (const a of [r2.newAuth!, a3, r1.newAuth!]) expect((await signIn(app, a)).res.status).toBe(401);
     expect((await app.db.owner.query("select status from recovery_requests where user_id = $1 order by created_at", [p.userId])).rows.map((r) => r.status)).toEqual(["cancelled", "cancelled"]);
-    expect(await heldIds(p.userId)).toHaveLength(14);
+    expect(await heldIds(p.userId)).toHaveLength(15);
   });
 
   it("ST-46 review: a sign-in that undoes a recovery also cancels a later request that is still open", async () => {

@@ -17,6 +17,7 @@ import { whoAmI } from "../lib/account";
 import { useSessionKeepalive } from "../lib/session";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
+import { consentPath } from "../lib/connect";
 import { applySiteChrome, buildSiteMode, liveFor } from "../lib/site";
 import { useWaiting, WaitingNotice } from "./Waiting";
 
@@ -24,13 +25,15 @@ const DomainPanel = lazy(() => import("./DomainPanel"));
 const Ledger = lazy(() => import("./Ledger"));
 // The CLI device-approval page (/device). The code is typed by the person; the URL is never read for it.
 const DeviceApprove = lazy(() => import("./DeviceApprove"));
+// Domain Connect sync consent. The signed query stays in the URL; the page does not apply until Confirm.
+const DomainConnectConsent = lazy(() => import("./DomainConnectConsent"));
 // Visitors (tokens, connected apps, approvals) and the OAuth consent screen for MCP connectors: lazy chunks.
 const Visitors = lazy(() => import("./Visitors"));
 const OAuthConsent = lazy(() => import("./OAuthConsent"));
 // Rescue (transfer in), opened from Find or from the Checkout return of a transfer. Lazy: nothing of it is in the first load.
 const Rescue = lazy(() => import("./Rescue"));
 
-/** App-only routes (device approval, checkout return, invite, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
+/** App-only routes (device approval, checkout return, invite, Domain Connect consent, OAuth consent) are never indexed; vercel.json also sends X-Robots-Tag. */
 /**
  * A buy link from an assistant (the public MCP search) names the domain in the fragment, which never reaches a server log
  * (AUDIT-2026-10-07 V1). It is read before the first render: Find then searches the name, and the arrival demo, which would type
@@ -47,7 +50,7 @@ function takeFindLink(): void {
 if (typeof window !== "undefined") takeFindLink();
 
 function noindexAppRoutes() {
-  if (!["/device", "/checkout/return", "/checkout/cancelled", "/invite"].includes(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
+  if (!["/device", "/checkout/return", "/checkout/cancelled", "/invite"].includes(location.pathname) && !consentPath(location.pathname) && !new URLSearchParams(location.search).has("oauth_request")) return;
   const m = document.createElement("meta");
   m.name = "robots"; m.content = "noindex";
   document.head.append(m);
@@ -64,6 +67,7 @@ export function App() {
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState(() => location.pathname === "/device");
+  const [domainConnect, setDomainConnect] = useState(() => consentPath(location.pathname) !== null);
   const [oauthRequest, setOauthRequest] = useState(() => { const v = new URLSearchParams(location.search).get("oauth_request"); return v && /^[0-9a-f-]{36}$/i.test(v) ? v : null; });
   const { view, flash, hatchPhase, sound: soundOn, account, domainPanel, visitorsOpen, accountOpen, apiReachable, set } = useUi();
   const rescue = useUi((s) => s.rescue);
@@ -121,6 +125,7 @@ export function App() {
       {domainPanel && <Suspense fallback={null}><DomainPanel /></Suspense>}
       {rescue && <Suspense fallback={null}><Rescue /></Suspense>}
       {device && <Suspense fallback={null}><DeviceApprove onClose={() => { history.replaceState(null, "", "/"); setDevice(false); }} /></Suspense>}
+      {domainConnect && <Suspense fallback={null}><DomainConnectConsent onClose={() => { history.replaceState(null, "", "/"); setDomainConnect(false); }} /></Suspense>}
       {visitorsOpen && account && <Suspense fallback={null}><Visitors /></Suspense>}
       {oauthRequest && <Suspense fallback={null}><OAuthConsent id={oauthRequest} onClose={() => { history.replaceState(null, "", "/"); setOauthRequest(null); }} /></Suspense>}
       <HatchSheet />
