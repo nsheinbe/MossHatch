@@ -1,9 +1,17 @@
 name: ci
 on:
   push:
+    # Feature branches are checked by pull requests; retain main/default and tag checks.
+    branches: ["main", "claude/vigilant-ritchie-8vinxb"]
+    tags: ['**']
   pull_request:
 permissions:
   contents: read
+# Keep only the newest check run for each event and ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
