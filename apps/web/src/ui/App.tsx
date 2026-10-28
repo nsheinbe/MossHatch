@@ -13,7 +13,7 @@ import { OrderReturn } from "./OrderReturn";
 import { CheckoutResume } from "./CheckoutResume";
 import { pendingCheckout } from "../lib/orders";
 import { apiAvailable } from "../lib/api";
-import { whoAmI } from "../lib/account";
+import { sessionState } from "../lib/account";
 import { useSessionKeepalive } from "../lib/session";
 import { WaitlistHost } from "./WaitlistHost";
 import { takeInviteFromUrl } from "../lib/waitlist";
@@ -101,10 +101,10 @@ export function App() {
     // Is there a backend behind this deployment? A preview without a database answers 503 and stays a practice place.
     void (async () => {
       const ready = await apiAvailable();
-      let me = null;
-      if (ready) { try { me = await whoAmI(); } catch { /* signed out */ } }
+      let me = null, inviteOnly = false;
+      if (ready) { try { ({ me, inviteOnly } = await sessionState()); } catch { /* signed out */ } }
       // Invite build: reachable is not live; only an account with live access gets the shop (the effect above).
-      set({ apiReachable: ready, account: me, ...(buildSiteMode === "invite" ? {} : { apiReady: ready }) });
+      set({ apiReachable: ready, account: me, inviteOnly, ...(buildSiteMode === "invite" ? {} : { apiReady: ready }) });
       if (ready && invited && buildSiteMode !== "demo") set({ accountOpen: true });
       const q = new URLSearchParams(location.search);
       const id = q.get("order"), sid = q.get("session_id");

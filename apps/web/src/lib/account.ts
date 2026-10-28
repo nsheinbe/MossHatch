@@ -26,8 +26,13 @@ export interface Me {
 }
 
 export async function whoAmI(): Promise<Me | null> {
-  const out = await api<Me & { signedIn: boolean }>("GET", "/api/v1/session");
-  return out.signedIn ? out : null;
+  return (await sessionState()).me;
+}
+
+/** The session plus whether sign-up needs an invite right now (the home page says "invite-only for now" to visitors). */
+export async function sessionState(): Promise<{ me: Me | null; inviteOnly: boolean }> {
+  const out = await api<Me & { signedIn: boolean; invite_only?: boolean }>("GET", "/api/v1/session");
+  return { me: out.signedIn ? out : null, inviteOnly: out.invite_only === true };
 }
 
 /** Step 1 of sign-up: the server emails a one-time code. The answer is the same whether or not the address has an account. */

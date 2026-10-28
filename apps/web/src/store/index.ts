@@ -63,6 +63,8 @@ export interface UiState {
   apiReady: boolean | null;
   /** The API answered (an invite build can reach it while `apiReady`, the live shop, stays false for a visitor). */
   apiReachable: boolean | null;
+  /** The server says sign-up needs an invite (the invite-only rollout). Never persisted. */
+  inviteOnly: boolean;
   account: Me | null;
   accountOpen: boolean;
   /** One line on why the sign-in panel opened by itself (the session ended under someone). Shown once, never persisted. */
@@ -125,7 +127,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       view: "find", query: "", checking: false, results: [], alternatives: [], demo: "idle", selected: null,
-      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveIndex: {}, groveRev: 0,
+      hatchPhase: "none", card: null, groveNames: [], dealOpen: false, flash: 0, apiReady: null, apiReachable: null, inviteOnly: false, account: null, accountOpen: false, accountNotice: null, visitorsOpen: false, orderId: null, orderSession: null, domainPanel: null, groveIndex: {}, groveRev: 0,
       calm: prefersReduced, sound: false, rehideSeconds: 30,
       rescue: null, resume: null, waiting: [], waitingRev: 0, visitorsCard: null, domainTab: null,
       set: (p) => set(p),
