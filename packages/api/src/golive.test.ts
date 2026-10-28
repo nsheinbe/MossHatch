@@ -221,6 +221,14 @@ describe("the invite-only live gate", () => {
     expect((await app.call("GET", "/api/v1/session")).json).toMatchObject({ signedIn: false, live_gate: true });
     expect((await app.call("GET", "/api/v1/session", { cookie: uninvited.cookie })).json).toMatchObject({ signedIn: true, live_gate: true, live_access: false });
     expect((await app.call("GET", "/api/v1/session", { cookie: invited.cookie })).json).toMatchObject({ signedIn: true, live_gate: true, live_access: true });
+    // A visitor also learns whether sign-up needs an invite, so the home page can say "invite-only for now" before they pick a name.
+    const services = app.ctx.services as { inviteOnly?: boolean };
+    const before = services.inviteOnly;
+    services.inviteOnly = true;
+    expect((await app.call("GET", "/api/v1/session")).json).toMatchObject({ signedIn: false, invite_only: true });
+    services.inviteOnly = false;
+    expect((await app.call("GET", "/api/v1/session")).json).toMatchObject({ signedIn: false, invite_only: false });
+    services.inviteOnly = before;
     gate(false);
     expect((await app.call("GET", "/api/v1/session", { cookie: uninvited.cookie })).json).toMatchObject({ live_gate: false, live_access: true });
     // Gate off: an uninvited account is not stopped by it.

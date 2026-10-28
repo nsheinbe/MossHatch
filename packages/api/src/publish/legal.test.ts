@@ -20,7 +20,8 @@ describe("C-72 the legal document set", () => {
       const file = DOCUMENT_FILES[kind];
       expect(file, kind).toBeTruthy();
       const html = fs.readFileSync(path.join(legalDir, file!), "utf8");
-      expect(html, kind).toMatch(/Draft awaiting counsel|Counsel has not (approved|reviewed)/);
+      // The fees page says it may still change in neutral words for visitors, and carries the data-terms-pending marker instead.
+      expect(html, kind).toMatch(/Draft awaiting counsel|Counsel has not (approved|reviewed)|data-terms-pending/);
       expect(html, kind).not.toMatch(/<script/i);
     }
   });

@@ -474,3 +474,14 @@ td.row-buttons .btn { margin: 0 4px 4px 0; }
 .plan-box { margin: 10px 0; padding: 10px 12px; border-radius: 10px; background: rgba(11,18,33,.4); }
 .plan-box h5 { margin: 8px 0 4px; font-size: .95rem; }
 .plan-box code { overflow-wrap: anywhere; font-size: .85rem; }
+/* A live site still invite-only has no preview banner, so phones keep the invite line and its button (the fine print stays off). */
+@media (max-width: 720px) {
+  .intro-access.gated { display: block; margin-bottom: 10px; }
+  .intro-access.gated > p { margin: 0 0 8px; }
+  .intro-access.gated .fineprint, .intro-access.gated .btn.secondary { display: none; }
+}
+.invite-claim .link-btn { margin-left: 4px; min-height: 36px; }
+/* No WebGL (the lightweight view): nothing is drawn behind the panel, so centre it instead of leaving most of the page empty. */
+@media (min-width: 721px) {
+  .find.shop-find.simple-find { left: 0; right: 0; margin-inline: auto; width: min(760px, calc(100vw - 56px)); }
+}

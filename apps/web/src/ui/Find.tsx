@@ -7,6 +7,7 @@ import { sound } from "../audio/synth";
 import { Chip } from "./Chips";
 import { isDemo } from "../lib/site";
 import { trackConversion } from "../lib/conversion";
+import { openWaitlist } from "../lib/waitlist";
 
 /** How many idea names, and how many close variations of a taken name, are checked per request: each is one lookup per extension. */
 const IDEA_CHECKS = 6, SIMILAR_CHECKS = 6;
@@ -29,8 +30,10 @@ export function useNarrow() {
   return narrow;
 }
 export function Find({ simple = false }: { simple?: boolean }) {
-  const { query, results, checking, dealOpen, apiReady, apiReachable, hatchPhase, set } = useUi();
+  const { query, results, checking, dealOpen, apiReady, apiReachable, hatchPhase, inviteOnly, account, set } = useUi();
   const preview = isDemo(apiReady);
+  // A live site still in its invite-only rollout: a visitor can search, but registering needs an invite, so say so up front.
+  const gated = !preview && inviteOnly && !account;
   const token = useRef(0);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"name" | "idea">("name");
@@ -162,12 +165,13 @@ export function Find({ simple = false }: { simple?: boolean }) {
         <span className="eyebrow">A home for your next idea</span>
         <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>
         <p>{preview ? "Find a name for your portfolio, project or business. Search and preview without an account." : "Register a domain, manage its DNS and connect your own website. Your creature comes with it."}</p>
-        {preview && <div className="intro-access">
+        {(preview || gated) && <div className={`intro-access${gated ? " gated" : ""}`}>
+          {gated && <p><strong>Mosshatch is invite-only for now.</strong> Search freely; registering a name needs an invite.</p>}
           <div className="row-actions">
-            <a className="btn primary" href="/waitlist" data-waitlist="intro">Join the waitlist</a>
+            <a className="btn primary" href="/waitlist" data-waitlist="intro">{gated ? "Request an invite" : "Join the waitlist"}</a>
             <a className="btn secondary" href="/fees.html#prices">View reference prices</a>
           </div>
-          <p className="fineprint">Invite-only testing is underway; public purchases are not open. Joining does not reserve or register a domain.</p>
+          <p className="fineprint">{gated ? "Public purchases are not open yet." : "Invite-only testing is underway; public purchases are not open."} Joining does not reserve or register a domain.</p>
         </div>}
         <div className="shop-promises"><span>Clear renewal pricing</span><span>No preselected extras</span><span>Your domain, your control</span></div>
       </div>
@@ -196,12 +200,16 @@ export function Find({ simple = false }: { simple?: boolean }) {
           <input id="name-input" type="text" value={query} autoComplete="off" autoCapitalize="none" spellCheck={false} inputMode="url" maxLength={70} placeholder="Your next great name" onChange={e => { set({ query: e.target.value, demo: "done" }); handle.world?.keystroke(); sound.drop(); }} />
           <button type="submit" className="btn primary" disabled={checking || !query.trim()}>Search</button>
         </div>
-        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com reference price ${com.price} / year (8 October 2026). A fresh checkout quote may differ.` : "Start with a name or a domain, like moonfern.com"}</p>
+        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : (preview || gated) && com ? `.com reference price ${com.price} / year, renews at ${com.renewal} (8 October 2026). A fresh checkout quote may differ.` : "Start with a name or a domain, like moonfern.com"}</p>
       </form>
       <p className="fineprint">{preview ? "When invited, review a fresh quote before checkout. " : "Choose a name to review a fresh quote before checkout. "}Registration includes DNS management, renewal controls and a creature. Website hosting and email service are separate.</p>
       {parsed?.unsupported && results.length > 0 && <p className="notice" role="note">Mosshatch doesn't sell .{parsed.unsupported} names. Here is {parsed.label} in the extensions we do sell.</p>}
       {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
       {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(cell)}</div>}
+      {gated && !checking && freeElsewhere[0] && <p className="notice invite-claim" role="note">
+        <strong>{freeElsewhere[0].domain} looks free.</strong> Mosshatch is invite-only for now.{" "}
+        <button type="button" className="link-btn" onClick={() => openWaitlist({ name: freeElsewhere[0]!.domain })}>Request an invite to claim it</button>
+      </p>}
       {takenCom && <section className="shop-alternatives" aria-label="Alternative .com names">
         <p><strong>The .com isn't available.</strong> {freeElsewhere.length ? `${parsed?.label ?? "This name"} ${preview ? "looks unregistered" : "is free"} as ${freeElsewhere.map(r => `.${r.tld}`).join(", ")} above, or try` : "Try"} a close .com variation.</p>
         <button className="btn secondary" type="button" disabled={suggesting} onClick={() => void suggest()}>{suggesting ? "Checking alternatives…" : "Find similar .com names"}</button>
