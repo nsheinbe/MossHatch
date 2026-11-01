@@ -3,6 +3,7 @@ import { ACTION_HEADER } from "../stepup/gate.ts";
 import { mintToken } from "../util/token.ts";
 import { deliver } from "../orders/testkit.ts";
 import { sha256 } from "../util/bytes.ts";
+import { feePerYearMinor } from "../pricing/fee.ts";
 import { runRenewalScheduler, nextUpstreamTry } from "./renewals.ts";
 import { AUTH_TEXT_HASH, alertRows, at, autoRenewOn, buyDomain, days, domainRow, harnessPerTest, mailOf, makeDomainsHarness, makeOwner, relogin, renewOrders, settle, signMandate, termRow, type DomainsHarness, type Owner } from "./testkit.ts";
 
@@ -309,14 +310,21 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
   });
 
   it("a price above the mandate's ceiling is held until the person signs again; the change is emailed when first seen and 21 days before the charge", async () => {
-    // .com wholesale rises from 14.50 to 15.25 on 2026-11-01 (price table): a name bought now renews at the higher price.
     const { h, o, dom } = await mandated("cap", "com");
+    // Announce a future increase inside this test's isolated database. The harness follows the real date,
+    // so a calendar date in the shared seed eventually stops being a future price change.
+    const now = h.app.clock.now();
+    const row = (await h.app.db.owner.query("select amount_minor from wholesale_prices where registrar = 'opensrs' and tld = 'com' and kind = 'renew' and effective_from <= $1::date order by effective_from desc limit 1", [now])).rows[0];
+    const beforeWholesale = BigInt(row.amount_minor), afterWholesale = beforeWholesale + 75n;
+    const beforePrice = beforeWholesale + feePerYearMinor(beforeWholesale), afterPrice = afterWholesale + feePerYearMinor(afterWholesale);
+    await h.app.db.owner.query("delete from wholesale_prices where registrar = 'opensrs' and tld = 'com' and kind = 'renew' and effective_from > $1::date", [now]);
+    await h.app.db.owner.query("insert into wholesale_prices (registrar, tld, kind, amount_minor, effective_from, source) values ('opensrs','com','renew',$1,$2::date,'renewal cap test')", [afterWholesale, new Date(now.getTime() + days(30))]);
     const mandate = (await h.app.db.owner.query("select price_ceiling_minor from renewal_mandates where domain_id = $1 and revoked_at is null", [dom.id])).rows[0];
-    expect(BigInt(mandate.price_ceiling_minor)).toBe(1750n);
+    expect(BigInt(mandate.price_ceiling_minor)).toBe(beforePrice);
     const e = await expiry(h, dom.id);
     at(h, new Date(e.getTime() - days(44))); await settle(h);
     at(h, new Date(e.getTime() - days(44) + 3600_000 * 2)); await settle(h);
-    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes("changes from USD 17.50 to USD 18.25"));
+    const known = mailOf(h, "price_change_notice").filter((m) => m.text.includes(`changes from USD ${(Number(beforePrice) / 100).toFixed(2)} to USD ${(Number(afterPrice) / 100).toFixed(2)}`));
     expect(known.length).toBeGreaterThanOrEqual(1);
     expect(known[0]!.text).toContain("above the limit you set");
     expect(known[0]!.text).toMatch(/\/api\/v1\/email-actions\/[A-Za-z0-9_-]{43}/);
@@ -337,7 +345,7 @@ describe("the decline ladder (C-38) and the price cap (C-33)", () => {
     at(h, new Date(e.getTime() - days(10) + 20 * 60_000)); await settle(h);
     const orders = await renewOrders(h, dom.id);
     expect(orders.map((r) => r.state)).toEqual(["renewed"]);
-    expect(renewPIs(h).at(-1)!.amount).toBe(1825);
+    expect(renewPIs(h).at(-1)!.amount).toBe(Number(afterPrice));
   });
 });
 

@@ -341,11 +341,12 @@ dialog.waitlist a { color: var(--lantern); }
 .checkout-actions .btn.primary { width: 100%; }
 @media (min-width: 1050px) { .panel.side { width: 400px; } }
 @media (max-width: 720px) {
-  /* The first screen is the headline and the name field. The banner already has "Join the waitlist",
-     so the in-panel welcome (second waitlist button, prices, promises) stays off this screen and the
+  /* Keep the first action and its purpose visible. The banner already has "Join the waitlist",
+     so the second waitlist button, prices and promises stay off this screen and the
      field clears the fixed bottom bar, including the home-indicator inset. */
   .find.shop-find { inset: calc(70px + var(--bh)) 10px calc(76px + env(safe-area-inset-bottom)); width: auto; padding: 16px 16px 20px; border-radius: 20px; }
-  .shop-intro .eyebrow, .shop-intro > p, .intro-access, .shop-promises { display: none; }
+  .shop-intro .eyebrow, .intro-access, .shop-promises { display: none; }
+  .shop-intro > p { font-size: .85rem; line-height: 1.5; margin: 0 0 12px; }
   .shop-intro h1 { font-size: 1.65rem; margin: 0 0 8px; }
   .search-modes { margin-top: 0; }
   #name-input, .shop-search .btn { scroll-margin-bottom: calc(88px + env(safe-area-inset-bottom)); }

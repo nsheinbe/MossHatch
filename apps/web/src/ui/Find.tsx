@@ -152,6 +152,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
     </div>
   ) : <Chip key={r.domain} r={r} list row={0} onPick={pick} />;
   const parsed = parseQuery(query);
+  const matches = results.filter(r => r.available).length;
   const rescuable = results.find(r => r.status === "registered");
   const takenCom = results.find(r => r.tld === "com" && !r.available && r.status !== "unknown");
   const freeElsewhere = results.filter(r => r.available);
@@ -161,7 +162,7 @@ export function Find({ simple = false }: { simple?: boolean }) {
       <div className="shop-intro">
         <span className="eyebrow">A home for your next idea</span>
         <h1>Find your domain.<br /><em>Hatch something wonderful.</em></h1>
-        <p>{preview ? "Find a name for your portfolio, project or business. Search and preview without an account." : "Register a domain, manage its DNS and connect your own website. Your creature comes with it."}</p>
+        <p id="search-help">{preview ? "Search a domain name or describe your idea. Choose a match to preview its creature. No account or payment needed." : "Search a domain name, then choose a match to review its price and registration steps. Your creature comes with your domain."}</p>
         {preview && <div className="intro-access">
           <div className="row-actions">
             <a className="btn primary" href="/waitlist" data-waitlist="intro">Join the waitlist</a>
@@ -193,14 +194,14 @@ export function Find({ simple = false }: { simple?: boolean }) {
       <form className="pool-input shop-search" role="search" onSubmit={e => { e.preventDefault(); void run(query); }}>
         <label htmlFor="name-input">What will you name it?</label>
         <div className="field">
-          <input id="name-input" type="text" value={query} autoComplete="off" autoCapitalize="none" spellCheck={false} inputMode="url" maxLength={70} placeholder="Your next great name" onChange={e => { set({ query: e.target.value, demo: "done" }); handle.world?.keystroke(); sound.drop(); }} />
+          <input id="name-input" type="text" value={query} aria-describedby="search-help" autoComplete="off" autoCapitalize="none" spellCheck={false} inputMode="url" maxLength={70} placeholder="moonfern or moonfern.com" onChange={e => { set({ query: e.target.value, demo: "done" }); handle.world?.keystroke(); sound.drop(); }} />
           <button type="submit" className="btn primary" disabled={checking || !query.trim()}>Search</button>
         </div>
-        <p className="search-status" role="status">{checking ? "Checking availability…" : results.length ? `${results.filter(r => r.available).length} ${preview ? "potential matches" : "available names"} found` : preview && com ? `.com reference price ${com.price} / year (8 October 2026). A fresh checkout quote may differ.` : "Start with a name or a domain, like moonfern.com"}</p>
+        <p className="search-status" role="status">{checking ? "Checking availability…" : error ? "No availability confirmed. Your entry is kept above." : results.length ? `${matches} ${preview ? (matches === 1 ? "potential match" : "potential matches") : (matches === 1 ? "available name" : "available names")} found. ${matches ? (preview ? "Choose a match to preview its creature, or shortlist it for later." : "Choose a match to review its price and registration steps.") : "Try another name or describe your idea."}` : preview && com ? `.com reference price ${com.price} / year (8 October 2026). A fresh checkout quote may differ.` : "Start with a name or a domain, like moonfern.com"}</p>
+        {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
       </form>
       <p className="fineprint">{preview ? "When invited, review a fresh quote before checkout. " : "Choose a name to review a fresh quote before checkout. "}Registration includes DNS management, renewal controls and a creature. Website hosting and email service are separate.</p>
       {parsed?.unsupported && results.length > 0 && <p className="notice" role="note">Mosshatch doesn't sell .{parsed.unsupported} names. Here is {parsed.label} in the extensions we do sell.</p>}
-      {error && <div className="search-error" role="alert"><p>{error}</p><button className="link-btn" type="button" disabled={checking} onClick={() => void run(query)}>Try again</button></div>}
       {results.length > 0 && <div className="shop-results" aria-label="Results" aria-busy={checking}>{results.map(cell)}</div>}
       {takenCom && <section className="shop-alternatives" aria-label="Alternative .com names">
         <p><strong>The .com isn't available.</strong> {freeElsewhere.length ? `${parsed?.label ?? "This name"} ${preview ? "looks unregistered" : "is free"} as ${freeElsewhere.map(r => `.${r.tld}`).join(", ")} above, or try` : "Try"} a close .com variation.</p>

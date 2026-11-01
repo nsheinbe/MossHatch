@@ -35,6 +35,7 @@ export function page(site: Site, o: PageOpts): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <meta name="referrer" content="no-referrer" />
 <title>${esc(o.title)}</title>
 <meta name="description" content="${esc(o.description)}" />
