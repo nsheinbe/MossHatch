@@ -14,10 +14,15 @@ const ERRORS: Record<string, string> = {
   network: "We could not reach Mosshatch. Check your connection and try again.",
 };
 
+type Fields = { email: string; name: string; answer: string; consent: boolean; website: string };
+// Unfinished input takes precedence over entry-point prefills. Memory only: closing the dialog keeps the draft,
+// while a successful submission or page reload clears it. Never put these personal details in browser storage.
+let draft: Fields | null = null;
+
 /** The waitlist form, in a modal dialog (focus stays inside, Escape closes, focus returns to what opened it). A lazy chunk. */
 export default function WaitlistForm({ name, email, source, onClose }: WaitlistOpen & { onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const [f, setF] = useState({ email: email ?? "", name: name ?? "", answer: "", consent: false, website: "" });
+  const [f, setF] = useState<Fields>(() => draft ?? { email: email ?? "", name: name ?? "", answer: "", consent: false, website: "" });
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -28,11 +33,18 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
     return () => { opener?.focus?.(); };
   }, []);
   const close = () => { ref.current?.close(); };
+  const change = (patch: Partial<Fields>) => {
+    const next = { ...f, ...patch };
+    draft = next;
+    setF(next);
+  };
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null); setBusy(true);
     try {
       await joinWaitlist({ email: f.email.trim(), name: f.name.trim() || undefined, answer: f.answer || undefined, consent: f.consent, website: f.website, source: source ?? "app" });
+      // A response from a dismissed form must not erase newer edits made after reopening it.
+      if (draft === f) draft = null;
       setSent(true);
     } catch (x) { setErr(ERRORS[(x as Error).message] ?? "Something went wrong. Try again."); }
     finally { setBusy(false); }
@@ -56,29 +68,30 @@ export default function WaitlistForm({ name, email, source, onClose }: WaitlistO
         ) : (
           <form onSubmit={submit} noValidate={false}>
             <p>A domain with a creature of its own. Join for an early-access invite when it is your turn. No payment details needed. <strong>Joining does not reserve or register a name.</strong></p>
+            <p className="fineprint">Closing this form keeps your unfinished details on this page. Reloading clears them.</p>
             <div className="form-grid">
               <div>
                 <label htmlFor="wl-email">Email</label>
-                <input id="wl-email" className="text-input" type="email" autoComplete="email" required maxLength={254} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoFocus />
+                <input id="wl-email" className="text-input" type="email" autoComplete="email" required maxLength={254} value={f.email} onChange={(e) => change({ email: e.target.value })} autoFocus />
               </div>
               <div>
                 <label htmlFor="wl-name">The name you hatched (optional)</label>
-                <input id="wl-name" className="text-input" type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={80} placeholder="moonfern.com" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+                <input id="wl-name" className="text-input" type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} maxLength={80} placeholder="moonfern.com" value={f.name} onChange={(e) => change({ name: e.target.value })} />
               </div>
               <details className="wl-optional">
                 <summary>One optional question</summary>
               <fieldset className="wl-question">
                 <legend>{QUESTION_TEXT} (optional)</legend>
                 {(["yes", "no", "maybe"] as const).map((a) => (
-                  <label key={a} className="wl-radio"><input type="radio" name="wl-answer" value={a} checked={f.answer === a} onChange={() => setF({ ...f, answer: a })} /> {a[0]!.toUpperCase() + a.slice(1)}</label>
+                  <label key={a} className="wl-radio"><input type="radio" name="wl-answer" value={a} checked={f.answer === a} onChange={() => change({ answer: a })} /> {a[0]!.toUpperCase() + a.slice(1)}</label>
                 ))}
               </fieldset>
               </details>
               <div className="hp" aria-hidden="true">
                 <label htmlFor="wl-website">Leave this empty</label>
-                <input id="wl-website" type="text" tabIndex={-1} autoComplete="off" value={f.website} onChange={(e) => setF({ ...f, website: e.target.value })} />
+                <input id="wl-website" type="text" tabIndex={-1} autoComplete="off" value={f.website} onChange={(e) => change({ website: e.target.value })} />
               </div>
-              <label className="check"><input type="checkbox" required checked={f.consent} onChange={(e) => setF({ ...f, consent: e.target.checked })} /> <span>{CONSENT_TEXT}</span></label>
+              <label className="check"><input type="checkbox" required checked={f.consent} onChange={(e) => change({ consent: e.target.checked })} /> <span>{CONSENT_TEXT}</span></label>
             </div>
             <p className="fineprint">We keep your email, the name you typed and your answer, only to run the waitlist and to learn what people want. We never sell them. Unconfirmed sign-ups are deleted after 30 days, and every email has a one-click leave link. <a href="/waitlist-privacy" target="_blank" rel="noreferrer">Waitlist privacy note (draft awaiting counsel)</a>.</p>
             {err && <p role="alert" className="notice">{err}</p>}
