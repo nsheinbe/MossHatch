@@ -56,6 +56,7 @@ try {
     evidence.push({scenario,width,status:res.status(),expectedProductionSha:process.env.EXPECTED_PRODUCTION_SHA,sent,intercepted,apiScope:'browser fixtures only; no live backend verification'});
     await ctx.close();
   }
-  await fs.writeFile(`static-ui-evidence/${label}-acceptance.json`,JSON.stringify(evidence,null,2));
+  await fs.writeFile('static-ui-evidence/production-acceptance.json',JSON.stringify(evidence,null,2));
+  console.log(JSON.stringify(evidence));
   console.log('PASS: deployed static UI at desktop/mobile; all API and analytics requests intercepted');
 } finally { await browser.close(); }
