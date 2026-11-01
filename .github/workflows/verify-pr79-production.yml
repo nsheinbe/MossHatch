@@ -1,0 +1,27 @@
+name: PR79 static production verification
+on:
+  push:
+    branches: [verify/pr79-production-ui]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: node scripts/verify-pr79-production.mjs
+        env:
+          EXPECTED_PRODUCTION_SHA: bcfcf1f92dd34ef348de6c50ed13abb9f819c772
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: pr79-production-static-ui
+          path: static-ui-evidence
+          retention-days: 7
